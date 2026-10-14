@@ -1,0 +1,2 @@
+[console_scripts]
+esper = esper.cli.main:main

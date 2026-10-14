@@ -1,0 +1,46 @@
+Metadata-Version: 2.4
+Name: esper
+Version: 0.1.0
+Summary: Collect alpinac peak extraction results into a SQLite database and browse them.
+Author-email: Lionel Constantin <lionel.constantin@empa.ch>
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: pyarrow
+Requires-Dist: xarray
+Requires-Dist: h5netcdf
+Requires-Dist: PySide6
+
+# esper
+
+Collects the peaks found by the alpinac extraction pipeline (`<measurement>.alpinac/pipeline.nc`)
+into a SQLite database, together with the mass calibration and the unit mass chromatograms.
+
+## Install
+
+```
+pip install -e .
+```
+
+## Usage
+
+```
+esper upload /path/to/alpinac/results /path/to/esper/data   # import / update
+esper gui /path/to/esper/data                               # open the GUI
+```
+
+`upload` accepts a single `.alpinac` folder or a directory searched recursively.
+Measurements whose `pipeline.nc` did not change are skipped (`--force` to reimport).
+
+## Data directory
+
+```
+<data_dir>/
+    esper.sqlite
+    chromatograms/<measurement>.parquet
+```
+
+Tables: `measurement`, `mass_cal`, `mass_cal_rt`, `mass_cal_mass`, `compound`,
+`compound_candidate`, `peak`, and the view `peak_full` (peaks joined with their
+measurement, compound and best library candidate). See `src/esper/db.py`.

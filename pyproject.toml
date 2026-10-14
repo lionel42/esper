@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "esper"
+version = "0.1.0"
+description = "Collect alpinac peak extraction results into a SQLite database and browse them."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Lionel Constantin", email = "lionel.constantin@empa.ch" }]
+dependencies = [
+    "numpy",
+    "pandas",
+    "pyarrow",
+    "xarray",
+    "h5netcdf",
+    "PySide6",
+    "pyqtgraph",
+]
+
+[project.scripts]
+esper = "esper.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

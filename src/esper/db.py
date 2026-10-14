@@ -1,0 +1,188 @@
+"""SQLite database layout of an esper data directory.
+
+An esper data directory looks like::
+
+    <data_dir>/
+        esper.sqlite
+        chromatograms/
+            <measurement>.parquet   # unit mass chromatograms (index: rt [s], columns: masses + 'tic')
+
+Units are part of the column names: ``_s`` seconds, ``_scans`` time bins.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+DB_FILENAME = "esper.sqlite"
+CHROMATOGRAMS_DIRNAME = "chromatograms"
+
+SCHEMA_VERSION = 1
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS measurement (
+    measurement_id      INTEGER PRIMARY KEY,
+    name                TEXT UNIQUE NOT NULL,   -- e.g. '241007.0423.air.1'
+    acq_datetime        TEXT,                   -- ISO format, parsed from the name
+    sample_type         TEXT,                   -- 'air', 'tank', ...
+    sample_number       INTEGER,
+    rt_start_s          REAL,
+    rt_stop_s           REAL,
+    cleaning            TEXT,
+    n_peaks             INTEGER,
+    n_compounds         INTEGER,
+    chromatogram_file   TEXT,                   -- relative to the data directory
+    source_dir          TEXT NOT NULL,          -- the .alpinac folder
+    source_mtime        REAL NOT NULL,          -- mtime of pipeline.nc, to detect reprocessing
+    source_size         INTEGER NOT NULL,
+    imported_at         TEXT NOT NULL
+);
+
+-- Scalar mass calibration and peak shape parameters (header of the *_mc.txt file)
+CREATE TABLE IF NOT EXISTS mass_cal (
+    measurement_id      INTEGER PRIMARY KEY REFERENCES measurement ON DELETE CASCADE,
+    ionization          TEXT,                   -- 'EI', ...
+    mode                INTEGER,                -- tofwerk mass calibration mode
+    n_params            INTEGER,
+    sigma_tofidx_slope  REAL,                   -- peak shape, sigma slope vs TOF index
+    sigma_tofidx_b      REAL,                   -- peak shape, sigma intercept vs TOF index
+    sigma_m_slope       REAL,                   -- peak shape, sigma slope vs mass
+    sigma_m_b           REAL,                   -- peak shape, sigma intercept vs mass
+    alpha_pseudo_voigt  REAL,
+    s_per_bin           REAL
+);
+
+-- Mass calibration parameters fitted at several retention times
+CREATE TABLE IF NOT EXISTS mass_cal_rt (
+    measurement_id      INTEGER REFERENCES measurement ON DELETE CASCADE,
+    rt_idx              INTEGER,                -- centre of the rt bin, in scans
+    rt_s                REAL,                   -- rt_idx * s_per_bin
+    p1 REAL, p2 REAL, p3 REAL, p4 REAL, p5 REAL,
+    PRIMARY KEY (measurement_id, rt_idx)
+);
+
+-- Exact masses used for the mass calibration and their uncertainty
+CREATE TABLE IF NOT EXISTS mass_cal_mass (
+    measurement_id      INTEGER REFERENCES measurement ON DELETE CASCADE,
+    exact_mass          REAL,
+    u_ppm               REAL,
+    PRIMARY KEY (measurement_id, exact_mass)
+);
+
+-- Group of co-eluting peaks. Summary columns are as written by alpinac.
+CREATE TABLE IF NOT EXISTS compound (
+    measurement_id      INTEGER REFERENCES measurement ON DELETE CASCADE,
+    compound_idx        INTEGER,                -- 'compound' coordinate of pipeline.nc (with gaps)
+    rt_mean_s           REAL,
+    rt_std_s            REAL,
+    n_peaks             INTEGER,                -- peak_rt_count
+    prominence_sum      REAL,
+    start_mean_s        REAL,
+    start_std_s         REAL,
+    stop_mean_s         REAL,
+    stop_std_s          REAL,
+    main_ion_mass       INTEGER,                -- mai_
+    retention_index     REAL,
+    is_ref_ri           INTEGER,
+    valid_candidate     INTEGER,
+    compound_name       TEXT,
+    PRIMARY KEY (measurement_id, compound_idx)
+);
+
+-- The three best library matches of each compound
+CREATE TABLE IF NOT EXISTS compound_candidate (
+    measurement_id      INTEGER,
+    compound_idx        INTEGER,
+    rank                INTEGER,                -- 1, 2, 3
+    candidate_name      TEXT,
+    spectrum_ref        TEXT,                   -- e.g. 'nist_Xe'
+    library             TEXT,                   -- prefix of spectrum_ref, e.g. 'nist'
+    score               REAL,
+    ri                  REAL,
+    ri_diff             REAL,
+    score_combined      REAL,
+    is_best             INTEGER,                -- the candidate selected by alpinac (bc_*)
+    PRIMARY KEY (measurement_id, compound_idx, rank),
+    FOREIGN KEY (measurement_id, compound_idx)
+        REFERENCES compound (measurement_id, compound_idx) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS peak (
+    measurement_id      INTEGER,
+    peak_idx            INTEGER,                -- 'peak' coordinate of pipeline.nc
+    compound_idx        INTEGER,
+    mass                INTEGER,                -- unit mass
+    rt_s                REAL,
+    height              REAL,
+    prominence          REAL,
+    width_scans         REAL,
+    width_s             REAL,
+    width_height        REAL,
+    left_base_scan      INTEGER,
+    right_base_scan     INTEGER,
+    start_s             REAL,
+    stop_s              REAL,
+    flatness            REAL,
+    tailing_ratio       REAL,
+    is_max_of_cmp       INTEGER,
+    PRIMARY KEY (measurement_id, peak_idx),
+    FOREIGN KEY (measurement_id, compound_idx)
+        REFERENCES compound (measurement_id, compound_idx) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS peak_mass_rt ON peak (mass, rt_s);
+CREATE INDEX IF NOT EXISTS peak_compound ON peak (measurement_id, compound_idx);
+CREATE INDEX IF NOT EXISTS compound_name_idx ON compound (compound_name);
+
+CREATE VIEW IF NOT EXISTS peak_full AS
+SELECT
+    m.name AS measurement,
+    m.acq_datetime,
+    m.sample_type,
+    m.sample_number,
+    p.*,
+    c.compound_name,
+    c.retention_index,
+    c.valid_candidate,
+    cc.spectrum_ref AS best_spectrum,
+    cc.score AS best_score,
+    cc.score_combined AS best_score_combined
+FROM peak p
+JOIN measurement m USING (measurement_id)
+JOIN compound c USING (measurement_id, compound_idx)
+LEFT JOIN compound_candidate cc
+    ON cc.measurement_id = p.measurement_id
+    AND cc.compound_idx = p.compound_idx
+    AND cc.is_best = 1;
+"""
+
+
+def db_path(data_dir: Path) -> Path:
+    return Path(data_dir) / DB_FILENAME
+
+
+def chromatograms_dir(data_dir: Path) -> Path:
+    return Path(data_dir) / CHROMATOGRAMS_DIRNAME
+
+
+def connect(data_dir: Path, create: bool = False, readonly: bool = False) -> sqlite3.Connection:
+    """Open the database of a data directory, creating the schema if asked."""
+    path = db_path(data_dir)
+    if not create and not path.is_file():
+        raise FileNotFoundError(f"No esper database at {path}")
+    if readonly:
+        return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    con = sqlite3.connect(path)
+    con.execute("PRAGMA foreign_keys = ON")
+    if create:
+        version = con.execute("PRAGMA user_version").fetchone()[0]
+        if version not in (0, SCHEMA_VERSION):
+            raise RuntimeError(
+                f"{path} has schema version {version}, expected {SCHEMA_VERSION}"
+            )
+        con.executescript(SCHEMA)
+        con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    return con
