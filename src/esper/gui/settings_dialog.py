@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -190,8 +191,10 @@ class SettingsDialog(QDialog):
         self.n_best.setValue(settings.n_best_matches)
 
     def settings(self) -> Settings:
+        """The current settings with the values of the dialog (other fields kept)."""
         ignored = [float(t) for t in self.ignored.text().replace(";", ",").replace(" ", ",").split(",") if t.strip()]
-        return Settings(
+        return replace(
+            settings_manager().settings,
             spectrum_intensity=self.intensity.currentText(),
             libraries=self._libraries(),
             cutoff_mass=self.cutoff.value(),

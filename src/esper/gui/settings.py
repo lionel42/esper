@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 SETTINGS_FILE = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "esper" / "settings.json"
 
+# Number of data directories remembered
+MAX_RECENT_DATA_DIRS = 10
+
 # Intensity of the measured peaks used for the spectra
 INTENSITIES = ["prominence", "height", "area"]
 
@@ -31,6 +34,8 @@ class Settings:
     ignored_masses: list[float] = field(default_factory=list)
     normalize: bool = True
     n_best_matches: int = 20
+    # Data directories opened before, most recent first
+    recent_data_dirs: list[str] = field(default_factory=list)
 
     @property
     def processing(self) -> Processing:
@@ -82,6 +87,17 @@ class SettingsManager(QObject):
             self.path.write_text(self.settings.to_json())
         except OSError as e:
             logger.error(f"Could not save the settings {self.path}: {e}")
+
+    def remember_data_dir(self, data_dir: Path) -> None:
+        """Put a data directory first in the recent ones (saved, no ``changed`` signal)."""
+        path = str(Path(data_dir).resolve())
+        recent = [p for p in self.settings.recent_data_dirs if p != path]
+        self.settings.recent_data_dirs = [path] + recent[: MAX_RECENT_DATA_DIRS - 1]
+        self.save()
+
+    def forget_data_dir(self, data_dir: str) -> None:
+        self.settings.recent_data_dirs = [p for p in self.settings.recent_data_dirs if p != data_dir]
+        self.save()
 
     def update(self, settings: Settings) -> None:
         old = self.settings

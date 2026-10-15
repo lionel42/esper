@@ -51,6 +51,24 @@ def _targets(args: argparse.Namespace) -> int:
     return 0
 
 
+def _install(args: argparse.Namespace) -> int:
+    from esper.install import install, is_root, uninstall
+
+    system = args.system
+    if system and not is_root() and args.prefix is None:
+        print("Installing for all users needs root, run it with sudo:", file=sys.stderr)
+        print(f"  sudo {sys.argv[0]} install --system" + (f' --data-dir "{args.data_dir}"' if args.data_dir else ""), file=sys.stderr)
+        return 1
+    if args.uninstall:
+        for path in uninstall(system, args.prefix):
+            print(f"removed {path}")
+        return 0
+    data_dir = args.data_dir or os.environ.get("ESPER_DATA_DIR")
+    for path in install(system, data_dir, args.desktop_shortcut, args.prefix):
+        print(f"installed {path}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="esper")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -71,6 +89,16 @@ def main(argv: list[str] | None = None) -> int:
     p_targets.add_argument("data_dir", type=Path, help="esper data directory")
     p_targets.add_argument("--ri-references", type=Path, help="retention index references (default: alpinac's)")
     p_targets.set_defaults(func=_targets)
+
+    p_install = sub.add_parser(
+        "install", help="Add esper to the application menu (and the 'esper' command to the PATH)"
+    )
+    p_install.add_argument("--system", action="store_true", help="for all users, in /usr/local (needs sudo)")
+    p_install.add_argument("--data-dir", type=Path, help="data directory opened by the menu entry (default: $ESPER_DATA_DIR)")
+    p_install.add_argument("--desktop-shortcut", action="store_true", help="also put a shortcut on your desktop")
+    p_install.add_argument("--uninstall", action="store_true", help="remove what install added")
+    p_install.add_argument("--prefix", type=Path, help=argparse.SUPPRESS)
+    p_install.set_defaults(func=_install)
 
     args = parser.parse_args(argv)
     logging.basicConfig(

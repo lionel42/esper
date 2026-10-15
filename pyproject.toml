@@ -25,3 +25,6 @@ esper = "esper.cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+esper = ["resources/*.svg"]

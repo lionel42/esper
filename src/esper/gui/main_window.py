@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import sys
+from importlib import resources
 from pathlib import Path
 
 import pyqtgraph as pg
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
-    QFileDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
 from esper import __version__
 from esper.gui.data import EsperData
 from esper.gui.library_loader import library_loader
+from esper.gui.open_dialog import OpenDataDialog, ask_data_dir, is_data_dir
+from esper.gui.settings import settings_manager
 from esper.gui.selection import Selection
 from esper.gui.views.base import BaseView
 from esper.gui.views.chromatograms import ChromatogramsView
@@ -53,6 +55,8 @@ class MainWindow(QMainWindow):
         open_action = QAction("&Open data directory…", self, shortcut=QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self._ask_data_dir)
         file_menu.addAction(open_action)
+        self.recent_menu = file_menu.addMenu("Open &recent")
+        self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
         settings_action = QAction("&Settings…", self, shortcut=QKeySequence("Ctrl+,"))
         settings_action.triggered.connect(self._open_settings)
         file_menu.addAction(settings_action)
@@ -130,9 +134,27 @@ class MainWindow(QMainWindow):
         SettingsDialog(self).exec()
 
     def _ask_data_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Open esper data directory")
-        if path:
-            self.open_data(Path(path))
+        path = ask_data_dir(self, "Open esper data directory")
+        if path is not None:
+            self.open_data(path)
+
+    def _fill_recent_menu(self) -> None:
+        self.recent_menu.clear()
+        recent = settings_manager().settings.recent_data_dirs
+        for path in recent:
+            action = self.recent_menu.addAction(path)
+            action.setEnabled(is_data_dir(Path(path)))
+            action.triggered.connect(lambda _=False, p=path: self.open_data(Path(p)))
+        if not recent:
+            self.recent_menu.addAction("No recent data directory").setEnabled(False)
+
+    def choose_data_dir(self) -> bool:
+        """Ask which data directory to open (recent ones or browse); False if cancelled."""
+        dialog = OpenDataDialog(self)
+        if dialog.exec() and dialog.data_dir is not None:
+            self.open_data(dialog.data_dir)
+            return self.data is not None
+        return False
 
     def open_data(self, data_dir: Path) -> None:
         try:
@@ -147,6 +169,7 @@ class MainWindow(QMainWindow):
             widget.deleteLater()
         if self.data is not None:
             self.data.close()
+        settings_manager().remember_data_dir(data_dir)
 
         self.data = data
         self.selection = Selection(data)
@@ -182,7 +205,15 @@ class MainWindow(QMainWindow):
 
 def run(data_dir: Path | None = None) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
+    app.setApplicationName("esper")
+    # Matches the desktop entry (window grouping, Wayland icon)
+    app.setDesktopFileName("esper")
+    icon = resources.files("esper") / "resources" / "esper.svg"
+    app.setWindowIcon(QIcon(str(icon)))
     pg.setConfigOptions(background="w", foreground="k", antialias=True)
     window = MainWindow(data_dir)
     window.show()
+    if data_dir is None and not window.choose_data_dir() and window.data is None:
+        # Cancelled: nothing to show
+        return 0
     return app.exec()

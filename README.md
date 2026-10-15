@@ -17,6 +17,19 @@ esper targets /shared/data/substances.xlsx /path/to/esper/data  # import the tar
 esper gui /path/to/esper/data                               # open the GUI
 ```
 
+### Application menu / desktop icon
+
+```
+sudo /shared/pyenv/bin/esper install --system --data-dir /shared/toffee/apre1   # all users
+esper install --data-dir /shared/toffee/apre1 --desktop-shortcut                # only you
+```
+
+Adds the esper entry to the application menu (`share/applications/esper.desktop`, icon in
+the hicolor theme) and the `esper` command to the PATH (`bin/esper`), in `/usr/local` with
+`--system`, otherwise in `~/.local`. The entry starts `esper gui <data dir>`.
+`--desktop-shortcut` also puts the icon on your desktop (with sudo: on the desktop of the
+user who ran sudo). `--uninstall` removes it all.
+
 `upload` accepts a single `.alpinac` folder or a directory searched recursively.
 Measurements whose `pipeline.nc` did not change are skipped (`--force` to reimport).
 
@@ -27,7 +40,9 @@ its rt in the reference run and alpinac's RI references, extrapolated linearly b
 first/last reference. To use another source, write a function returning `esper.targets.Targets`
 and register it in `LOADERS`.
 
-`esper gui` without argument uses `$ESPER_DATA_DIR`, or File > Open.
+`esper gui` without argument uses `$ESPER_DATA_DIR`; if it is not set, a window lists the
+data directories opened before (last 10, also in File > Open recent) to choose from, or to
+browse for another one.
 
 ## GUI
 

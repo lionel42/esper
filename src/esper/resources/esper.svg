@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <rect x="8" y="8" width="240" height="240" rx="44" fill="#1f3a5f"/>
+  <!-- spectrum sticks -->
+  <g stroke-width="12" stroke-linecap="round">
+    <line x1="58" y1="200" x2="58" y2="168" stroke="#7fb3e6"/>
+    <line x1="92" y1="200" x2="92" y2="132" stroke="#7fb3e6"/>
+    <line x1="164" y1="200" x2="164" y2="150" stroke="#7fb3e6"/>
+    <line x1="198" y1="200" x2="198" y2="178" stroke="#7fb3e6"/>
+  </g>
+  <!-- chromatogram peak -->
+  <path d="M36 200 C 90 200, 104 56, 128 56 C 152 56, 166 200, 220 200"
+        fill="none" stroke="#ffffff" stroke-width="12" stroke-linecap="round"/>
+  <line x1="128" y1="200" x2="128" y2="56" stroke="#f2a33a" stroke-width="12" stroke-linecap="round"/>
+  <line x1="32" y1="206" x2="224" y2="206" stroke="#ffffff" stroke-width="6" stroke-linecap="round" opacity="0.6"/>
+</svg>
