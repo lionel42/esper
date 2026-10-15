@@ -152,6 +152,9 @@ class SearchView(QWidget):
         self.valid_only.toggled.connect(lambda _: self.redraw())
         self.selection.changed.connect(self._on_selection_changed)
 
+    def panel_actions(self) -> list:
+        return []
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if self.runtype_box.combo.count() == 0:

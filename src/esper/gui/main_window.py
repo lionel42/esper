@@ -53,11 +53,15 @@ class MainWindow(QMainWindow):
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
 
-        view_menu = self.menuBar().addMenu("&View")
-        for i, name in enumerate(VIEWS):
-            action = QAction(name, self, shortcut=QKeySequence(f"Ctrl+{i + 1}"))
+        # Panels of the current view, filled by show_view
+        self.view_menu = self.menuBar().addMenu("&View")
+        self._fill_view_menu()
+
+        # Switch views with Ctrl+1, Ctrl+2, ...
+        for i in range(len(VIEWS)):
+            action = QAction(self, shortcut=QKeySequence(f"Ctrl+{i + 1}"))
             action.triggered.connect(lambda _=False, i=i: self.show_view(i))
-            view_menu.addAction(action)
+            self.addAction(action)
 
         help_menu = self.menuBar().addMenu("&Help")
         about = QAction("&About", self)
@@ -65,6 +69,16 @@ class MainWindow(QMainWindow):
             lambda: QMessageBox.about(self, "esper", f"esper {__version__}\nPeaks extracted by alpinac.")
         )
         help_menu.addAction(about)
+
+    def _fill_view_menu(self) -> None:
+        self.view_menu.clear()
+        view = self.stack.currentWidget()
+        actions = view.panel_actions() if view is not None else []
+        for action in actions:
+            self.view_menu.addAction(action)
+        if not actions:
+            empty = self.view_menu.addAction("No panels for this view")
+            empty.setEnabled(False)
 
     def _build_statusbar(self) -> None:
         self.status_label = QLabel()
@@ -119,6 +133,7 @@ class MainWindow(QMainWindow):
             return
         self.stack.setCurrentIndex(index)
         self.view_buttons.button(index).setChecked(True)
+        self._fill_view_menu()
 
     def _update_status(self, fields=None) -> None:
         sel = self.selection

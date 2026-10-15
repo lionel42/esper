@@ -6,8 +6,18 @@ import html
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtGui import QDoubleValidator
-from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget, QWidgetAction
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QDoubleValidator
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+    QWidgetAction,
+)
 
 from esper.gui.data import TIC, EsperData
 from esper.gui.selection import Selection
@@ -32,6 +42,10 @@ OVERLAYS = {
 }
 # Above this number of overlaid curves, no legend
 MAX_LEGEND_ENTRIES = 12
+# Initial height of the absolute and relative plots
+SPLIT_RATIO = (3, 1)
+# Delay before rescaling the relative plot after a pan/zoom [ms]
+RESCALE_DELAY_MS = 100
 
 
 def _compound_label(name, compound_idx) -> str:
@@ -63,37 +77,35 @@ def peak_area(t: np.ndarray, y: np.ndarray, start: float, stop: float) -> float:
     return float(np.trapezoid(y[mask] - baseline, t[mask]))
 
 
-class ChromatogramView(QWidget):
-    def __init__(self, data: EsperData, selection: Selection, parent=None) -> None:
+class ChromatogramPanel(QWidget):
+    """Chromatogram of the selected measurement and mass, with the peaks found at that mass.
+
+    Below it, a relative plot with the overlaid masses scaled to the main one.
+    Redrawn on selection changes, only when visible.
+    """
+
+    relative_toggled = Signal(bool)
+
+    def __init__(
+        self,
+        data: EsperData,
+        selection: Selection,
+        show_info: bool = True,
+        relative: bool = True,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.data = data
         self.selection = selection
+        self.show_info = show_info
         self._dirty = True
-        self._cmp_items_mid = None
-        self._mass_items_key = None
         self._annotations: list = []
         self._overlay_items: list = []
+        self._rel_items: list = []
+        # Main and overlay chromatograms (t, y), for the relative plot
+        self._main_data: tuple[np.ndarray, np.ndarray] | None = None
+        self._overlay_data: list[tuple[np.ndarray, np.ndarray]] = []
 
-        # Toolbar
-        self.file_box = StepCombo("File:", min_width=200)
-        self.cmp_box = StepCombo("Cmp:", min_width=220)
-        self.mass_box = StepCombo("Mass:", min_width=70)
-        self.time_edit = QLineEdit()
-        self.time_edit.setValidator(QDoubleValidator(0, 1e6, 1))
-        self.time_edit.setMaximumWidth(80)
-
-        toolbar = QHBoxLayout()
-        toolbar.addWidget(self.file_box, 3)
-        toolbar.addSpacing(12)
-        toolbar.addWidget(self.cmp_box, 3)
-        toolbar.addSpacing(12)
-        toolbar.addWidget(self.mass_box, 1)
-        toolbar.addSpacing(12)
-        toolbar.addWidget(QLabel("Time:"))
-        toolbar.addWidget(self.time_edit)
-        toolbar.addStretch()
-
-        # Plot
         self.plot = pg.PlotWidget()
         self.plot.showGrid(x=False, y=False)
         self.plot.getAxis("bottom").setLabel("rt [s]")
@@ -109,41 +121,82 @@ class ChromatogramView(QWidget):
         self.mass_label.setParentItem(self.plot.getViewBox())
         self.mass_label.anchor(itemPos=(1, 0), parentPos=(1, 0), offset=(-10, 5))
         self.legend = self.plot.addLegend(offset=(-10, 30))
-        self._build_overlay_menu()
+
+        # Relative plot: the other masses scaled to the main one in the visible window
+        self.rel_plot = pg.PlotWidget()
+        self.rel_plot.setXLink(self.plot)
+        self.rel_plot.getAxis("bottom").setLabel("rt [s]")
+        self.rel_plot.getAxis("bottom").enableAutoSIPrefix(False)
+        self.rel_plot.getAxis("left").setWidth(75)
+        self.rel_plot.getAxis("left").setLabel("scaled")
+        self.rel_curve = self.rel_plot.plot(pen=pg.mkPen("k", width=1))
+        self.rel_curve.setClipToView(True)
+        self.rel_curve.setZValue(1)
+
+        self._rescale_timer = QTimer(self)
+        self._rescale_timer.setSingleShot(True)
+        self._rescale_timer.setInterval(RESCALE_DELAY_MS)
+        self._rescale_timer.timeout.connect(self._rescale_relative)
+        self.plot.sigXRangeChanged.connect(lambda *_: self._rescale_timer.start())
+
+        self._check_sets: list[dict[str, QCheckBox]] = []
+        for plot in (self.plot, self.rel_plot):
+            self._check_sets.append(self._build_overlay_menu(plot, relative))
+        self.overlay_checks = self._check_sets[0]
+
+        self.splitter = QSplitter(Qt.Orientation.Vertical)
+        self.splitter.addWidget(self.plot)
+        self.splitter.addWidget(self.rel_plot)
+        self.splitter.setChildrenCollapsible(True)
+        for i, stretch in enumerate(SPLIT_RATIO):
+            self.splitter.setStretchFactor(i, stretch)
+        self.rel_plot.setVisible(relative)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(toolbar)
-        layout.addWidget(self.plot, 1)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.splitter)
 
-        self.file_box.selected.connect(self._on_file_selected)
-        self.file_box.text_entered.connect(self._on_file_text)
-        self.cmp_box.selected.connect(self._on_cmp_selected)
-        self.cmp_box.text_entered.connect(self._on_cmp_text)
-        self.mass_box.selected.connect(self.selection.select_mass)
-        self.mass_box.text_entered.connect(self._on_mass_text)
-        self.time_edit.editingFinished.connect(self._on_time)
         self.selection.changed.connect(self._on_selection_changed)
 
-    def _build_overlay_menu(self) -> None:
-        """'Masses' submenu of the right click menu, with checkboxes so that it stays open."""
-        menu = self.plot.getViewBox().menu
+    def _build_overlay_menu(self, plot: pg.PlotWidget, relative: bool) -> dict[str, QCheckBox]:
+        """'Masses' submenu of the right click menu, with checkboxes so that it stays open.
+
+        Each plot has its own checkboxes, kept in sync by ``_on_check``.
+        """
+        menu = plot.getViewBox().menu
         menu.addSeparator()
         submenu = menu.addMenu("Masses")
-        self.overlay_checks: dict[str, QCheckBox] = {}
+        checks: dict[str, QCheckBox] = {}
 
-        def add_check(key: str, text: str) -> None:
+        def add_check(key: str, text: str, checked: bool = False) -> None:
             check = QCheckBox(text)
+            check.setChecked(checked)
             check.setStyleSheet("QCheckBox { padding: 3px 12px; }")
-            check.toggled.connect(lambda _: self.refresh(keep_range=True))
+            check.toggled.connect(lambda value: self._on_check(key, value))
             action = QWidgetAction(submenu)
             action.setDefaultWidget(check)
             submenu.addAction(action)
-            self.overlay_checks[key] = check
+            checks[key] = check
 
         for key, text in OVERLAYS.items():
             add_check(key, text)
         submenu.addSeparator()
-        add_check("scale", "scale to main mass")
+        add_check("relative", "relative plot", checked=relative)
+        return checks
+
+    def _on_check(self, key: str, value: bool) -> None:
+        for checks in self._check_sets:
+            checks[key].blockSignals(True)
+            checks[key].setChecked(value)
+            checks[key].blockSignals(False)
+        if key == "relative":
+            self.rel_plot.setVisible(value)
+            self.relative_toggled.emit(value)
+        else:
+            self.refresh(keep_range=True)
+
+    def set_relative_visible(self, visible: bool) -> None:
+        self.overlay_checks["relative"].setChecked(visible)
 
     def _overlay_masses(self) -> list[int | None]:
         """Masses to overlay on the main one (None: TIC), in display order."""
@@ -181,85 +234,88 @@ class ChromatogramView(QWidget):
         if self._dirty:
             self.refresh()
 
-    def _on_file_selected(self, measurement_id) -> None:
-        if measurement_id is not None:
-            self.selection.select_measurement(int(measurement_id))
-
-    def _on_file_text(self, text: str) -> None:
-        names = self.data.measurements["name"]
-        matching = names[names.str.contains(text, regex=False)]
-        if not matching.empty:
-            self.selection.select_measurement(int(matching.index[0]))
-
-    def _on_cmp_selected(self, compound_idx) -> None:
-        if compound_idx is not None and self.selection.measurement_id is not None:
-            self.selection.select_compound(self.selection.measurement_id, int(compound_idx))
-
-    def _on_cmp_text(self, text: str) -> None:
-        mid = self.selection.measurement_id
-        if mid is None:
-            return
-        compounds = self.data.compounds(mid)
-        names = compounds["compound_name"].dropna()
-        matching = names[names.str.lower() == text.lower()]
-        if matching.empty:
-            matching = names[names.str.contains(text, case=False, regex=False)]
-        if not matching.empty:
-            self.selection.select_cmp_name(matching.iloc[0])
-
-    def _on_mass_text(self, text: str) -> None:
-        text = text.strip().lower()
-        if text == "tic":
-            self.selection.select_mass(TIC)
-        elif text.isdigit():
-            self.selection.select_mass(int(text))
-
-    def _on_time(self) -> None:
-        text = self.time_edit.text().strip()
-        try:
-            rt = float(text)
-        except ValueError:
-            return
-        self.selection.select_rt(rt)
-
     # --- drawing --------------------------------------------------------------------
 
     def refresh(self, keep_range: bool = False) -> None:
         self._dirty = False
         sel = self.selection
         view_range = self.plot.viewRange()
-        self._update_toolbar()
         self._clear_annotations()
         self._clear_overlays()
         if sel.measurement_id is None:
             self.curve.clear()
+            self.rel_curve.clear()
             self.info_label.setText("")
             self.mass_label.setText("")
             return
 
         series = self.data.chromatogram(sel.measurement_id, sel.mass)
-        self.mass_label.setText("TIC" if sel.mass is TIC else f"m/z {sel.mass}")
-        self._update_info()
+        title = "TIC" if sel.mass is TIC else f"m/z {sel.mass}"
+        if not self.show_info:
+            name = self.data.measurements.loc[sel.measurement_id, "name"]
+            title = f"{name}   {html.escape(sel.cmp_name or '')}   {title}"
+        self.mass_label.setText(title if series is not None else f"{title} (no chromatogram)")
+        if self.show_info:
+            self._update_info()
+        else:
+            self.info_label.setText("")
         if series is None:
             self.curve.clear()
-            self.mass_label.setText(("TIC" if sel.mass is TIC else f"m/z {sel.mass}") + " (no chromatogram)")
+            self.rel_curve.clear()
             return
 
         t = series.index.to_numpy(dtype=float)
         y = series.to_numpy(dtype=float)
         self.curve.setData(t, y)
+        self.rel_curve.setData(t, y)
+        self._main_data = (t, y)
         self._annotate(t, y)
         if keep_range:
             self.plot.setRange(xRange=view_range[0], yRange=view_range[1], padding=0)
         else:
             self._set_range(t, y)
         self._draw_overlays(t, y)
+        self._rescale_relative()
 
     def _clear_overlays(self) -> None:
         for item in self._overlay_items:
             self.plot.removeItem(item)
+        for item in self._rel_items:
+            self.rel_plot.removeItem(item)
         self._overlay_items = []
+        self._rel_items = []
+        self._overlay_data = []
+        self._main_data = None
         self.legend.clear()
+
+    @staticmethod
+    def _add_curve(plot: pg.PlotWidget, t, y, color) -> pg.PlotDataItem:
+        item = plot.plot(t, y, pen=pg.mkPen(color, width=1))
+        # Only once in the plot: pyqtgraph fails if set before
+        item.setClipToView(True)
+        item.setDownsampling(auto=True, method="peak")
+        item.setZValue(-1)
+        return item
+
+    def _rescale_relative(self) -> None:
+        """Scale each overlay to the range of the main mass in the visible window."""
+        if self._main_data is None:
+            return
+        x0, x1 = self.plot.viewRange()[0]
+        t, y = self._main_data
+        window = (t >= x0) & (t <= x1)
+        if not window.any():
+            return
+        main_min, main_max = float(y[window].min()), float(y[window].max())
+        for item, (ty, yy) in zip(self._rel_items, self._overlay_data):
+            w = (ty >= x0) & (ty <= x1)
+            if not w.any():
+                continue
+            lo, hi = yy[w].min(), yy[w].max()
+            factor = (main_max - main_min) / (hi - lo) if hi > lo else 0.0
+            item.setData(ty, main_min + (yy - lo) * factor)
+        span = max(main_max - main_min, 1.0)
+        self.rel_plot.setYRange(main_min - 0.05 * span, main_max + 0.05 * span, padding=0)
 
     def _draw_overlays(self, t: np.ndarray, y: np.ndarray) -> None:
         """Other masses of the measurement, drawn in color behind the main mass."""
@@ -269,12 +325,6 @@ class ChromatogramView(QWidget):
             return
         # With all masses, read the whole file once instead of column by column
         frame = self.data.chromatogram_frame(sel.measurement_id) if len(masses) > 20 else None
-
-        x0, x1 = self.plot.viewRange()[0]
-        window = (t >= x0) & (t <= x1)
-        scale = self.overlay_checks["scale"].isChecked() and window.any()
-        if scale:
-            main_min, main_max = y[window].min(), y[window].max()
 
         n_colors = len(masses)
         show_legend = n_colors <= MAX_LEGEND_ENTRIES
@@ -290,56 +340,16 @@ class ChromatogramView(QWidget):
                 continue
             ty = series.index.to_numpy(dtype=float)
             yy = series.to_numpy(dtype=float)
-            if scale:
-                w = (ty >= x0) & (ty <= x1)
-                lo, hi = yy[w].min(), yy[w].max()
-                if hi > lo:
-                    yy = main_min + (yy - lo) * (main_max - main_min) / (hi - lo)
             if n_colors <= len(OVERLAY_COLORS):
                 color = OVERLAY_COLORS[i]
             else:
                 color = pg.intColor(i, hues=n_colors)
-            item = self.plot.plot(ty, yy, pen=pg.mkPen(color, width=1))
-            # Only once in the plot: pyqtgraph fails if set before
-            item.setClipToView(True)
-            item.setDownsampling(auto=True, method="peak")
-            item.setZValue(-1)
+            item = self._add_curve(self.plot, ty, yy, color)
             self._overlay_items.append(item)
+            self._rel_items.append(self._add_curve(self.rel_plot, ty, yy, color))
+            self._overlay_data.append((ty, yy))
             if show_legend:
                 self.legend.addItem(item, "TIC" if mass is TIC else f"m/z {mass}")
-
-    def _update_toolbar(self) -> None:
-        sel = self.selection
-        meas = self.data.measurements
-
-        if self.file_box.combo.count() != len(meas):
-            self.file_box.set_items([(name, int(mid)) for mid, name in meas["name"].items()])
-        self.file_box.set_current(sel.measurement_id)
-
-        if self._cmp_items_mid != sel.measurement_id:
-            self._cmp_items_mid = sel.measurement_id
-            items = []
-            if sel.measurement_id is not None:
-                compounds = self.data.compounds(sel.measurement_id)
-                items = [
-                    (f"{_compound_label(c.compound_name, idx)}  ({c.rt_mean_s:.1f})", int(idx))
-                    for idx, c in compounds.iterrows()
-                ]
-            self.cmp_box.set_items(items)
-        self.cmp_box.set_current(sel.compound_idx, sel.cmp_name)
-
-        key = (sel.measurement_id, sel.compound_idx)
-        if self._mass_items_key != key:
-            self._mass_items_key = key
-            if sel.measurement_id is not None and sel.compound_idx is not None:
-                peaks = self.data.compound_peaks(*key).sort_values("prominence", ascending=False)
-                masses = [int(m) for m in peaks["mass"].drop_duplicates()]
-            else:
-                masses = list(range(2, 301))
-            self.mass_box.set_items([("tic", TIC)] + [(str(m), m) for m in masses])
-        self.mass_box.set_current(sel.mass, "tic" if sel.mass is TIC else str(sel.mass))
-
-        self.time_edit.setText("" if sel.rt is None else f"{sel.rt:.1f}")
 
     def _update_info(self) -> None:
         sel = self.selection
@@ -456,3 +466,144 @@ class ChromatogramView(QWidget):
         span = max(top - bottom, 1.0)
         self.plot.setXRange(x0, x1, padding=0)
         self.plot.setYRange(bottom - 0.35 * span, top + 0.05 * span, padding=0)
+
+
+class ChromatogramView(QWidget):
+    """Toolbar (file, compound, mass, time) above a chromatogram panel."""
+
+    def __init__(self, data: EsperData, selection: Selection, parent=None) -> None:
+        super().__init__(parent)
+        self.data = data
+        self.selection = selection
+        self._cmp_items_mid = None
+        self._mass_items_key = None
+
+        # Toolbar
+        self.file_box = StepCombo("File:", min_width=200)
+        self.cmp_box = StepCombo("Cmp:", min_width=220)
+        self.mass_box = StepCombo("Mass:", min_width=70)
+        self.time_edit = QLineEdit()
+        self.time_edit.setValidator(QDoubleValidator(0, 1e6, 1))
+        self.time_edit.setMaximumWidth(80)
+
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(self.file_box, 3)
+        toolbar.addSpacing(12)
+        toolbar.addWidget(self.cmp_box, 3)
+        toolbar.addSpacing(12)
+        toolbar.addWidget(self.mass_box, 1)
+        toolbar.addSpacing(12)
+        toolbar.addWidget(QLabel("Time:"))
+        toolbar.addWidget(self.time_edit)
+        toolbar.addStretch()
+
+        self.panel = ChromatogramPanel(data, selection)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(toolbar)
+        layout.addWidget(self.panel, 1)
+
+        # Optional panels, listed in the View menu
+        self.relative_action = QAction("Relative chromatograms", self, checkable=True, checked=True)
+        self.relative_action.toggled.connect(self.panel.set_relative_visible)
+        self.panel.relative_toggled.connect(self.relative_action.setChecked)
+
+        self.file_box.selected.connect(self._on_file_selected)
+        self.file_box.text_entered.connect(self._on_file_text)
+        self.cmp_box.selected.connect(self._on_cmp_selected)
+        self.cmp_box.text_entered.connect(self._on_cmp_text)
+        self.mass_box.selected.connect(self.selection.select_mass)
+        self.mass_box.text_entered.connect(self._on_mass_text)
+        self.time_edit.editingFinished.connect(self._on_time)
+        self.selection.changed.connect(self._on_selection_changed)
+
+    def panel_actions(self) -> list[QAction]:
+        return [self.relative_action]
+
+    def _on_selection_changed(self, fields: set) -> None:
+        if self.isVisible():
+            self._update_toolbar()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._update_toolbar()
+
+    def _on_file_selected(self, measurement_id) -> None:
+        if measurement_id is not None:
+            self.selection.select_measurement(int(measurement_id))
+
+
+    def _on_file_text(self, text: str) -> None:
+        names = self.data.measurements["name"]
+        matching = names[names.str.contains(text, regex=False)]
+        if not matching.empty:
+            self.selection.select_measurement(int(matching.index[0]))
+
+
+    def _on_cmp_selected(self, compound_idx) -> None:
+        if compound_idx is not None and self.selection.measurement_id is not None:
+            self.selection.select_compound(self.selection.measurement_id, int(compound_idx))
+
+
+    def _on_cmp_text(self, text: str) -> None:
+        mid = self.selection.measurement_id
+        if mid is None:
+            return
+        compounds = self.data.compounds(mid)
+        names = compounds["compound_name"].dropna()
+        matching = names[names.str.lower() == text.lower()]
+        if matching.empty:
+            matching = names[names.str.contains(text, case=False, regex=False)]
+        if not matching.empty:
+            self.selection.select_cmp_name(matching.iloc[0])
+
+
+    def _on_mass_text(self, text: str) -> None:
+        text = text.strip().lower()
+        if text == "tic":
+            self.selection.select_mass(TIC)
+        elif text.isdigit():
+            self.selection.select_mass(int(text))
+
+
+    def _on_time(self) -> None:
+        text = self.time_edit.text().strip()
+        try:
+            rt = float(text)
+        except ValueError:
+            return
+        self.selection.select_rt(rt)
+
+
+    def _update_toolbar(self) -> None:
+        sel = self.selection
+        meas = self.data.measurements
+
+        if self.file_box.combo.count() != len(meas):
+            self.file_box.set_items([(name, int(mid)) for mid, name in meas["name"].items()])
+        self.file_box.set_current(sel.measurement_id)
+
+        if self._cmp_items_mid != sel.measurement_id:
+            self._cmp_items_mid = sel.measurement_id
+            items = []
+            if sel.measurement_id is not None:
+                compounds = self.data.compounds(sel.measurement_id)
+                items = [
+                    (f"{_compound_label(c.compound_name, idx)}  ({c.rt_mean_s:.1f})", int(idx))
+                    for idx, c in compounds.iterrows()
+                ]
+            self.cmp_box.set_items(items)
+        self.cmp_box.set_current(sel.compound_idx, sel.cmp_name)
+
+        key = (sel.measurement_id, sel.compound_idx)
+        if self._mass_items_key != key:
+            self._mass_items_key = key
+            if sel.measurement_id is not None and sel.compound_idx is not None:
+                peaks = self.data.compound_peaks(*key).sort_values("prominence", ascending=False)
+                masses = [int(m) for m in peaks["mass"].drop_duplicates()]
+            else:
+                masses = list(range(2, 301))
+            self.mass_box.set_items([("tic", TIC)] + [(str(m), m) for m in masses])
+        self.mass_box.set_current(sel.mass, "tic" if sel.mass is TIC else str(sel.mass))
+
+        self.time_edit.setText("" if sel.rt is None else f"{sel.rt:.1f}")

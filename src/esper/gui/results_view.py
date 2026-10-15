@@ -5,15 +5,19 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pyqtgraph as pg
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAction
+from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QSplitter, QVBoxLayout, QWidget
 
+from esper.gui.chromatogram_view import ChromatogramPanel
 from esper.gui.data import EsperData
 from esper.gui.selection import Selection
 from esper.gui.style import COLORS, CROSS
 from esper.gui.widgets import StepCombo
 
 ALL = "all"
+# Initial height of the results plot and of the chromatogram below it
+SPLIT_RATIO = (2, 1)
 
 # Label -> column of EsperData.results
 Y_OPTIONS = {
@@ -74,9 +78,21 @@ class ResultsView(QWidget):
         self.highlight = pg.ScatterPlotItem(symbol=CROSS, size=50, pen=pg.mkPen("c", width=2), brush=None)
         self.highlight.setZValue(10)
 
+        # Chromatogram of the selected point
+        self.chromatogram = ChromatogramPanel(data, selection, show_info=False, relative=False)
+        self.splitter = QSplitter(Qt.Orientation.Vertical)
+        self.splitter.addWidget(self.plot)
+        self.splitter.addWidget(self.chromatogram)
+        for i, stretch in enumerate(SPLIT_RATIO):
+            self.splitter.setStretchFactor(i, stretch)
+
         layout = QVBoxLayout(self)
         layout.addLayout(toolbar)
-        layout.addWidget(self.plot, 1)
+        layout.addWidget(self.splitter, 1)
+
+        # Optional panels, listed in the View menu
+        self.chromatogram_action = QAction("Chromatogram", self, checkable=True, checked=True)
+        self.chromatogram_action.toggled.connect(self.chromatogram.setVisible)
 
         self.cmp_box.selected.connect(self.selection.select_cmp_name)
         self.cmp_box.text_entered.connect(self._on_cmp_text)
@@ -85,6 +101,9 @@ class ResultsView(QWidget):
         self.y_combo.currentIndexChanged.connect(lambda _: self.redraw())
         self.valid_only.toggled.connect(self._on_valid_only)
         self.selection.changed.connect(self._on_selection_changed)
+
+    def panel_actions(self) -> list[QAction]:
+        return [self.chromatogram_action]
 
     # --- selection ------------------------------------------------------------------
 
