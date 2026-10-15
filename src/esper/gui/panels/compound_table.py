@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QCheckBox
 
 from esper.gui.data import EsperData
 from esper.gui.panels.chromatogram import compound_label
-from esper.gui.panels.table import Column, TablePanel
+from esper.gui.panels.table import Column, TablePanel, bool_color, score_color
 from esper.gui.selection import Selection
 
 
@@ -18,19 +18,19 @@ class CompoundTablePanel(TablePanel):
     title = "Compounds"
     watches = {"measurement_id"}
     follows = {"compound_idx"}
-    default_sort = ("rt_mean_s", Qt.SortOrder.AscendingOrder)
+    default_sort = ("compound_idx", Qt.SortOrder.AscendingOrder)
 
     columns = [
+        Column("compound_idx", "#", "{:d}", "Compound index in pipeline.nc"),
         Column("rt_mean_s", "rt", "{:.1f}", "Mean retention time of the peaks [s]"),
         Column("retention_index", "RI", "{:.1f}", "Retention index"),
         Column("name", "name"),
-        Column("best_score", "score", "{:.3f}", "Score of the best library match"),
-        Column("best_score_combined", "comb.", "{:.3f}", "Score combined with the RI difference"),
-        Column("valid_candidate", "valid", lambda v: "✓" if v else "", "Valid candidate"),
+        Column("best_score", "score", "{:.3f}", "Score of the best library match", score_color),
+        Column("best_score_combined", "comb.", "{:.3f}", "Score combined with the RI difference", score_color),
+        Column("valid_candidate", "valid", lambda v: "✓" if v else "", "Valid candidate", bool_color),
         Column("n_peaks", "peaks", "{:d}", "Number of peaks (masses) of the compound"),
         Column("main_ion", "ion", "{:d}", "Most prominent mass"),
         Column("best_spectrum", "spectrum", tooltip="Library spectrum of the best match"),
-        Column("compound_idx", "#", "{:d}", "Compound index in pipeline.nc"),
     ]
 
     def __init__(self, data: EsperData, selection: Selection, parent=None) -> None:

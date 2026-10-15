@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import QCheckBox, QVBoxLayout, QWidgetAction
 
 from esper.gui.data import TIC, EsperData
+from esper.integration import integration_bounds, peak_area
 from esper.gui.panels.base import BasePanel
 from esper.gui.plotting import add_curve, make_plot
 from esper.gui.selection import Selection
@@ -20,8 +21,6 @@ from esper.gui.style import OVERLAY_COLORS
 RT_HALF_WINDOW = 30.0
 # Headroom above the selected peak
 Y_ZOOM = 1.5
-# Integration bounds, in half widths at half maximum from the apex (~3.5 sigma for a gaussian)
-N_HWHM = 3.0
 # Overlays: key -> menu text. 'rankN' is the Nth most prominent mass of the selected compound.
 OVERLAYS = {
     "rank2": "2nd mass",
@@ -50,31 +49,6 @@ def compound_label(name, compound_idx) -> str:
 
 def mass_label(mass: int | None) -> str:
     return "TIC" if mass is TIC else f"m/z {mass}"
-
-
-def integration_bounds(peaks, t: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Start and end of each peak [s].
-
-    ``start_s``/``stop_s`` are the half maximum crossings, the peak is extended
-    to ``N_HWHM`` half widths on each side but not beyond its prominence bases.
-    """
-    rt, start_hm, stop_hm = (peaks[c].to_numpy(dtype=float) for c in ("rt_s", "start_s", "stop_s"))
-    last = len(t) - 1
-    left_base = t[np.clip(peaks["left_base_scan"].to_numpy(), 0, last)]
-    right_base = t[np.clip(peaks["right_base_scan"].to_numpy(), 0, last)]
-    start = np.maximum(rt - N_HWHM * (rt - start_hm), left_base)
-    stop = np.minimum(rt + N_HWHM * (stop_hm - rt), right_base)
-    return start, stop
-
-
-def peak_area(t: np.ndarray, y: np.ndarray, start: float, stop: float) -> float:
-    """Area above the straight baseline between start and stop [counts * s]."""
-    mask = (t >= start) & (t <= stop)
-    if mask.sum() < 2:
-        return np.nan
-    y_start, y_stop = np.interp([start, stop], t, y)
-    baseline = np.interp(t[mask], [start, stop], [y_start, y_stop])
-    return float(np.trapezoid(y[mask] - baseline, t[mask]))
 
 
 @dataclass

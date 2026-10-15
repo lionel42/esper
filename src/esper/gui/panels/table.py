@@ -8,15 +8,19 @@ from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
-from PySide6.QtCore import QAbstractTableModel, QItemSelectionModel, QModelIndex, QSortFilterProxyModel, Qt
+from PySide6.QtGui import QColor
+from PySide6.QtCore import QAbstractTableModel, QItemSelectionModel, QModelIndex, QSortFilterProxyModel, Qt, QTimer
 from PySide6.QtWidgets import QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QTableView, QVBoxLayout
 
 from esper.gui.data import EsperData
 from esper.gui.panels.base import BasePanel
 from esper.gui.selection import Selection
+from esper.gui.style import QUALITY_COLORS, RI_DIFF_THRESHOLDS, SCORE_THRESHOLDS
 
 SORT_ROLE = Qt.ItemDataRole.UserRole
 ROW_HEIGHT = 20
+# Delay before reloading a table searched in its source (``search_reloads``) [ms]
+SEARCH_DELAY_MS = 250
 # Initial width limit of a column (long names), the user can widen it
 MAX_COLUMN_WIDTH = 220
 
@@ -25,18 +29,41 @@ def _missing(value) -> bool:
     return value is None or (isinstance(value, float) and math.isnan(value)) or value is pd.NA
 
 
+def score_color(value) -> str | None:
+    """Background of a spectral score (0-1): high is good."""
+    for threshold, color in zip(SCORE_THRESHOLDS, QUALITY_COLORS):
+        if value >= threshold:
+            return color
+    return QUALITY_COLORS[-1]
+
+
+def ri_diff_color(value) -> str | None:
+    """Background of a retention index difference: close to 0 is good."""
+    for threshold, color in zip(RI_DIFF_THRESHOLDS, QUALITY_COLORS):
+        if abs(value) <= threshold:
+            return color
+    return QUALITY_COLORS[-1]
+
+
+def bool_color(value) -> str | None:
+    """Background of a yes/no column: green or red."""
+    return QUALITY_COLORS[0] if value else QUALITY_COLORS[-1]
+
+
 @dataclass
 class Column:
     """A column of a table panel.
 
     ``key`` is the column of the loaded DataFrame, ``fmt`` a format string
-    (e.g. ``"{:.1f}"``) or a function giving the displayed text.
+    (e.g. ``"{:.1f}"``) or a function giving the displayed text, ``color`` a
+    function giving the background color of a (non missing) value.
     """
 
     key: str
     header: str
     fmt: str | Callable[[Any], str] | None = None
     tooltip: str = ""
+    color: Callable[[Any], str | None] | None = None
 
     def text(self, value) -> str:
         if _missing(value):
@@ -94,6 +121,11 @@ class DataFrameModel(QAbstractTableModel):
             if _missing(value):
                 return float("-inf") if self._numeric[index.column()] else ""
             return value if isinstance(value, (int, float, str)) else str(value)
+        if role == Qt.ItemDataRole.BackgroundRole:
+            if column.color is None or _missing(value):
+                return None
+            color = column.color(value)
+            return QColor(color) if color else None
         if role == Qt.ItemDataRole.TextAlignmentRole:
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -122,12 +154,17 @@ class TablePanel(BasePanel):
 
     and may override ``filter_rows`` and add widgets to ``self.toolbar``.
     ``watches`` triggers a reload, ``follows`` only moves the current row.
+
+    The text box filters the loaded rows; with ``search_reloads`` it is a
+    search passed to ``load()`` instead (``self.search_text``).
     """
 
     columns: list[Column] = []
     follows: set[str] = set()
     # Initial sorting: (key of the column, order)
     default_sort: tuple[str, Qt.SortOrder] | None = None
+    # The text box searches in the source (reload) instead of filtering the rows
+    search_reloads = False
 
     def __init__(self, data: EsperData, selection: Selection, parent=None) -> None:
         super().__init__(data, selection, parent)
@@ -162,6 +199,10 @@ class TablePanel(BasePanel):
         self.filter_edit.setPlaceholderText("Filter…")
         self.filter_edit.setClearButtonEnabled(True)
         self.filter_edit.textChanged.connect(self._on_filter_text)
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(SEARCH_DELAY_MS)
+        self._search_timer.timeout.connect(self.invalidate)
         self.count_label = QLabel(self)
 
         self.toolbar = QHBoxLayout()
@@ -215,9 +256,19 @@ class TablePanel(BasePanel):
         self.show_current()
 
     def _update_count(self) -> None:
-        self.count_label.setText(f"{self.proxy.rowCount()} / {len(self._frame)}")
+        if self.search_reloads:
+            self.count_label.setText(f"{self.proxy.rowCount()}")
+        else:
+            self.count_label.setText(f"{self.proxy.rowCount()} / {len(self._frame)}")
+
+    @property
+    def search_text(self) -> str:
+        return self.filter_edit.text().strip()
 
     def _on_filter_text(self, text: str) -> None:
+        if self.search_reloads:
+            self._search_timer.start()
+            return
         self.proxy.setFilterFixedString(text)
         self._update_count()
         self.show_current()

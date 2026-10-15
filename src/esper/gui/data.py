@@ -16,6 +16,8 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from esper import db
+from esper.integration import integration_bounds, peak_area
+from esper.libraries import Spectrum
 from esper.targets import interp_extrapolate
 
 TIC = None  # mass value standing for the total ion chromatogram
@@ -98,6 +100,41 @@ class EsperData:
     def compound_peaks(self, measurement_id: int, compound_idx: int) -> pd.DataFrame:
         peaks = self.peaks(measurement_id)
         return peaks[peaks["compound_idx"] == compound_idx]
+
+    @lru_cache(maxsize=64)
+    def compound_spectrum(self, measurement_id: int, compound_idx: int, intensity: str) -> Spectrum:
+        """Spectrum of a compound: unit masses and 'prominence', 'height' or 'area' of its peaks.
+
+        Peaks on the same unit mass are summed. The area is integrated in the
+        chromatograms (reads the chromatogram of every mass of the compound).
+        """
+        peaks = self.compound_peaks(measurement_id, compound_idx)
+        if intensity != "area":
+            return Spectrum.from_pairs(peaks["mass"], peaks[intensity])
+        masses, areas = [], []
+        for mass, group in peaks.groupby("mass"):
+            series = self.chromatogram(measurement_id, int(mass))
+            if series is None:
+                continue
+            t = series.index.to_numpy(dtype=float)
+            y = series.to_numpy(dtype=float)
+            start, stop = integration_bounds(group, t)
+            for a, b in zip(start, stop):
+                masses.append(mass)
+                areas.append(max(peak_area(t, y, a, b), 0.0))
+        return Spectrum.from_pairs(masses, np.nan_to_num(areas))
+
+    @lru_cache(maxsize=32)
+    def _candidates(self, measurement_id: int) -> pd.DataFrame:
+        return self._query(
+            "SELECT * FROM compound_candidate WHERE measurement_id = ? ORDER BY compound_idx, rank",
+            (int(measurement_id),),
+        )
+
+    def candidates(self, measurement_id: int, compound_idx: int) -> pd.DataFrame:
+        """The library candidates of a compound found by alpinac, by rank."""
+        df = self._candidates(measurement_id)
+        return df[df["compound_idx"] == compound_idx]
 
     def main_ion(self, measurement_id: int, compound_idx: int) -> int | None:
         """Mass of the most prominent peak of the compound."""

@@ -9,6 +9,7 @@ from esper.gui.data import TIC, EsperData
 from esper.gui.panels.base import BasePanel
 from esper.gui.panels.chromatogram import ChromatogramPanel, RelativeChromatogramPanel, compound_label
 from esper.gui.panels.compound_table import CompoundTablePanel
+from esper.gui.panels.matches import BestMatchesPanel
 from esper.gui.panels.spectrum import SpectrumPanel
 from esper.gui.panels.target_table import TargetTablePanel
 from esper.gui.selection import Selection
@@ -140,4 +141,5 @@ class ChromatogramsView(BaseView):
         self.relative = self.add_panel(RelativeChromatogramPanel(self.chromatogram), stretch=1, optional=True)
         self.compounds = self.add_panel(CompoundTablePanel(data, selection), optional=True, left=True)
         self.targets = self.add_panel(TargetTablePanel(data, selection), optional=True, left=True)
+        self.best_matches = self.add_panel(BestMatchesPanel(data, selection), optional=True, left=True)
         self.spectrum = self.add_panel(SpectrumPanel(data, selection, chromatogram=self.chromatogram), stretch=1, optional=True)

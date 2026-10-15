@@ -13,11 +13,19 @@ pip install -e .
 
 ```
 esper upload /path/to/alpinac/results /path/to/esper/data   # import / update
+esper targets /shared/data/substances.xlsx /path/to/esper/data  # import the target compounds
 esper gui /path/to/esper/data                               # open the GUI
 ```
 
 `upload` accepts a single `.alpinac` folder or a directory searched recursively.
 Measurements whose `pipeline.nc` did not change are skipped (`--force` to reimport).
+
+`targets` replaces all the target compounds of the database. The source is read by a loader
+chosen from its file suffix (`esper.targets.LOADERS`); the Excel loader uses alpinac's
+`load_excel_compounds` and the Q0–Q8 ion columns. The retention index of a target comes from
+its rt in the reference run and alpinac's RI references, extrapolated linearly beyond the
+first/last reference. To use another source, write a function returning `esper.targets.Targets`
+and register it in `LOADERS`.
 
 `esper gui` without argument uses `$ESPER_DATA_DIR`, or File > Open.
 
@@ -38,9 +46,43 @@ Measurements whose `pipeline.nc` did not change are skipped (`--force` to reimpo
   window and the 3 main masses from the selected compound. Click / double click as in Results.
   The retention index of a peak is the one of its compound.
 
-The View menu lists the optional panels of the current view: relative chromatograms
-(Chromatograms), chromatogram of the selected point (Results). Panel heights are adjustable
+The View menu lists the optional panels of the current view: compound table, relative
+chromatograms and spectrum (Chromatograms), chromatogram and spectrum of the selected point (Results). The
+spectrum shows one stick per mass of the selected compound (prominence, % of the largest);
+the masses plotted in the chromatogram panel of the same view have the same colors there
+(main mass black, others grey). Clicking a stick selects that mass. Panel heights are adjustable
 with the splitters.
+
+The target table (left of Chromatograms, below the compounds) lists the targets with their RI,
+the rt expected in the selected measurement (from the RI and the measurement's reference
+compounds), whether they are found (a compound is named after the target or an alias) and
+their expected ions. Choosing a target selects its compound if found; otherwise the
+chromatogram goes to the expected rt with the target ions overlaid (whole run if the target
+has no RI). The expected rt is a dashed line in the chromatogram, the expected ions dashed
+lines in the spectrum. Changing measurement follows the target.
+
+The spectrum is compared with a library spectrum mirrored below it (default: alpinac's best
+candidate; right click > Reference library to show it from another library), with the cosine
+score computed live. The **Best matches** table in the left column (the compound against all
+spectra of the enabled libraries, computed only while shown) chooses another reference. Its
+search box searches the spectra of all the configured libraries, also the disabled ones, by
+`library/name` (e.g. `nist_ch/` or `CFC-11`), scored against the compound.
+
+File > Settings (saved in `~/.config/esper/settings.json`):
+- intensity of the measured peaks: prominence (default), height or area (integrated in the
+  chromatograms, slower);
+- spectral libraries (peaksdb folders: NIST `.jdx` and alpinac fragment `.txt` files, read like
+  peaksdb's `db_reader` but without it, whose import takes seconds), checked = used, ordered by
+  priority: a spectrum in several libraries is taken from the first one. alpinac's references
+  (`mygu_X`, `nist_X`) are looked up in the libraries of that family (`mygu…`, `nist…`).
+  Libraries are read in the background when first needed (progress in the status bar) and
+  kept in memory;
+- matching (alpinac's processing): cutoff mass, ignored masses, normalization, number of best
+  matches. The score is the cosine of the unit mass spectra (same as matchms `CosineGreedy`).
+
+The compound table (left of Chromatograms) lists the compounds extracted in the selected
+measurement (rt, RI, name, scores, valid, number of peaks, main ion); it is sortable, has a
+text filter and a "valid only" filter, and choosing a row selects the compound.
 
 A is computed by esper from the chromatogram, above a straight baseline over
 ±3 half widths at half maximum, limited to the prominence bases of the peak.
@@ -53,7 +95,10 @@ A is computed by esper from the chromatogram, above a straight baseline over
 - **Panels** (`panels/`) show something for the current selection (`BasePanel`). They are
   redrawn when the selection fields they `watch` change, only while visible; a hidden panel
   is redrawn when shown. A panel implements `redraw()` and calls `invalidate()` when its own
-  options change.
+  options change. Panels go in the main stack or in the left column (`left=True`).
+- **Table panels** (`panels/table.py`, `TablePanel`) declare their `columns` and implement
+  `load()` (rows indexed by item key), `current_key()` and `select(key)`; sorting, text
+  filter, row count and following the selection are shared.
 - **Selection** (`selection.py`) is the state shared by all panels: measurement, compound,
   compound name, mass, rt.
 - **EsperData** (`data.py`) queries the database and the chromatogram files on demand, with

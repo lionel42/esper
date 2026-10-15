@@ -14,6 +14,10 @@ class Selection(QObject):
     selected compound, or a target chosen in the target table (which may not
     be found in the measurement, then ``compound_idx`` is None).
 
+    ``reference`` is the library spectrum compared with the compound, as
+    (library, name); None means the default (alpinac's best candidate). It is
+    reset when the compound or the measurement changes.
+
     ``changed`` is emitted with the set of fields that changed.
     """
 
@@ -28,8 +32,13 @@ class Selection(QObject):
         self.mass: int | None = None  # None: TIC
         self.rt: float | None = None
         self.target: str | None = None
+        self.reference: tuple[str, str] | None = None
 
     def _set(self, **values) -> None:
+        if "reference" not in values and {"measurement_id", "compound_idx"} & {
+            k for k, v in values.items() if getattr(self, k) != v
+        }:
+            values["reference"] = None
         changed = {k for k, v in values.items() if getattr(self, k) != v}
         for k in changed:
             setattr(self, k, values[k])
@@ -113,6 +122,9 @@ class Selection(QObject):
             if compound_idx is not None:
                 values.update(self._compound_values(self.measurement_id, compound_idx))
         self._set(**values)
+
+    def select_reference(self, reference: tuple[str, str] | None) -> None:
+        self._set(reference=reference)
 
     def select_mass(self, mass: int | None) -> None:
         self._set(mass=mass)

@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QCheckBox
 
 from esper.gui.data import EsperData
-from esper.gui.panels.table import Column, TablePanel
+from esper.gui.panels.table import Column, TablePanel, bool_color
 from esper.gui.selection import Selection
 
 
@@ -27,7 +27,10 @@ class TargetTablePanel(TablePanel):
         Column("name", "name"),
         Column("ri", "RI", "{:.1f}", "Expected retention index"),
         Column("expected_rt", "exp. rt", "{:.1f}", "rt expected in this measurement, from the RI [s]"),
-        Column("found", "found", lambda v: "✓" if v else "", "A compound of this measurement is identified as the target"),
+        Column(
+            "found", "found", lambda v: "✓" if v else "",
+            "A compound of this measurement is identified as the target", bool_color,
+        ),
         Column("ions", "ions", tooltip="Expected unit masses, main ion first"),
         Column("formula", "formula"),
         Column("cas", "CAS"),

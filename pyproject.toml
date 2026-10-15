@@ -17,6 +17,7 @@ dependencies = [
     "h5netcdf",
     "PySide6",
     "pyqtgraph",
+    "jcamp",
 ]
 
 [project.scripts]

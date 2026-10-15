@@ -14,12 +14,14 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QStackedWidget,
 )
 
 from esper import __version__
 from esper.gui.data import EsperData
+from esper.gui.library_loader import library_loader
 from esper.gui.selection import Selection
 from esper.gui.views.base import BaseView
 from esper.gui.views.chromatograms import ChromatogramsView
@@ -51,6 +53,9 @@ class MainWindow(QMainWindow):
         open_action = QAction("&Open data directory…", self, shortcut=QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self._ask_data_dir)
         file_menu.addAction(open_action)
+        settings_action = QAction("&Settings…", self, shortcut=QKeySequence("Ctrl+,"))
+        settings_action.triggered.connect(self._open_settings)
+        file_menu.addAction(settings_action)
         quit_action = QAction("&Quit", self, shortcut=QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
@@ -85,6 +90,19 @@ class MainWindow(QMainWindow):
     def _build_statusbar(self) -> None:
         self.status_label = QLabel()
         self.statusBar().addWidget(self.status_label, 1)
+        # Background reading of the spectral libraries
+        self.library_progress = QProgressBar()
+        self.library_progress.setMaximumWidth(260)
+        self.library_progress.setFormat("%v / %m")
+        self.library_progress.hide()
+        self.library_label = QLabel()
+        self.library_label.hide()
+        self.statusBar().addPermanentWidget(self.library_label)
+        self.statusBar().addPermanentWidget(self.library_progress)
+        loader = library_loader()
+        loader.progress.connect(self._on_library_progress)
+        loader.busy.connect(self._on_library_busy)
+
         self.view_buttons = QButtonGroup(self)
         for i, view_class in enumerate(VIEWS):
             button = QPushButton(view_class.title)
@@ -93,6 +111,23 @@ class MainWindow(QMainWindow):
             self.view_buttons.addButton(button, i)
             self.statusBar().addPermanentWidget(button)
         self.view_buttons.idClicked.connect(self.show_view)
+
+    def _on_library_progress(self, library: str, done: int, total: int) -> None:
+        self.library_label.setText(f"Loading library {library}")
+        self.library_progress.setMaximum(total)
+        self.library_progress.setValue(done)
+
+    def _on_library_busy(self, busy: bool) -> None:
+        self.library_label.setVisible(busy)
+        self.library_progress.setVisible(busy)
+        if busy:
+            self.library_label.setText("Loading libraries")
+            self.library_progress.setValue(0)
+
+    def _open_settings(self) -> None:
+        from esper.gui.settings_dialog import SettingsDialog
+
+        SettingsDialog(self).exec()
 
     def _ask_data_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Open esper data directory")
