@@ -26,6 +26,9 @@ Measurements whose `pipeline.nc` did not change are skipped (`--force` to reimpo
 - **Chromatograms** (Ctrl+1): one mass of one measurement around the selected compound,
   with the peaks found at that mass (baseline, rt, compound, height H, area A, width W).
   Click on a peak apex to select its compound. Changing file keeps the compound and the mass.
+  Right click > Masses overlays other chromatograms: 2nd to 5th most prominent mass of the
+  compound, all compound masses, all masses, TIC; "scale to main mass" rescales each overlay
+  to the main mass in the visible window.
 - **Results** (Ctrl+2): one compound (Cmp) across all measurements. Click a point to select
   that measurement/compound, double click to open its chromatogram.
 - **Search** (Ctrl+3): peaks of some masses (e.g. `85, 87 101-103`) in an rt or retention
