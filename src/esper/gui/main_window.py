@@ -19,13 +19,15 @@ from PySide6.QtWidgets import (
 )
 
 from esper import __version__
-from esper.gui.chromatogram_view import ChromatogramView
 from esper.gui.data import EsperData
-from esper.gui.results_view import ResultsView
-from esper.gui.search_view import SearchView
 from esper.gui.selection import Selection
+from esper.gui.views.base import BaseView
+from esper.gui.views.chromatograms import ChromatogramsView
+from esper.gui.views.results import ResultsView
+from esper.gui.views.search import SearchView
 
-VIEWS = ["Chromatograms", "Results", "Search"]
+# Tabs, in order; the first one shows the chromatogram of the selection
+VIEWS: list[type[BaseView]] = [ChromatogramsView, ResultsView, SearchView]
 
 
 class MainWindow(QMainWindow):
@@ -84,8 +86,8 @@ class MainWindow(QMainWindow):
         self.status_label = QLabel()
         self.statusBar().addWidget(self.status_label, 1)
         self.view_buttons = QButtonGroup(self)
-        for i, name in enumerate(VIEWS):
-            button = QPushButton(name)
+        for i, view_class in enumerate(VIEWS):
+            button = QPushButton(view_class.title)
             button.setCheckable(True)
             button.setFlat(True)
             self.view_buttons.addButton(button, i)
@@ -114,14 +116,12 @@ class MainWindow(QMainWindow):
         self.data = data
         self.selection = Selection(data)
         self.selection.changed.connect(self._update_status)
-        self.chromatogram_view = ChromatogramView(data, self.selection)
-        self.results_view = ResultsView(data, self.selection)
-        self.results_view.open_chromatogram.connect(lambda: self.show_view(0))
-        self.stack.addWidget(self.chromatogram_view)
-        self.stack.addWidget(self.results_view)
-        self.search_view = SearchView(data, self.selection)
-        self.search_view.open_chromatogram.connect(lambda: self.show_view(0))
-        self.stack.addWidget(self.search_view)
+        self.views: list[BaseView] = []
+        for view_class in VIEWS:
+            view = view_class(data, self.selection)
+            view.open_chromatogram.connect(lambda: self.show_view(0))
+            self.stack.addWidget(view)
+            self.views.append(view)
         self.setWindowTitle(f"esper - {data_dir}")
 
         if not data.measurements.empty:
