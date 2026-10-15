@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel
 from esper.gui.data import EsperData
 from esper.gui.panels.chromatogram import ChromatogramPanel
 from esper.gui.panels.results_plot import ALL, X_OPTIONS, Y_OPTIONS, ResultsPlotPanel
+from esper.gui.panels.spectrum import SpectrumPanel
 from esper.gui.selection import Selection
 from esper.gui.views.base import BaseView
 from esper.gui.widgets import StepCombo
@@ -47,6 +48,7 @@ class ResultsView(BaseView):
         self.chromatogram = self.add_panel(
             ChromatogramPanel(data, selection, show_info=False), stretch=1, optional=True
         )
+        self.spectrum = self.add_panel(SpectrumPanel(data, selection, chromatogram=self.chromatogram), stretch=1, optional=True)
 
         self.cmp_box.selected.connect(self.selection.select_cmp_name)
         self.cmp_box.text_entered.connect(self._on_cmp_text)

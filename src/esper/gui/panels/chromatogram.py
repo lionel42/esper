@@ -75,6 +75,7 @@ def peak_area(t: np.ndarray, y: np.ndarray, start: float, stop: float) -> float:
 
 @dataclass
 class Curve:
+    mass: int | None  # None: TIC
     label: str
     t: np.ndarray
     y: np.ndarray
@@ -215,7 +216,7 @@ class ChromatogramPanel(BasePanel):
         else:
             self._set_range(t, y)
         overlays = self._draw_overlays()
-        self.curves_changed.emit(Curve(mass_label(sel.mass), t, y, "k"), overlays)
+        self.curves_changed.emit(Curve(sel.mass, mass_label(sel.mass), t, y, "k"), overlays)
 
     def _clear(self) -> None:
         for item in self._annotations + self._overlay_items:
@@ -246,7 +247,7 @@ class ChromatogramPanel(BasePanel):
             if series is None:
                 continue
             color = OVERLAY_COLORS[i] if n <= len(OVERLAY_COLORS) else pg.intColor(i, hues=n)
-            curve = Curve(mass_label(mass), series.index.to_numpy(dtype=float), series.to_numpy(dtype=float), color)
+            curve = Curve(mass, mass_label(mass), series.index.to_numpy(dtype=float), series.to_numpy(dtype=float), color)
             item = add_curve(self.plot, curve.t, curve.y, color)
             self._overlay_items.append(item)
             curves.append(curve)

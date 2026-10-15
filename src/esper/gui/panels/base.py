@@ -26,6 +26,8 @@ class BasePanel(QWidget):
 
     # Ask the main window to show the chromatogram of the selection
     open_chromatogram = Signal()
+    # Shown/hidden with the View menu (not when the whole view changes)
+    toggled = Signal(bool)
 
     def __init__(self, data: EsperData, selection: Selection, parent=None) -> None:
         super().__init__(parent)
@@ -60,4 +62,5 @@ class BasePanel(QWidget):
         """Checkable action showing/hiding the panel, for the View menu."""
         action = QAction(self.title, self, checkable=True, checked=not self.isHidden())
         action.toggled.connect(self.setVisible)
+        action.toggled.connect(self.toggled)
         return action
