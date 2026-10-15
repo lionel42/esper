@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import QCheckBox, QVBoxLayout, QWidgetAction
 
 from esper.gui.data import TIC, EsperData
@@ -30,8 +30,12 @@ OVERLAYS = {
     "rank5": "5th mass",
     "compound": "all compound masses",
     "all": "all masses",
+    "target": "target ions",
     "tic": "TIC",
 }
+TARGET_COLOR = "#008000"
+# Half width of the window used for the y zoom around a target not found [s]
+TARGET_HALF_WINDOW = 10.0
 # Above this number of overlaid curves, no legend
 MAX_LEGEND_ENTRIES = 12
 # Above this number of overlaid curves, the whole chromatogram file is read at once
@@ -174,6 +178,9 @@ class ChromatogramPanel(BasePanel):
             for rank in range(2, 6):
                 if f"rank{rank}" in checked and len(compound_masses) >= rank:
                     masses.append(compound_masses[rank - 1])
+        # Expected ions of the target; always when the target is not found in the measurement
+        if sel.target is not None and ("target" in checked or sel.compound_idx is None):
+            masses.extend(self.data.target_masses(sel.target))
         if "tic" in checked:
             masses.append(TIC)
         return [m for m in dict.fromkeys(masses) if m != sel.mass]
@@ -211,6 +218,7 @@ class ChromatogramPanel(BasePanel):
         y = series.to_numpy(dtype=float)
         self.curve.setData(t, y)
         self._annotate(t, y)
+        self._mark_target()
         if keep_range:
             self.plot.setRange(xRange=view_range[0], yRange=view_range[1], padding=0)
         else:
@@ -275,9 +283,33 @@ class ChromatogramPanel(BasePanel):
                 ("score", f"{c.best_score:.3f} (combined {c.best_score_combined:.3f})"),
                 ("valid", "yes" if c.valid_candidate else "no"),
             ]
+        if sel.target is not None:
+            target = self.data.targets.loc[sel.target]
+            expected_rt = self.data.expected_rt(sel.measurement_id, sel.target)
+            masses = self.data.target_masses(sel.target)
+            lines += [
+                ("target", sel.target + ("" if sel.compound_idx is not None else " (not found)")),
+                ("expected RI", "unknown" if not np.isfinite(target["ri"]) else f"{target['ri']:.1f}"),
+                ("expected rt", "unknown" if expected_rt is None else f"{expected_rt:.1f} s"),
+                ("expected ions", ", ".join(map(str, masses)) or "unknown"),
+            ]
         self.info_label.setText(
             "<br>".join(f"{k}&nbsp;&nbsp;{html.escape(str(v))}" for k, v in lines)
         )
+
+    def _mark_target(self) -> None:
+        """Dashed line where the selected target is expected."""
+        sel = self.selection
+        if sel.target is None:
+            return
+        rt = self.data.expected_rt(sel.measurement_id, sel.target)
+        if rt is None:
+            return
+        line = pg.InfiniteLine(
+            pos=rt, angle=90, pen=pg.mkPen(TARGET_COLOR, width=1, style=Qt.PenStyle.DashLine),
+            label=f"{sel.target} expected", labelOpts={"position": 0.92, "color": TARGET_COLOR},
+        )
+        self._add(line)
 
     def _add(self, item) -> None:
         self.plot.addItem(item)
@@ -353,6 +385,12 @@ class ChromatogramPanel(BasePanel):
             self.plot.setXRange(x0, x1, padding=0)
             return
         bottom, top = float(y[mask].min()), float(y[mask].max())
+
+        # Target not found: zoom on the signal close to where it is expected
+        if sel.compound_idx is None and sel.target is not None:
+            near = mask & (np.abs(t - sel.rt) <= TARGET_HALF_WINDOW)
+            if near.any():
+                top = float(y[near].max())
 
         # Zoom on the selected compound's peak at this mass, if any
         if sel.compound_idx is not None and sel.mass is not TIC:

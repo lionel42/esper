@@ -8,7 +8,9 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit
 from esper.gui.data import TIC, EsperData
 from esper.gui.panels.base import BasePanel
 from esper.gui.panels.chromatogram import ChromatogramPanel, RelativeChromatogramPanel, compound_label
+from esper.gui.panels.compound_table import CompoundTablePanel
 from esper.gui.panels.spectrum import SpectrumPanel
+from esper.gui.panels.target_table import TargetTablePanel
 from esper.gui.selection import Selection
 from esper.gui.views.base import BaseView
 from esper.gui.widgets import StepCombo
@@ -136,4 +138,6 @@ class ChromatogramsView(BaseView):
         self.add_toolbar(self.toolbar)
         self.chromatogram = self.add_panel(ChromatogramPanel(data, selection), stretch=3)
         self.relative = self.add_panel(RelativeChromatogramPanel(self.chromatogram), stretch=1, optional=True)
+        self.compounds = self.add_panel(CompoundTablePanel(data, selection), optional=True, left=True)
+        self.targets = self.add_panel(TargetTablePanel(data, selection), optional=True, left=True)
         self.spectrum = self.add_panel(SpectrumPanel(data, selection, chromatogram=self.chromatogram), stretch=1, optional=True)

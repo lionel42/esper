@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QVBoxLayout
 
 from esper.gui.data import EsperData
 from esper.gui.panels.base import BasePanel
-from esper.gui.panels.chromatogram import ChromatogramPanel, Curve, compound_label
+from esper.gui.panels.chromatogram import TARGET_COLOR, ChromatogramPanel, Curve, compound_label
 from esper.gui.plotting import make_plot
 from esper.gui.selection import Selection
 
@@ -24,7 +24,7 @@ SELECTED_COLOR = "#0050c8"
 # Masses not plotted in the chromatogram
 OTHER_COLOR = "#aaaaaa"
 # Top of the y axis [%], leaves room for the label of the 100 % stick
-Y_MAX = 125
+Y_MAX = 135
 
 
 class SpectrumPanel(BasePanel):
@@ -32,10 +32,11 @@ class SpectrumPanel(BasePanel):
 
     Clicking a stick selects that mass. With a visible chromatogram panel as
     ``chromatogram``, the masses plotted there get the same colors here.
+    The expected ions of the selected target are marked with dashed lines.
     """
 
     title = "Spectrum"
-    watches = {"measurement_id", "compound_idx", "mass"}
+    watches = {"measurement_id", "compound_idx", "mass", "target"}
 
     def __init__(
         self,
@@ -89,8 +90,16 @@ class SpectrumPanel(BasePanel):
         self._items = []
         self._masses = np.array([])
         sel = self.selection
+        expected = self.data.target_masses(sel.target) if sel.target is not None else []
+        self._mark_expected(expected)
         if sel.measurement_id is None or sel.compound_idx is None:
-            self.title_label.setText("No compound selected")
+            if sel.target is not None:
+                self.title_label.setText(f"{html.escape(sel.target)}: not found, expected ions")
+                if expected:
+                    self.plot.setXRange(min(expected) - 5, max(expected) + 5, padding=0)
+                    self.plot.setYRange(0, Y_MAX, padding=0)
+            else:
+                self.title_label.setText("No compound selected")
             return
 
         compound = self.data.compounds(sel.measurement_id).loc[sel.compound_idx]
@@ -138,8 +147,24 @@ class SpectrumPanel(BasePanel):
             self.plot.addItem(label)
             self._items.append(label)
 
-        self.plot.setXRange(masses.min() - 5, masses.max() + 5, padding=0)
+        low, high = masses.min(), masses.max()
+        if expected:
+            low, high = min(low, min(expected)), max(high, max(expected))
+        self.plot.setXRange(low - 5, high + 5, padding=0)
         self.plot.setYRange(0, Y_MAX, padding=0)
+
+    def _mark_expected(self, masses: list[int]) -> None:
+        """Dashed lines at the expected ions of the target, labelled with their rank."""
+        pen = pg.mkPen(TARGET_COLOR, width=1, style=Qt.PenStyle.DashLine)
+        for rank, mass in enumerate(masses):
+            line = pg.InfiniteLine(pos=mass, angle=90, pen=pen)
+            line.setZValue(-1)
+            self.plot.addItem(line)
+            self._items.append(line)
+            label = pg.TextItem(f"Q{rank}", color=TARGET_COLOR, anchor=(0, 0))
+            label.setPos(mass, Y_MAX)
+            self.plot.addItem(label)
+            self._items.append(label)
 
     def _on_click(self, event) -> None:
         if event.button() != Qt.MouseButton.LeftButton or not len(self._masses):

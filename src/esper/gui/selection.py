@@ -10,6 +10,10 @@ from esper.gui.data import EsperData
 class Selection(QObject):
     """What is currently looked at: measurement, compound, mass and rt.
 
+    ``target`` is the target compound followed, if any: the target of the
+    selected compound, or a target chosen in the target table (which may not
+    be found in the measurement, then ``compound_idx`` is None).
+
     ``changed`` is emitted with the set of fields that changed.
     """
 
@@ -23,6 +27,7 @@ class Selection(QObject):
         self.cmp_name: str | None = None
         self.mass: int | None = None  # None: TIC
         self.rt: float | None = None
+        self.target: str | None = None
 
     def _set(self, **values) -> None:
         changed = {k for k, v in values.items() if getattr(self, k) != v}
@@ -44,8 +49,36 @@ class Selection(QObject):
         self._set(
             measurement_id=measurement_id,
             cmp_name=name,
+            target=self.data.target_of(name),
             **self._compound_values(measurement_id, compound_idx),
         )
+
+    def _target_values(self, measurement_id: int, target: str, keep_mass: bool) -> dict:
+        """Compound of the target in the measurement, or its expected rt and main ion."""
+        compound_idx = self.data.find_target(measurement_id, target)
+        if compound_idx is not None:
+            values = self._compound_values(measurement_id, compound_idx)
+            values["cmp_name"] = self.data.compounds(measurement_id).loc[compound_idx, "compound_name"]
+        else:
+            masses = self.data.target_masses(target)
+            rt = self.data.expected_rt(measurement_id, target)
+            values = {
+                "compound_idx": None,
+                "cmp_name": target,
+                # No retention index: no position, the whole chromatogram is shown
+                "rt": rt,
+                "mass": masses[0] if masses else self.mass,
+            }
+        if keep_mass and self.mass is not None:
+            del values["mass"]
+        return values
+
+    def select_target(self, target: str) -> None:
+        """Go to the compound of the target, or to where it is expected."""
+        values = {"target": target, "cmp_name": target}
+        if self.measurement_id is not None:
+            values.update(self._target_values(self.measurement_id, target, keep_mass=False))
+        self._set(**values)
 
     def select_peak(self, measurement_id: int, compound_idx: int, mass: int, rt: float) -> None:
         """Select the compound of a peak, showing the mass and rt of that peak."""
@@ -54,12 +87,16 @@ class Selection(QObject):
             measurement_id=measurement_id,
             compound_idx=compound_idx,
             cmp_name=name,
+            target=self.data.target_of(name),
             mass=mass,
             rt=rt,
         )
 
     def select_measurement(self, measurement_id: int) -> None:
-        """Change measurement, following the same compound and keeping the mass."""
+        """Change measurement, following the same compound (or target) and keeping the mass."""
+        if self.target is not None:
+            self._set(measurement_id=measurement_id, **self._target_values(measurement_id, self.target, keep_mass=True))
+            return
         values = {"measurement_id": measurement_id, "compound_idx": None}
         compound_idx = self.data.find_compound(measurement_id, self.cmp_name, self.rt)
         if compound_idx is not None:
@@ -70,7 +107,7 @@ class Selection(QObject):
         self._set(**values)
 
     def select_cmp_name(self, name: str | None) -> None:
-        values = {"cmp_name": name, "compound_idx": None}
+        values = {"cmp_name": name, "compound_idx": None, "target": self.data.target_of(name)}
         if self.measurement_id is not None:
             compound_idx = self.data.find_compound(self.measurement_id, name)
             if compound_idx is not None:

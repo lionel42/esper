@@ -18,7 +18,9 @@ from pathlib import Path
 DB_FILENAME = "esper.sqlite"
 CHROMATOGRAMS_DIRNAME = "chromatograms"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+# Versions that are upgraded by creating the missing tables
+COMPATIBLE_VERSIONS = (0, 1, 2)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS measurement (
@@ -135,6 +137,42 @@ CREATE INDEX IF NOT EXISTS peak_mass_rt ON peak (mass, rt_s);
 CREATE INDEX IF NOT EXISTS peak_compound ON peak (measurement_id, compound_idx);
 CREATE INDEX IF NOT EXISTS compound_name_idx ON compound (compound_name);
 
+-- Target compounds: the substances we look for, imported with `esper targets`
+CREATE TABLE IF NOT EXISTS target (
+    name                TEXT PRIMARY KEY,
+    rt_ref_s            REAL,                   -- rt in the reference run of the target list
+    ri                  REAL,                   -- retention index (from rt_ref_s)
+    formula             TEXT,
+    chemical_name       TEXT,
+    cas                 TEXT,
+    cmp_class           TEXT,
+    pubchem_cid         INTEGER,
+    inchi               TEXT,
+    smiles              TEXT
+);
+
+-- Ions expected in the spectrum of a target, by decreasing importance
+CREATE TABLE IF NOT EXISTS target_ion (
+    name                TEXT REFERENCES target ON DELETE CASCADE,
+    rank                INTEGER,                -- 0: main (quantification) ion
+    ion                 TEXT,                   -- e.g. 'CF2Cl+'
+    exact_mass          REAL,
+    mass                INTEGER,                -- unit mass
+    PRIMARY KEY (name, rank)
+);
+
+-- Other names of a target (e.g. as used in the spectrum libraries)
+CREATE TABLE IF NOT EXISTS target_alias (
+    alias               TEXT PRIMARY KEY,
+    name                TEXT REFERENCES target ON DELETE CASCADE
+);
+
+-- Key/value information about the database, e.g. where the targets come from
+CREATE TABLE IF NOT EXISTS meta (
+    key                 TEXT PRIMARY KEY,
+    value               TEXT
+);
+
 CREATE VIEW IF NOT EXISTS peak_full AS
 SELECT
     m.name AS measurement,
@@ -179,9 +217,9 @@ def connect(data_dir: Path, create: bool = False, readonly: bool = False) -> sql
     con.execute("PRAGMA foreign_keys = ON")
     if create:
         version = con.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, SCHEMA_VERSION):
+        if version not in COMPATIBLE_VERSIONS:
             raise RuntimeError(
-                f"{path} has schema version {version}, expected {SCHEMA_VERSION}"
+                f"{path} has schema version {version}, expected one of {COMPATIBLE_VERSIONS}"
             )
         con.executescript(SCHEMA)
         con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

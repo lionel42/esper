@@ -1,4 +1,4 @@
-"""Command line interface: ``esper gui`` and ``esper upload``."""
+"""Command line interface: ``esper gui``, ``esper upload`` and ``esper targets``."""
 
 from __future__ import annotations
 
@@ -31,6 +31,26 @@ def _upload(args: argparse.Namespace) -> int:
     return 1 if summary.failed else 0
 
 
+def _targets(args: argparse.Namespace) -> int:
+    from esper import db
+    from esper.targets import load_targets, store_targets
+
+    options = {"ri_references": args.ri_references} if args.ri_references else {}
+    targets = load_targets(args.source, **options)
+    con = db.connect(args.data_dir, create=True)
+    try:
+        store_targets(con, targets, str(Path(args.source).resolve()))
+    finally:
+        con.close()
+    n_ri = int(targets.table["ri"].notna().sum())
+    n_ions = targets.ions["name"].nunique()
+    print(
+        f"targets: {len(targets.table)} ({n_ri} with retention index, {n_ions} with expected ions), "
+        f"aliases: {len(targets.aliases)}"
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="esper")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -45,6 +65,12 @@ def main(argv: list[str] | None = None) -> int:
     p_upload.add_argument("data_dir", type=Path, help="esper data directory (created if needed)")
     p_upload.add_argument("-f", "--force", action="store_true", help="reimport unchanged measurements")
     p_upload.set_defaults(func=_upload)
+
+    p_targets = sub.add_parser("targets", help="Import the target compounds (replaces the current ones)")
+    p_targets.add_argument("source", type=Path, help="target list, e.g. substances.xlsx")
+    p_targets.add_argument("data_dir", type=Path, help="esper data directory")
+    p_targets.add_argument("--ri-references", type=Path, help="retention index references (default: alpinac's)")
+    p_targets.set_defaults(func=_targets)
 
     args = parser.parse_args(argv)
     logging.basicConfig(
