@@ -7,10 +7,11 @@ import html
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtGui import QDoubleValidator
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QLineEdit, QVBoxLayout, QWidget, QWidgetAction
 
 from esper.gui.data import TIC, EsperData
 from esper.gui.selection import Selection
+from esper.gui.style import OVERLAY_COLORS
 from esper.gui.widgets import StepCombo
 
 # Half width of the rt window shown around the selected compound [s]
@@ -19,6 +20,18 @@ RT_HALF_WINDOW = 30.0
 Y_ZOOM = 1.5
 # Integration bounds, in half widths at half maximum from the apex (~3.5 sigma for a gaussian)
 N_HWHM = 3.0
+# Overlays: key -> menu text. 'rankN' is the Nth most prominent mass of the selected compound.
+OVERLAYS = {
+    "rank2": "2nd mass",
+    "rank3": "3rd mass",
+    "rank4": "4th mass",
+    "rank5": "5th mass",
+    "compound": "all compound masses",
+    "all": "all masses",
+    "tic": "TIC",
+}
+# Above this number of overlaid curves, no legend
+MAX_LEGEND_ENTRIES = 12
 
 
 def _compound_label(name, compound_idx) -> str:
@@ -59,6 +72,7 @@ class ChromatogramView(QWidget):
         self._cmp_items_mid = None
         self._mass_items_key = None
         self._annotations: list = []
+        self._overlay_items: list = []
 
         # Toolbar
         self.file_box = StepCombo("File:", min_width=200)
@@ -94,6 +108,8 @@ class ChromatogramView(QWidget):
         self.mass_label = pg.LabelItem(color="k", size="10pt")
         self.mass_label.setParentItem(self.plot.getViewBox())
         self.mass_label.anchor(itemPos=(1, 0), parentPos=(1, 0), offset=(-10, 5))
+        self.legend = self.plot.addLegend(offset=(-10, 30))
+        self._build_overlay_menu()
 
         layout = QVBoxLayout(self)
         layout.addLayout(toolbar)
@@ -107,6 +123,51 @@ class ChromatogramView(QWidget):
         self.mass_box.text_entered.connect(self._on_mass_text)
         self.time_edit.editingFinished.connect(self._on_time)
         self.selection.changed.connect(self._on_selection_changed)
+
+    def _build_overlay_menu(self) -> None:
+        """'Masses' submenu of the right click menu, with checkboxes so that it stays open."""
+        menu = self.plot.getViewBox().menu
+        menu.addSeparator()
+        submenu = menu.addMenu("Masses")
+        self.overlay_checks: dict[str, QCheckBox] = {}
+
+        def add_check(key: str, text: str) -> None:
+            check = QCheckBox(text)
+            check.setStyleSheet("QCheckBox { padding: 3px 12px; }")
+            check.toggled.connect(lambda _: self.refresh(keep_range=True))
+            action = QWidgetAction(submenu)
+            action.setDefaultWidget(check)
+            submenu.addAction(action)
+            self.overlay_checks[key] = check
+
+        for key, text in OVERLAYS.items():
+            add_check(key, text)
+        submenu.addSeparator()
+        add_check("scale", "scale to main mass")
+
+    def _overlay_masses(self) -> list[int | None]:
+        """Masses to overlay on the main one (None: TIC), in display order."""
+        sel = self.selection
+        checked = {k for k, c in self.overlay_checks.items() if c.isChecked()}
+        compound_masses = []
+        if sel.compound_idx is not None:
+            peaks = self.data.compound_peaks(sel.measurement_id, sel.compound_idx)
+            peaks = peaks.sort_values("prominence", ascending=False)
+            compound_masses = [int(m) for m in peaks["mass"].drop_duplicates()]
+
+        masses: list = []
+        if "all" in checked:
+            columns = self.data.chromatogram_columns(sel.measurement_id)
+            masses = sorted(int(c) for c in columns if c.isdigit())
+        elif "compound" in checked:
+            masses = compound_masses
+        else:
+            for rank in range(2, 6):
+                if f"rank{rank}" in checked and len(compound_masses) >= rank:
+                    masses.append(compound_masses[rank - 1])
+        if "tic" in checked:
+            masses.append(TIC)
+        return [m for m in dict.fromkeys(masses) if m != sel.mass]
 
     # --- selection ------------------------------------------------------------------
 
@@ -163,11 +224,13 @@ class ChromatogramView(QWidget):
 
     # --- drawing --------------------------------------------------------------------
 
-    def refresh(self) -> None:
+    def refresh(self, keep_range: bool = False) -> None:
         self._dirty = False
         sel = self.selection
+        view_range = self.plot.viewRange()
         self._update_toolbar()
         self._clear_annotations()
+        self._clear_overlays()
         if sel.measurement_id is None:
             self.curve.clear()
             self.info_label.setText("")
@@ -186,7 +249,64 @@ class ChromatogramView(QWidget):
         y = series.to_numpy(dtype=float)
         self.curve.setData(t, y)
         self._annotate(t, y)
-        self._set_range(t, y)
+        if keep_range:
+            self.plot.setRange(xRange=view_range[0], yRange=view_range[1], padding=0)
+        else:
+            self._set_range(t, y)
+        self._draw_overlays(t, y)
+
+    def _clear_overlays(self) -> None:
+        for item in self._overlay_items:
+            self.plot.removeItem(item)
+        self._overlay_items = []
+        self.legend.clear()
+
+    def _draw_overlays(self, t: np.ndarray, y: np.ndarray) -> None:
+        """Other masses of the measurement, drawn in color behind the main mass."""
+        sel = self.selection
+        masses = self._overlay_masses()
+        if not masses:
+            return
+        # With all masses, read the whole file once instead of column by column
+        frame = self.data.chromatogram_frame(sel.measurement_id) if len(masses) > 20 else None
+
+        x0, x1 = self.plot.viewRange()[0]
+        window = (t >= x0) & (t <= x1)
+        scale = self.overlay_checks["scale"].isChecked() and window.any()
+        if scale:
+            main_min, main_max = y[window].min(), y[window].max()
+
+        n_colors = len(masses)
+        show_legend = n_colors <= MAX_LEGEND_ENTRIES
+        if show_legend:
+            self.legend.addItem(self.curve, "TIC" if sel.mass is TIC else f"m/z {sel.mass}")
+        for i, mass in enumerate(masses):
+            if frame is not None:
+                column = "tic" if mass is TIC else str(mass)
+                series = frame[column] if column in frame else None
+            else:
+                series = self.data.chromatogram(sel.measurement_id, mass)
+            if series is None:
+                continue
+            ty = series.index.to_numpy(dtype=float)
+            yy = series.to_numpy(dtype=float)
+            if scale:
+                w = (ty >= x0) & (ty <= x1)
+                lo, hi = yy[w].min(), yy[w].max()
+                if hi > lo:
+                    yy = main_min + (yy - lo) * (main_max - main_min) / (hi - lo)
+            if n_colors <= len(OVERLAY_COLORS):
+                color = OVERLAY_COLORS[i]
+            else:
+                color = pg.intColor(i, hues=n_colors)
+            item = self.plot.plot(ty, yy, pen=pg.mkPen(color, width=1))
+            # Only once in the plot: pyqtgraph fails if set before
+            item.setClipToView(True)
+            item.setDownsampling(auto=True, method="peak")
+            item.setZValue(-1)
+            self._overlay_items.append(item)
+            if show_legend:
+                self.legend.addItem(item, "TIC" if mass is TIC else f"m/z {mass}")
 
     def _update_toolbar(self) -> None:
         sel = self.selection

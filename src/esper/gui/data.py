@@ -193,6 +193,14 @@ class EsperData:
             return frozenset()
         return frozenset(pq.read_schema(path).names)
 
+    @lru_cache(maxsize=2)
+    def chromatogram_frame(self, measurement_id: int) -> pd.DataFrame | None:
+        """All unit mass chromatograms of a measurement (whole parquet file)."""
+        path = self._chromatogram_path(measurement_id)
+        if path is None or not path.is_file():
+            return None
+        return pd.read_parquet(path)
+
     def chromatogram(self, measurement_id: int, mass: int | None) -> pd.Series | None:
         """Unit mass chromatogram (index: rt [s]); ``mass=None`` gives the TIC.
 
