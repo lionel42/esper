@@ -1,6 +1,0 @@
-numpy
-pandas
-pyarrow
-xarray
-h5netcdf
-PySide6
