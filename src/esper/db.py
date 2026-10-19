@@ -3,7 +3,8 @@
 An esper data directory looks like::
 
     <data_dir>/
-        esper.sqlite
+        esper.yaml                  # optional, "database: <path>": where the database is
+        esper.sqlite                # the database, unless esper.yaml says otherwise
         chromatograms/
             <measurement>.parquet   # unit mass chromatograms (index: rt [s], columns: masses + 'tic')
 
@@ -15,7 +16,10 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import yaml
+
 DB_FILENAME = "esper.sqlite"
+CONFIG_FILENAME = "esper.yaml"
 CHROMATOGRAMS_DIRNAME = "chromatograms"
 
 SCHEMA_VERSION = 2
@@ -196,8 +200,31 @@ LEFT JOIN compound_candidate cc
 """
 
 
+def read_config(data_dir: Path) -> dict:
+    """The esper.yaml of a data directory, empty if there is none."""
+    path = Path(data_dir) / CONFIG_FILENAME
+    if not path.is_file():
+        return {}
+    try:
+        config = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as e:
+        raise ValueError(f"Invalid {path}: {e}") from e
+    if config is None:
+        return {}
+    if not isinstance(config, dict):
+        raise ValueError(f"Invalid {path}: expected keys like 'database: <path>'")
+    return config
+
+
 def db_path(data_dir: Path) -> Path:
-    return Path(data_dir) / DB_FILENAME
+    """The database of a data directory: ``database`` of its esper.yaml, or esper.sqlite in it.
+
+    A relative ``database`` is relative to the data directory.
+    """
+    database = read_config(data_dir).get("database")
+    if not database:
+        return Path(data_dir) / DB_FILENAME
+    return Path(data_dir) / Path(database).expanduser()
 
 
 def chromatograms_dir(data_dir: Path) -> Path:

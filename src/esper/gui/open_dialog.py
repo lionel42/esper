@@ -24,7 +24,10 @@ PATH_ROLE = Qt.ItemDataRole.UserRole
 
 
 def is_data_dir(path: Path) -> bool:
-    return db.db_path(path).is_file()
+    try:
+        return db.db_path(path).is_file()
+    except ValueError:
+        return False
 
 
 def ask_data_dir(parent=None, title: str = "Choose a folder with an esper database") -> Path | None:
@@ -32,8 +35,13 @@ def ask_data_dir(parent=None, title: str = "Choose a folder with an esper databa
     folder = QFileDialog.getExistingDirectory(parent, title)
     if not folder:
         return None
-    if not is_data_dir(Path(folder)):
-        QMessageBox.warning(parent, "esper", f"No esper database ({db.DB_FILENAME}) in {folder}")
+    try:
+        path = db.db_path(Path(folder))
+    except ValueError as e:
+        QMessageBox.warning(parent, "esper", str(e))
+        return None
+    if not path.is_file():
+        QMessageBox.warning(parent, "esper", f"No esper database for {folder} (looked for {path})")
         return None
     return Path(folder)
 

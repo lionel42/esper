@@ -159,7 +159,7 @@ class MainWindow(QMainWindow):
     def open_data(self, data_dir: Path) -> None:
         try:
             data = EsperData(data_dir)
-        except FileNotFoundError as e:
+        except (FileNotFoundError, ValueError) as e:
             QMessageBox.critical(self, "esper", str(e))
             return
 

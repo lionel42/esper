@@ -123,9 +123,22 @@ A is computed by esper from the chromatogram, above a straight baseline over
 
 ```
 <data_dir>/
+    esper.yaml      (optional)
     esper.sqlite
     chromatograms/<measurement>.parquet
 ```
+
+The database can live elsewhere, e.g. on a faster disk than the chromatograms: put an
+`esper.yaml` in the data directory with the path of the database (absolute, `~/...`, or
+relative to the data directory):
+
+```yaml
+database: /home/me/Data/esper/esper.sqlite
+```
+
+Without `esper.yaml`, or without `database` in it, the database is `esper.sqlite` in the data
+directory. All commands (`upload`, `targets`, `gui`) follow it; `upload` creates the database
+there if it does not exist yet.
 
 Tables: `measurement`, `mass_cal`, `mass_cal_rt`, `mass_cal_mass`, `compound`,
 `compound_candidate`, `peak`, and the view `peak_full` (peaks joined with their

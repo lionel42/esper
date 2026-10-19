@@ -18,6 +18,7 @@ dependencies = [
     "PySide6",
     "pyqtgraph",
     "jcamp",
+    "pyyaml",
 ]
 
 [project.scripts]
