@@ -13,6 +13,8 @@ import xarray as xr
 
 ALPINAC_SUFFIX = ".alpinac"
 PIPELINE_FILENAME = "pipeline.nc"
+# Older alpinac versions saved dated pipelines, e.g. pipeline_20260915_0555.nc
+DATED_PIPELINE_GLOB = "pipeline_*.nc"
 
 # e.g. 241007.0423.air.1
 _NAME_RE = re.compile(r"^(?P<date>\d{6})\.(?P<time>\d{4})\.(?P<type>[^.]+)\.(?P<number>\d+)$")
@@ -138,11 +140,25 @@ class AlpinacResult:
 
     @property
     def pipeline_file(self) -> Path:
-        return self.folder / PIPELINE_FILENAME
+        return find_pipeline(self.folder)
+
+
+def find_pipeline(folder: Path) -> Path | None:
+    """The pipeline file of a .alpinac folder, as alpinac loads it.
+
+    ``pipeline.nc``, otherwise the latest dated ``pipeline_<YYYYMMDD_HHMM>.nc``
+    (the last one by name).
+    """
+    folder = Path(folder)
+    pipeline = folder / PIPELINE_FILENAME
+    if pipeline.is_file():
+        return pipeline
+    dated = sorted(p for p in folder.glob(DATED_PIPELINE_GLOB) if p.is_file())
+    return dated[-1] if dated else None
 
 
 def is_complete(folder: Path) -> bool:
-    return (folder / PIPELINE_FILENAME).is_file()
+    return find_pipeline(folder) is not None
 
 
 def read_alpinac_folder(folder: Path) -> AlpinacResult:
@@ -150,7 +166,7 @@ def read_alpinac_folder(folder: Path) -> AlpinacResult:
     name = folder.name.removesuffix(ALPINAC_SUFFIX)
     warnings = []
 
-    with xr.open_dataset(folder / PIPELINE_FILENAME) as ds:
+    with xr.open_dataset(find_pipeline(folder)) as ds:
         ds = ds.load()
 
     peaks = pd.DataFrame({"peak_idx": ds["peak"].values.astype(int)})

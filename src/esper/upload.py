@@ -14,7 +14,9 @@ import pandas as pd
 from esper import db
 from esper.alpinac import (
     ALPINAC_SUFFIX,
+    DATED_PIPELINE_GLOB,
     PIPELINE_FILENAME,
+    find_pipeline,
     AlpinacResult,
     is_complete,
     parse_measurement_name,
@@ -126,10 +128,10 @@ def upload(source: Path, data_dir: Path, force: bool = False) -> UploadSummary:
         for folder in find_alpinac_folders(source):
             name = folder.name.removesuffix(ALPINAC_SUFFIX)
             if not is_complete(folder):
-                logger.warning(f"{name}: no {PIPELINE_FILENAME}, skipped")
+                logger.warning(f"{name}: no {PIPELINE_FILENAME} or {DATED_PIPELINE_GLOB}, skipped")
                 summary.skipped_incomplete.append(name)
                 continue
-            if not force and _is_unchanged(con, name, folder / PIPELINE_FILENAME):
+            if not force and _is_unchanged(con, name, find_pipeline(folder)):
                 logger.info(f"{name}: unchanged, skipped")
                 summary.skipped_unchanged.append(name)
                 continue
