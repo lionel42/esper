@@ -5,6 +5,7 @@ A run directory is `<...>/<file>.alpinac/` containing `pipeline.nc` and
 """
 import os
 import re
+import sys
 import warnings
 from collections import defaultdict
 from functools import lru_cache
@@ -16,13 +17,15 @@ import xarray as xr
 
 warnings.filterwarnings("ignore")
 
-PEAKSDB = Path("/shared/data/peaksdb")
-SUBSTANCES = Path("/shared/data/substances.xlsx")
+# Defaults; the daily launcher exports SHARED and TOF_DATA when they differ on a machine
+SHARED = Path(os.environ.get("SHARED", "/shared"))
+PEAKSDB = SHARED / "data" / "peaksdb"
+SUBSTANCES = SHARED / "data" / "substances.xlsx"
 # Reference RT column (weird name). Hydrocarbon values are 7-15 s too early: see fit_rt().
 RT_COL = "PeakID 240312.2257_w_conversion + [estimates from old RTs]"
 # Other measured RT columns, used as extra evidence
 RT_EXTRA = ["E-200 241218.0810.std.9.h5", "GSN-004, 240925.0035.tank.5", "KBZ-006"]
-TOF_ROOT = Path("/media/Shuttle/TOF-Data")
+TOF_ROOT = Path(os.environ.get("TOF_DATA", "/media/Shuttle/TOF-Data"))
 
 
 # ---------------------------------------------------------------- run data
@@ -80,8 +83,8 @@ def ri_refs_path():
     """RI calibrant table shipped with the alpinac package (override with ALPINAC_RI_REFS)."""
     if os.environ.get("ALPINAC_RI_REFS"):
         return Path(os.environ["ALPINAC_RI_REFS"])
-    import alpinac
-    return Path(alpinac.__file__).parent / "mode_extraction" / "rt_refs_v2.csv"
+    import alpinac.mode_extraction
+    return Path(alpinac.mode_extraction.__file__).parent / "rt_refs_v2.csv"
 
 
 @lru_cache(None)
@@ -152,11 +155,11 @@ def _read_jdx(f):
 
 
 def _read_txt(f):
-    try:
-        d = pd.read_csv(f, sep="\t")
-        return d.groupby(d["mass"].round().astype(int))["area"].sum().to_dict()
-    except Exception:
-        return None
+    """alpinac fragment file, read like esper.libraries.read_alpinac_fragments:
+    whitespace-separated, '#' header comments, unassigned peaks (compound_bin -1) dropped."""
+    d = pd.read_csv(f, sep=r"\s+", comment="#")
+    d = d[d["compound_bin"] != -1]
+    return d.groupby(d["mass"].round().astype(int))["area"].sum().to_dict() or None
 
 
 @lru_cache(None)
@@ -167,7 +170,12 @@ def load_spectra():
         if (s := _read_jdx(f)):
             spectra.setdefault(f.stem, {})["nist"] = s
     for f in (PEAKSDB / "myriam_ei").glob("*.txt"):
-        if (s := _read_txt(f)):
+        try:
+            s = _read_txt(f)
+        except Exception as e:  # report, do not drop silently
+            print(f"warning: cannot read {f}: {e}", file=sys.stderr)
+            continue
+        if s:
             spectra.setdefault(f.stem, {})["mygu"] = s
     for sub in ["nist_CH", "nist_CHON", "nist_CF", "nist_CHF"]:
         for f in (PEAKSDB / sub).glob("*.jdx"):

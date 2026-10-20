@@ -102,7 +102,8 @@ if args.out:
     df.to_csv(args.out, index=False)
 if args.only_flagged:
     # background gases (N2, O2, Ar, CO2, H2O, NO, Kr, Xe) are hidden unless they carry another flag
-    show = df[df["flag"].str.replace(r"\bbg\b|label_dRI=\S+", "", regex=True).str.strip() != ""]
+    # a label far from its sheet RI (label_dRI) stays visible: it is a mislabel candidate
+    show = df[df["flag"].str.replace(r"\bbg\b", "", regex=True).str.strip() != ""]
     show = show[~(show["flag"].str.contains(r"\bbg\b") & ~show["flag"].str.contains("invalid|lowscore|Br"))]
 else:
     show = df

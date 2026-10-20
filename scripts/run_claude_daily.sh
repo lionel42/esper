@@ -8,8 +8,8 @@ export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 REPO="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 SKILL_SRC="$REPO/skills/alpinac-unknowns"
 SKILL_LINK="$HOME/.claude/skills/alpinac-unknowns"
-TOF_DATA="${TOF_DATA:-/media/Shuttle/TOF-Data}"
-SHARED="${SHARED:-/shared}"
+export TOF_DATA="${TOF_DATA:-/media/Shuttle/TOF-Data}"
+export SHARED="${SHARED:-/shared}"
 export ALPINAC_UNKNOWNS_DIR="${ALPINAC_UNKNOWNS_DIR:-$HOME/.local/share/alpinac/unknowns}"
 STATE="$ALPINAC_UNKNOWNS_DIR"
 LOGDIR="$STATE/cron_logs"
@@ -57,7 +57,10 @@ ALLOWED=(
   "Edit(/$SKILL_SRC/SKILL.md)" "Edit(/$SKILL_LINK/SKILL.md)"
 )
 
-claude -p "Use the alpinac-unknowns skill on the newest not-yet-analysed air run. Follow every step including updating the findings log and saving the report." \
+PROMPT="Use the alpinac-unknowns skill on the newest not-yet-analysed air run. Follow every step including updating the findings log and saving the report.
+Paths on this machine: findings log, runs.csv and reports in $STATE; run folders in $TOF_DATA; substances.xlsx and peaksdb in $SHARED/data."
+
+claude -p "$PROMPT" \
     --allowedTools "${ALLOWED[@]}" \
     --add-dir "$TOF_DATA" "$SHARED" "$HOME/.config/alpinac" "$STATE" "$SKILL_SRC" \
     --max-turns 150 \

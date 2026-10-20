@@ -13,6 +13,10 @@ Inputs: a run directory `/media/Shuttle/TOF-Data/<year>/<file>.alpinac/` with
 `pipeline.nc` and `<file>.unit_mass_chromatos.parquet`. New runs arrive every day
 (~16 per day, `<yymmdd>.<hhmm>.<type>.<n>`, types air / std / tank / blank / …).
 
+**Paths.** The paths below are defaults. If the environment variables `ALPINAC_UNKNOWNS_DIR`
+(findings log), `TOF_DATA` (run folders) or `SHARED` (substances.xlsx, peaksdb) are set — the daily
+launcher sets them and repeats them in the prompt — use those instead. The scripts already honor them.
+
 ### 0. Choose the run and load the findings log (always)
 - **Findings log** (Claude's own memory for this skill, outside the skill):
   `~/.local/share/alpinac/unknowns/findings.md` (curated open issues, library/sheet issues,
