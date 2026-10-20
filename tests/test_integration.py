@@ -32,7 +32,8 @@ def test_small_peak_on_the_tail_of_a_large_one():
     y = gaussian(300, 2.0, 10000) + gaussian(308, 2.0, 500)
     res = integrate_mass(peaks_of((300, 2.0, 10000), (308, 2.0, 500)), T, y)
     assert np.isclose(res["area"].sum(), gaussian_area(2.0, 10000) + gaussian_area(2.0, 500), rtol=0.01)
-    # Drop line: the front of the small peak, before the valley, is counted in the large one
+    # A shoulder on the side of a gaussian (not an exponential tail): drop line, the front
+    # of the small peak, before the valley, is counted in the large one
     small = gaussian_area(2.0, 500)
     assert 0.8 * small < res.loc[1, "area"] < small
 
@@ -78,20 +79,24 @@ def test_overlapping_tailing_peaks_sum():
     y = emg(300, 1.5, 3, 1000) + emg(308, 1.5, 3, 10000)
     peaks = pd.DataFrame([measured_peak(y, 0, 290, 303), measured_peak(y, 1, 305, 315)])
     res = integrate_mass(peaks, T, y)
-    assert np.isclose(res["area"].sum(), 11000, rtol=0.01)
+    # Half widths at half prominence: the window of the first peak starts a bit early
+    assert np.isclose(res["area"].sum(), 11000, rtol=0.02)
     # The front of the large peak is not given to the small one
     assert 0.6 * 1000 < res.loc[0, "area"] < 1000
 
 
-def test_drop_line_gives_the_tail_of_a_large_peak_to_the_next_one():
-    # Known limit of the drop line: a small peak on the tail of a large one gets the
-    # tail under it (a tangent skim would not). Documented here so a change is noticed.
-    signal = emg(300, 1.5, 3, 10000) + emg(310, 1.5, 3, 1000)
-    y = signal + 30
-    peaks = pd.DataFrame([measured_peak(signal, 0, 290, 305), measured_peak(signal, 1, 307, 315)])
+def test_small_peak_on_an_exponential_tail_is_skimmed():
+    # As CFC-12 on m/z 85: a small peak on the (exponential) tail of a large one. The drop
+    # line would give it the tail under it (+40 % here); the tail is extrapolated under it
+    p_, r_ = emg(300, 0.9, 1.5, 10000), emg(307.5, 0.8, 0.3, 400)
+    y = p_ + r_ + 30
+    peaks = pd.DataFrame([measured_peak(p_ + r_, 0, 295, 303), measured_peak(p_ + r_, 1, 305.5, 310)])
     res = integrate_mass(peaks, T, y)
-    assert np.isclose(res["area"].sum(), 11000, rtol=0.01)
-    assert 1.5 * 1000 < res.loc[1, "area"] < 2.5 * 1000
+    # A real tail is only exponential far from the apex: slightly under
+    assert 0.75 * 400 < res.loc[1, "area"] < 1.05 * 400
+    # The large peak keeps its tail: the total is unchanged
+    assert np.isclose(res["area"].sum(), 10400, rtol=0.01)
+    assert np.isclose(res.loc[0, "area"], 10000, rtol=0.01)
 
 
 def test_peak_not_picked_at_the_window_start_does_not_lift_the_baseline():
@@ -135,6 +140,20 @@ def test_compound_areas_rank_masses():
     assert (res.loc[9, "q1_mass"], res.loc[9, "area_sum"]) == (30, 3.0)
 
 
+def test_compound_areas_with_an_unknown_uncertainty():
+    peaks = pd.DataFrame({
+        "compound_idx": [7, 7, 7],
+        "mass": [44, 45, 46],
+        "area": [10.0, 50.0, np.nan],
+        "area_unc": [np.nan, 2.0, np.nan],
+    })
+    res = compound_areas(peaks)
+    assert res.loc[7, "area_sum"] == 60.0
+    assert np.isnan(res.loc[7, "area_sum_unc"])  # not 2: the uncertainty of mass 44 is unknown
+    assert (res.loc[7, "q1_mass"], res.loc[7, "q1_area_unc"]) == (45, 2.0)
+    assert res.loc[7, "q2_mass"] == 44 and np.isnan(res.loc[7, "q2_area_unc"])
+
+
 def test_integrate_chromatograms_from_parquet(tmp_path):
     frame = pd.DataFrame(
         {"44": gaussian(300, 2.0, 1000) + gaussian(306, 2.0, 1000), "45": gaussian(300, 2.0, 400)},
@@ -154,3 +173,54 @@ def test_integrate_chromatograms_from_parquet(tmp_path):
     peak_res, cmp_res, _ = integrate_chromatograms(peaks, path)
     assert np.isnan(peak_res.loc[3, "area"])  # no chromatogram for mass 99
     assert cmp_res.loc[0, "q1_mass"] == 44 and cmp_res.loc[0, "q2_mass"] == 45
+
+
+def test_overlapping_peaks_stay_together():
+    # As m/z 31 near 1470 s: the stop of the first window is moved back to the valley, which
+    # is before the start of the second window. The peaks must still share their split
+    # (with its uncertainty) and baseline, not become two groups with their own baselines.
+    def peak(k, rt, front, tail):
+        return {
+            "compound_idx": k, "mass": 31, "rt_s": rt, "start_s": rt - front, "stop_s": rt + tail,
+            "left_base_scan": 0, "right_base_scan": len(T) - 1,
+        }
+
+    peaks = pd.DataFrame([peak(0, 300.0, 0.8, 1.2), peak(1, 306.5, 0.8, 1.0)])
+    y = gaussian(300, 0.85, 29000) + gaussian(306.5, 0.75, 15000) + 2 * T
+    res = integrate_mass(peaks, T, y)
+    assert res.loc[0, "int_stop_s"] == res.loc[1, "int_start_s"]
+    assert res.loc[0, "base_stop"] == res.loc[1, "base_start"]
+    assert np.allclose(res["area"], [gaussian_area(0.85, 29000), gaussian_area(0.75, 15000)], rtol=0.015)
+
+
+def test_narrow_peak_on_a_broad_one():
+    # On the flank of the broad peak: the narrow window [~285.3, ~297.1] is inside the broad
+    # one [~242, ~336], and the signal does not come back to the baseline between them
+    broad, narrow = (280, 8.0, 1000), (290, 1.0, 2000)
+    y = gaussian(*broad) + gaussian(*narrow) + 20
+    res = integrate_mass(peaks_of(broad, narrow), T, y)
+    # Nothing lost: the group ends at the end of the broad window, not of the narrow one
+    total = gaussian_area(8.0, 1000) + gaussian_area(1.0, 2000)
+    assert np.isclose(res["area"].sum(), total, rtol=0.01)
+    assert res.loc[0, "int_stop_s"] > 330
+    # The narrow peak keeps its own window, the broad one its tail after it
+    assert res.loc[0, "int_start_s"] < res.loc[1, "int_start_s"] < res.loc[1, "int_stop_s"] < res.loc[0, "int_stop_s"]
+    assert res.loc[1, "int_stop_s"] < 297.6
+    # The narrow peak gets the broad signal under its window (drop line), not the broad tail
+    s, e = res.loc[1, "int_start_s"], res.loc[1, "int_stop_s"]
+    tt = np.concatenate([[s], T[(T > s) & (T < e)], [e]])
+    in_window = np.trapezoid(np.interp(tt, T, gaussian(*broad) + gaussian(*narrow)), tt)
+    assert np.isclose(res.loc[1, "area"], in_window, rtol=0.002)
+    assert in_window > gaussian_area(1.0, 2000)
+
+
+def test_baseline_reset_between_separated_peaks():
+    # A small peak after a large one whose (long, tail side) window reaches it, while the
+    # signal is back on the background in between: separate baselines (as m/z 111 near
+    # 2305 s), the small peak's baseline stays on the background
+    large, small = (280, 2.0, 5000), (300, 1.5, 100)
+    y = gaussian(*large) + gaussian(*small) + 300
+    res = integrate_mass(peaks_of(large, small), T, y)
+    assert res.loc[0, "int_stop_s"] <= res.loc[1, "int_start_s"]
+    assert np.isclose(res.loc[1, "base_start"], 300, atol=2) and np.isclose(res.loc[1, "base_stop"], 300, atol=2)
+    assert np.isclose(res.loc[1, "area"], gaussian_area(1.5, 100), rtol=0.03)

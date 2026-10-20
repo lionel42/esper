@@ -161,6 +161,19 @@ class MainWindow(QMainWindow):
         self.integrate_dialog.show()
         self.integrate_dialog.raise_()
 
+    def _close_integrate_dialog(self) -> None:
+        """Close the integration dialog, stopping a running integration first."""
+        if self.integrate_dialog is not None:
+            self.integrate_dialog.shutdown()
+            self.integrate_dialog.close()
+            self.integrate_dialog.deleteLater()
+            self.integrate_dialog = None
+
+    def closeEvent(self, event) -> None:
+        # Its thread is owned by the dialog: stop it before the window and the dialog go
+        self._close_integrate_dialog()
+        super().closeEvent(event)
+
     def _on_integrated(self) -> None:
         self.data.reload()
         self.selection.refresh()
@@ -199,10 +212,7 @@ class MainWindow(QMainWindow):
             widget = self.stack.widget(0)
             self.stack.removeWidget(widget)
             widget.deleteLater()
-        if self.integrate_dialog is not None:
-            self.integrate_dialog.close()
-            self.integrate_dialog.deleteLater()
-            self.integrate_dialog = None
+        self._close_integrate_dialog()
         if self.data is not None:
             self.data.close()
         settings_manager().remember_data_dir(data_dir)

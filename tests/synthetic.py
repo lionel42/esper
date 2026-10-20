@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from scipy.signal import peak_widths
 from scipy.stats import exponnorm
 
 from esper.noise import NoiseParameters, noise_parameters
@@ -40,20 +41,19 @@ def emg(rt0: float, sigma: float, tau: float, area: float) -> np.ndarray:
 
 
 def measured_peak(y: np.ndarray, compound_idx: int = 0, lo: float = -np.inf, hi: float = np.inf) -> dict:
-    """Peak as alpinac reports it, measured on the curve: apex in [lo, hi] and its half maximum crossings.
+    """Peak as alpinac reports it, measured on the curve: apex in [lo, hi] and its half
+    maximum crossings, at half its prominence (scipy's peak_widths, as alpinac): for a
+    small peak on the tail of a large one, relative to the valley, not to zero.
 
-    ``y`` is the signal without background (the half maximum is relative to the peak base).
+    ``y`` is the signal without background.
     """
     window = np.flatnonzero((T >= lo) & (T <= hi))
     i = window[np.argmax(y[window])]
-    half = y[i] / 2
-    left = right = i
-    while left > 0 and y[left] > half:
-        left -= 1
-    while right < len(T) - 1 and y[right] > half:
-        right += 1
+    _, _, left, right = peak_widths(y, [i], rel_height=0.5)
+    scans = np.arange(len(T))
     return {
-        "compound_idx": compound_idx, "mass": 44, "rt_s": T[i], "start_s": T[left], "stop_s": T[right],
+        "compound_idx": compound_idx, "mass": 44, "rt_s": T[i],
+        "start_s": float(np.interp(left[0], scans, T)), "stop_s": float(np.interp(right[0], scans, T)),
         "left_base_scan": 0, "right_base_scan": len(T) - 1,
     }
 

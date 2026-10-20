@@ -9,6 +9,8 @@ n * variance`` rather than ``n * variance`` (factor ~3).
 The parameters common to a measurement (``NoiseParameters``) are estimated
 once from the quiet parts of some of its chromatograms and stored with the
 measurement; the noise of each chromatogram (``NoiseModel``) adds its floor.
+When there is too little data to estimate the noise, it is unknown (NaN), and
+so are the uncertainties computed with it.
 """
 
 from __future__ import annotations
@@ -29,8 +31,10 @@ NOISE_MAX_LAG = 8
 NOISE_CORRELATED_LAGS = 4
 # Signal levels from which the counting noise dominates the floor [counts]
 GAIN_MIN_LEVEL = 10.0
-# Least number of quiet scans for a chromatogram to be used
+# Least number of quiet scans for a chromatogram to be used; if no chromatogram has
+# that many, the ones with at least NOISE_MIN_QUIET_FALLBACK (below: unknown noise)
 NOISE_MIN_QUIET = 500
+NOISE_MIN_QUIET_FALLBACK = 50
 # Most chromatograms used for the parameters of a measurement (medians over them)
 NOISE_MAX_MASSES = 60
 # Fraction of the largest second differences (peaks) left out of the gain estimate
@@ -57,6 +61,14 @@ class NoiseParameters:
     gain: float = 0.0
     factor: float = 1.0
     d2_ratio: float = 6.0
+
+    @classmethod
+    def unknown(cls) -> NoiseParameters:
+        return cls(gain=np.nan, factor=np.nan, d2_ratio=np.nan)
+
+    @property
+    def is_known(self) -> bool:
+        return bool(np.isfinite([self.gain, self.factor, self.d2_ratio]).all())
 
     def to_columns(self) -> dict:
         """As measurement columns."""
@@ -154,8 +166,8 @@ def noise_parameters(chromatograms: np.ndarray) -> NoiseParameters:
     y = np.asarray(chromatograms, dtype=float)
     if y.ndim == 1:
         y = y[:, None]
-    if len(y) < 20 * NOISE_MAX_LAG or y.shape[1] == 0:
-        return NoiseParameters()
+    if len(y) < NOISE_MIN_QUIET_FALLBACK + NOISE_MAX_LAG or y.shape[1] == 0:
+        return NoiseParameters.unknown()
     smoothed = smooth(y)
     quiet = _quiet(smoothed)
 
@@ -167,9 +179,16 @@ def noise_parameters(chromatograms: np.ndarray) -> NoiseParameters:
     d2_var = _mean_square_columns(np.where(quiet3, _second_differences(y), np.nan))
     variance = lag_var[-1]
     with np.errstate(all="ignore"):
-        ok = np.isfinite(variance) & (variance > 0) & (quiet3.sum(axis=0) >= NOISE_MIN_QUIET) & np.isfinite(d2_var)
+        usable = np.isfinite(variance) & np.isfinite(d2_var)
+        ok = usable & (quiet3.sum(axis=0) >= NOISE_MIN_QUIET)
         if not ok.any():
+            ok = usable & (quiet3.sum(axis=0) >= NOISE_MIN_QUIET_FALLBACK)
+        if not ok.any():
+            return NoiseParameters.unknown()
+        if not (variance[ok] > 0).any():
+            # Quiet parts without any noise (synthetic data): known to be noiseless
             return NoiseParameters()
+        ok &= variance > 0
         correlations = 1 - lag_var[:NOISE_CORRELATED_LAGS, ok] / variance[ok]
         factor = float(np.clip(np.median(1 + 2 * correlations.sum(axis=0)), 1, 1 + 2 * NOISE_CORRELATED_LAGS))
         d2_ratio = float(np.median(d2_var[ok] / variance[ok]))
@@ -217,21 +236,30 @@ def noise_model(
     """Noise of one chromatogram: the measurement's parameters and its own floor.
 
     The floor (variance at zero signal) is what the gain does not explain of
-    the variance in the quiet parts. ``parameters`` are estimated from y alone
-    if not given (less reliable: the gain needs a range of levels).
-    ``smoothed``: smooth(y), if already computed.
+    the variance in the quiet parts, or of the whole chromatogram (largest
+    second differences, the peaks, left out) if it has too few quiet scans.
+    ``parameters`` are estimated from y alone if not given (less reliable: the
+    gain needs a range of levels). ``smoothed``: smooth(y), if already computed.
+    The noise is unknown (NaN) if the parameters are, or if y is too short.
     """
     y = np.asarray(y, dtype=float)
     if parameters is None:
         parameters = noise_parameters(y)
-    if len(y) < 20 * NOISE_MAX_LAG:
-        return NoiseModel(gain=parameters.gain, factor=parameters.factor)
+    unknown = NoiseModel(floor=np.nan, gain=np.nan, factor=np.nan)
+    if not parameters.is_known or len(y) < NOISE_MIN_QUIET_FALLBACK + 2:
+        return unknown
     if smoothed is None:
         smoothed = smooth(y)
     quiet = _quiet(smoothed)
     quiet3 = quiet[:-2] & quiet[1:-1] & quiet[2:]
-    d2 = _second_differences(y)[quiet3]
-    variance = float(np.mean(d2**2)) / parameters.d2_ratio if len(d2) >= NOISE_MIN_QUIET else np.nan
-    quiet_level = float(np.nanmedian(smoothed[quiet])) if quiet.any() else 0.0
-    floor = variance - parameters.gain * max(quiet_level, 0.0) if np.isfinite(variance) else 0.0
+    d2 = _second_differences(y)
+    if quiet3.sum() >= NOISE_MIN_QUIET:
+        variance = float(np.mean(d2[quiet3] ** 2))
+        level = float(np.nanmedian(smoothed[quiet]))
+    else:
+        variance = _trimmed_variance(d2)
+        level = float(np.nanmedian(smoothed))
+    if not np.isfinite(variance):
+        return unknown
+    floor = variance / parameters.d2_ratio - parameters.gain * max(level, 0.0)
     return NoiseModel(floor=max(floor, 0.0), gain=parameters.gain, factor=parameters.factor)

@@ -110,9 +110,8 @@ class IntegrateDialog(QDialog):
         form.addRow("", self.force_check)
 
         # Compounds
-        name = selection.cmp_name
-        self.name_check = QCheckBox(f"Only {name}" if name else "Only the selected substance (none selected)")
-        self.name_check.setEnabled(name is not None)
+        # Follows the selected compound name (see _update_name)
+        self.name_check = QCheckBox()
         self.rt_check = QCheckBox("Only rt from")
         self.rt_from = QDoubleSpinBox()
         self.rt_to = QDoubleSpinBox()
@@ -168,6 +167,8 @@ class IntegrateDialog(QDialog):
             check.toggled.connect(self._update_count)
         self.range_combo.setCurrentText("All")
         self._on_range_changed("All")
+        self._update_name()
+        self.selection.changed.connect(self._on_selection_changed)
 
     # --- choice -------------------------------------------------------------------------
 
@@ -186,6 +187,22 @@ class IntegrateDialog(QDialog):
                 edit.setDateTime(QDateTime(value.to_pydatetime()))
                 edit.blockSignals(False)
         self._update_count()
+
+    def _on_selection_changed(self, fields: set) -> None:
+        if "cmp_name" in fields:
+            self._update_name()
+
+    def _update_name(self) -> None:
+        """Keep the 'Only <name>' filter on the selected compound name.
+
+        Unchecked when no compound name is selected: it never turns into "all
+        compounds" silently. A running integration keeps the name it started with.
+        """
+        name = self.selection.cmp_name
+        self.name_check.setText(f"Only {name}" if name else "Only the selected substance (none selected)")
+        if name is None:
+            self.name_check.setChecked(False)
+        self.name_check.setEnabled(name is not None and self._worker is None)
 
     def _range(self) -> tuple[pd.Timestamp | None, pd.Timestamp]:
         """Acquisition time range (start None: no lower bound)."""
@@ -241,7 +258,7 @@ class IntegrateDialog(QDialog):
             self.to_edit.setEnabled(False)
         else:
             self._on_range_changed(self.range_combo.currentText())
-            self.name_check.setEnabled(self.selection.cmp_name is not None)
+            self._update_name()
         self.close_button.setText("Cancel" if running else "Close")
         self.progress.setVisible(running)
 
@@ -293,9 +310,13 @@ class IntegrateDialog(QDialog):
         else:
             self.close()
 
-    def closeEvent(self, event) -> None:
+    def shutdown(self) -> None:
+        """Stop a running integration: it finishes the current measurement (each is
+        committed), then the thread ends. Blocks until then."""
         if self._worker is not None:
-            # Finish the current measurement (each is committed), then stop
             self._worker.cancel_requested = True
             self._thread.wait()
+
+    def closeEvent(self, event) -> None:
+        self.shutdown()
         super().closeEvent(event)

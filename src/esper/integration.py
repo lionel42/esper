@@ -3,14 +3,27 @@
 Window: each peak is integrated from ``N_HWHM_FRONT`` half widths at half
 maximum before its apex to ``N_HWHM_TAIL`` after (each side with its own half
 width, longer on the tail side because GC peaks tail). The window does not go
-beyond the prominence bases of the peak, nor past a valley: a bound that falls
-on another peak (not picked by alpinac) is moved back to the valley before it,
+beyond the prominence bases of the peak, nor past a valley: an outer bound that
+falls on another peak (not picked by alpinac) is moved back to the valley before it,
 and the baseline there is not higher than at the other end (as the drop line
 would do if the other peak had been picked).
 
-Overlaps: peaks of the same mass whose windows overlap are split at the lowest
-point between their apexes (drop line) and share one baseline, under the whole
-group.
+Overlaps: peaks of the same mass whose windows overlap (directly, or through
+a broader peak whose window contains them) form a group with one baseline,
+from the start of the first window to the end of the last one, unless the
+signal comes back to the baseline between two of them (``RESET_FRACTION``):
+there the group is split into groups with their own baselines (baseline
+reset). In a group, peaks are split at the lowest points between consecutive
+apexes (drop line), except a small peak on the tail of a large one (height
+above the extrapolated tail below ``SKIM_FRACTION`` of the height of the large
+one) when that tail decays exponentially
+(``SKIM_TAIL_TOLERANCE``): the tail is extrapolated under the small peak,
+which is integrated above it (exponential skim), and the large peak keeps
+the tail. A narrow
+peak on a broad one keeps only its own window: the tail of the broad peak
+after it is given back to the broad peak (which is then integrated in two
+pieces; its stored bounds are the outer ones). Only the outer bounds of a
+group are moved back to a valley.
 
 Baseline: a straight line from the start to the end of the group, but never
 above the signal. Where the signal goes below that line (tail of a large peak,
@@ -28,6 +41,9 @@ Uncertainty (1 sigma, statistical only, see esper.noise for the noise): the
 noise of the signal under the peak, of the baseline levels and of the
 position of the splits with the neighbouring peaks, propagated through the
 trapezoid sum. Not included: the choice of the window and of the baseline.
+When the noise is unknown (too little data), the uncertainty is NaN, and the
+baseline is the straight line (no hull, no valleys at the outer bounds: both
+compare the signal with the noise).
 
 The results are stored in the database: per peak (window, baseline at its
 ends, area and its uncertainty), per compound (``area_sum`` and ``q1..q5``,
@@ -55,7 +71,7 @@ from esper.noise import NoiseModel, NoiseParameters, SMOOTH_SCANS, measurement_n
 logger = logging.getLogger(__name__)
 
 # Increase when the method changes: measurements integrated with an older version are redone
-INTEGRATION_VERSION = 2
+INTEGRATION_VERSION = 3
 
 # Integration bounds, in half widths at half maximum of that side from the apex
 # (4 ~ 4.7 sigma for a gaussian). Longer after the apex, for tailing peaks.
@@ -64,6 +80,22 @@ N_HWHM_TAIL = 6.0
 # The baseline follows the signal down where it is below the straight line by more
 # than this times the noise of the smoothed signal (also for the valleys at the bounds)
 HULL_NOISE_FACTOR = 4.0
+# Overlapping peaks get separate baselines (baseline reset) when the valley between them
+# comes back to the baseline: within this fraction of the smaller peak height (or the noise)
+RESET_FRACTION = 0.1
+# A small peak on the tail of a large one (its height above the tail extrapolated under it
+# below this fraction of the height of the large one) is integrated above that tail
+# (exponential skim) ...
+SKIM_FRACTION = 0.2
+# ... when the tail decays exponentially: the curvature of its log (a parabola fitted to it)
+# deviates from a line by at most this much (a gaussian side does: a shoulder there is
+# left to the drop line)
+SKIM_TAIL_TOLERANCE = 0.06
+# Part of the way from the apex of the large peak to the valley where its tail is fitted
+SKIM_TAIL_FIT = (0.25, 0.75)
+# The tail under a rider decays at most this many times slower than over the tail window of
+# the large peak (beyond: not a tail)
+SKIM_MAX_DECAY = 2.0
 
 PEAK_COLUMNS = [name for name, _ in db.ADDED_COLUMNS["peak"]]
 COMPOUND_COLUMNS = [name for name, _ in db.ADDED_COLUMNS["compound"]]
@@ -78,6 +110,13 @@ def _scans(t: np.ndarray, lo: float, hi: float, inclusive: bool = True) -> np.nd
     """Indices of the scans with lo <= t <= hi (lo < t < hi if not inclusive); t sorted."""
     side_lo, side_hi = ("left", "right") if inclusive else ("right", "left")
     return np.arange(np.searchsorted(t, lo, side_lo), np.searchsorted(t, hi, side_hi))
+
+
+def _points(t: np.ndarray, y: np.ndarray, lo: float, hi: float) -> tuple[np.ndarray, np.ndarray]:
+    """Times and values from lo to hi: the scans between, and y interpolated at the bounds."""
+    inner = _scans(t, lo, hi, inclusive=False)
+    tt = np.concatenate([[lo], t[inner], [hi]])
+    return tt, np.concatenate([[np.interp(lo, t, y)], y[inner], [np.interp(hi, t, y)]])
 
 
 def _integration_bounds(peaks: pd.DataFrame, t: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -96,27 +135,23 @@ def _integration_bounds(peaks: pd.DataFrame, t: np.ndarray) -> tuple[np.ndarray,
     return np.clip(start, t[0], t[-1]), np.clip(stop, t[0], t[-1])
 
 
-def _clip_to_valleys(t, smoothed, noise: NoiseModel, rt, start, stop):
-    """Move the bounds back to the lowest point between apex and bound, if the signal rises after it.
+def _clip_bound(t, smoothed, noise: NoiseModel, apex: float, bound: float) -> tuple[float, bool]:
+    """Move an outer bound of a group back to the lowest point between the apex and it,
+    if the signal rises after that point (another peak, not picked by alpinac).
 
     Only when the bound is above that lowest point by more than
     ``HULL_NOISE_FACTOR`` times the noise of the smoothed signal (on a clean
     tail, the lowest point is the bound itself or in the noise).
-    Returns start, stop and whether each was moved.
+    Returns the bound and whether it was moved.
     """
-    start, stop = start.copy(), stop.copy()
-    moved_start, moved_stop = np.zeros(len(rt), bool), np.zeros(len(rt), bool)
-    for k in range(len(rt)):
-        for bounds, moved, lo, hi in ((start, moved_start, start[k], rt[k]), (stop, moved_stop, rt[k], stop[k])):
-            idx = _scans(t, lo, hi)
-            if len(idx) < 2 or np.isnan(smoothed[idx]).all():
-                continue
-            i = idx[np.nanargmin(smoothed[idx])]
-            level = np.interp(bounds[k], t, smoothed)
-            if level > smoothed[i] and level > smoothed[i] + HULL_NOISE_FACTOR * noise.mean_sd(smoothed[i]):
-                bounds[k] = t[i]
-                moved[k] = True
-    return start, stop, moved_start, moved_stop
+    idx = _scans(t, min(apex, bound), max(apex, bound))
+    if len(idx) < 2 or np.isnan(smoothed[idx]).all():
+        return bound, False
+    i = idx[np.nanargmin(smoothed[idx])]
+    level = np.interp(bound, t, smoothed)
+    if level > smoothed[i] and level > smoothed[i] + HULL_NOISE_FACTOR * noise.mean_sd(smoothed[i]):
+        return float(t[i]), True
+    return bound, False
 
 
 def _valley(t, smoothed, lo: float, hi: float, noise: NoiseModel) -> tuple[float, float]:
@@ -224,22 +259,197 @@ def _baseline(t, smoothed, noise: NoiseModel, start, stop, flat=None, valley_sta
     return _Baseline(x[below][hull], y[below][hull], source[below][hull])
 
 
-def _area_variance(t, smoothed, noise: NoiseModel, baseline: _Baseline, tt, splits) -> float:
-    """Variance of the area of a peak integrated over the points tt above the baseline.
+def _area_variance(t, smoothed, noise: NoiseModel, baseline: _Baseline, pieces) -> float:
+    """Variance of the area of a peak above the baseline, integrated over its pieces.
 
     Noise of the signal (trapezoid weights), of the baseline levels (moving
     means) and of the position of the splits with the neighbours (signal above
-    the baseline there times the uncertainty of the position). ``splits``:
-    (time, uncertainty [s]) of the splits at the bounds of the peak.
+    the baseline there times the uncertainty of the position). ``pieces``:
+    (points tt, uncertainty [s] of the start, of the end) of each piece.
     """
-    s, e = tt[0], tt[-1]
-    dt = np.diff(tt)
-    weights = np.concatenate([[0.0], dt]) / 2 + np.concatenate([dt, [0.0]]) / 2
-    signal = np.sum(weights**2 * noise.sum_variance(np.interp(tt, t, smoothed)))
-    sources, source_weights = baseline.source_weights(s, e, tt)
+    signal = 0.0
+    sources, source_weights = None, None
+    split = 0.0
+    for tt, start_sd, end_sd in pieces:
+        dt = np.diff(tt)
+        weights = np.concatenate([[0.0], dt]) / 2 + np.concatenate([dt, [0.0]]) / 2
+        signal += np.sum(weights**2 * noise.sum_variance(np.interp(tt, t, smoothed)))
+        piece_sources, piece_weights = baseline.source_weights(tt[0], tt[-1], tt)
+        # Same sources for all the pieces (the vertices of the baseline): weights add up
+        source_weights = piece_weights if source_weights is None else source_weights + piece_weights
+        sources = piece_sources
+        for bound, sd in ((tt[0], start_sd), (tt[-1], end_sd)):
+            if sd > 0:
+                split += ((np.interp(bound, t, smoothed) - baseline(bound)) * sd) ** 2
     levels = np.sum(source_weights**2 * noise.mean_sd(np.interp(sources, t, smoothed)) ** 2)
-    split = sum(((np.interp(bound, t, smoothed) - baseline(bound)) * sd) ** 2 for bound, sd in splits if sd > 0)
     return float(signal + levels + split)
+
+
+def _groups(start: np.ndarray, stop: np.ndarray) -> list[list[int]]:
+    """Peaks (sorted by apex) whose windows overlap, directly or through a broader one."""
+    groups: list[list[int]] = []
+    envelope_stop = -np.inf
+    for k in range(len(start)):
+        if groups and start[k] < envelope_stop:
+            groups[-1].append(k)
+        else:
+            groups.append([k])
+        envelope_stop = max(envelope_stop, stop[k]) if len(groups[-1]) > 1 else stop[k]
+    return groups
+
+
+def _resets(t, smoothed, noise: NoiseModel, members, rt, start, stop) -> list[tuple[int, float]]:
+    """Where a group of overlapping windows is split into groups with their own baselines.
+
+    Between consecutive apexes, at the valley, when the valley comes back to the
+    baseline (taken as the lower of the levels at the start of the first window
+    and at the end of the second): within ``RESET_FRACTION`` of the height of
+    the smaller peak above it, or within the noise. Otherwise the peaks overlap
+    for real and share the baseline (drop line). Returns (position in members
+    of the first peak after the reset, time of the valley).
+    """
+    resets = []
+    for n, (a, b) in enumerate(zip(members[:-1], members[1:])):
+        valley, _ = _valley(t, smoothed, rt[a], rt[b], noise)
+        level = np.interp(valley, t, smoothed)
+        base = min(np.interp(start[a], t, smoothed), np.interp(stop[b], t, smoothed))
+        height = min(np.interp(rt[a], t, smoothed), np.interp(rt[b], t, smoothed)) - base
+        tolerance = max(RESET_FRACTION * height, HULL_NOISE_FACTOR * noise.mean_sd(level))
+        if level - base <= tolerance:
+            resets.append((n + 1, valley))
+    return resets
+
+
+@dataclass
+class _Rider:
+    """A small peak on the tail of a large one, from the valley to its end, and the tail
+    of the large one under it: exponential from the signal at the valley to the signal at
+    the end (exponential skim), above the baseline."""
+
+    parent: int
+    valley: float
+    valley_sd: float
+    end: float
+    level: float  # of the tail above the baseline at the valley
+    rate: float  # decay of the tail [1/s]
+
+    def under(self, tt: np.ndarray, baseline: _Baseline) -> np.ndarray:
+        """What is under the rider: the baseline and the tail above it."""
+        return baseline(tt) + self.level * np.exp(-self.rate * (tt - self.valley))
+
+
+def _exponential_tail(
+    t, smoothed, noise: NoiseModel, baseline: _Baseline, apex: float, valley: float
+) -> tuple[float, float] | None:
+    """Exponential fitted to the tail of a peak, between its apex and a valley after it
+    (signal above the baseline, on ``SKIM_TAIL_FIT`` of the way): (level at the valley,
+    decay rate [1/s]).
+
+    None if it is not a tail there: its log bends down (a parabola fitted to it deviates
+    from the fitted line by more than ``SKIM_TAIL_TOLERANCE``), as the side of a gaussian
+    does; a tail decays exponentially, or slower and slower (log bending up). The fits are weighted by the signal over its noise, so that the noise
+    of the log where the signal is low does not count as curvature.
+    """
+    idx = _scans(t, apex + SKIM_TAIL_FIT[0] * (valley - apex), apex + SKIM_TAIL_FIT[1] * (valley - apex))
+    height = smoothed[idx] - baseline(t[idx])
+    if len(idx) < 5 or not (height > 0).all():
+        return None
+    x, log_height = t[idx] - valley, np.log(height)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        weights = height / noise.mean_sd(smoothed[idx])
+    if not np.isfinite(weights).all():
+        weights = None
+    line = np.polyfit(x, log_height, 1, w=weights)
+    parabola = np.polyfit(x, log_height, 2, w=weights)
+    curvature = np.abs(np.polyval(parabola, x) - np.polyval(line, x)).max()
+    # A gaussian side bends down (log concave); a tail bends up (slowing down) or not at all
+    if not line[0] < 0 or (parabola[0] < 0 and curvature > SKIM_TAIL_TOLERANCE):
+        return None
+    return float(np.exp(line[1])), float(-line[0])
+
+
+def _riders(t, smoothed, noise: NoiseModel, baseline: _Baseline, members, rt, start, stop) -> dict[int, _Rider]:
+    """Small peaks on the tail of the previous, much larger peak of their group, when that
+    tail decays exponentially (see ``SKIM_FRACTION``, ``_exponential_tail``).
+
+    The tail under the small peak is the exponential through the signal at the valley and
+    at the end of the small peak: it follows the slow part of a tail, which a fit next
+    to the apex would miss (the fit only decides whether the side is a tail). The small
+    peak must be on the tail: its window starts after the apex of the large one (not a
+    broad peak with a narrow one on its front), and the tail must decay like a tail: its
+    decay length is at most the tail window of the large peak. The large peak is not
+    itself a rider.
+    """
+    riders: dict[int, _Rider] = {}
+    for n, (a, b) in enumerate(zip(members[:-1], members[1:])):
+        if a in riders or not start[b] > rt[a]:
+            continue
+        valley, valley_sd = _valley(t, smoothed, rt[a], rt[b], noise)
+        if _exponential_tail(t, smoothed, noise, baseline, rt[a], valley) is None:
+            continue
+        # The rider ends at the end of its window, or before at the valley before the next peak
+        end = stop[b]
+        if n + 2 < len(members):
+            end = min(end, _valley(t, smoothed, rt[b], rt[members[n + 2]], noise)[0])
+        level, level_end = np.interp([valley, end], t, smoothed) - baseline(np.array([valley, end]))
+        if not (end > valley and level > 0):
+            continue
+        # Exponential through the signal above the baseline at the valley and at the end (a
+        # tiny level at the end when the signal is back on the baseline there)
+        rate = math.log(level / max(level_end, 1e-3 * level)) / (end - valley)
+        if not rate > 0 or 1 / rate > SKIM_MAX_DECAY * (stop[a] - rt[a]):
+            continue
+        rider = _Rider(a, valley, valley_sd, end, level, rate)
+        level_a, level_b = np.interp([rt[a], rt[b]], t, smoothed)
+        above_tail = level_b - rider.under(np.array([rt[b]]), baseline)[0]
+        if above_tail < SKIM_FRACTION * (level_a - baseline(rt[a])):
+            riders[b] = rider
+    return riders
+
+
+def _pieces(members, rt, start, stop, cuts, cut_sds, g_start, g_stop) -> dict[int, list]:
+    """The parts of the group [g_start, g_stop] integrated for each member: (start, end,
+    uncertainty of the start, of the end).
+
+    The group is split at the valleys between consecutive apexes (``cuts``,
+    with their uncertainty). A member keeps its part inside its own window;
+    what is outside (beyond a narrow peak on a broad one) goes to the broadest
+    other member whose window covers it, or stays with the member if none.
+    """
+    bounds = [g_start, *cuts, g_stop]
+    sds = [0.0, *cut_sds, 0.0]
+    pieces: dict[int, list] = {k: [] for k in members}
+    for n, k in enumerate(members):
+        a, b, sd_a, sd_b = bounds[n], bounds[n + 1], sds[n], sds[n + 1]
+        own_a, own_b = max(a, start[k]), min(b, stop[k])
+        if not own_b > own_a:
+            pieces[k].append((a, b, sd_a, sd_b))
+            continue
+        own = [own_a, own_b, sd_a if own_a == a else 0.0, sd_b if own_b == b else 0.0]
+        for lo, hi, sd_lo, sd_hi, side in ((a, own_a, sd_a, 0.0, 0), (own_b, b, 0.0, sd_b, 1)):
+            if not hi > lo:
+                continue
+            middle = (lo + hi) / 2
+            hosts = [h for h in members if h != k and start[h] <= middle <= stop[h]]
+            if hosts:
+                host = max(hosts, key=lambda h: stop[h] - start[h])
+                pieces[host].append((lo, hi, sd_lo, sd_hi))
+            elif side == 0:
+                own[0], own[2] = lo, sd_lo
+            else:
+                own[1], own[3] = hi, sd_hi
+        pieces[k].append(tuple(own))
+    # Join the touching pieces of a member (no split between them)
+    joined = {}
+    for k, parts in pieces.items():
+        joined[k] = []
+        for part in sorted(parts):
+            if joined[k] and joined[k][-1][1] == part[0]:
+                lo, _, sd_lo, _ = joined[k][-1]
+                joined[k][-1] = (lo, part[1], sd_lo, part[3])
+            else:
+                joined[k].append(part)
+    return joined
 
 
 def integrate_mass(
@@ -264,24 +474,20 @@ def integrate_mass(
     smoothed = smooth(y)
     model = noise_model(y, noise, smoothed)
     start, stop = _integration_bounds(peaks, t)
-    start, stop, valley_start, valley_stop = _clip_to_valleys(t, smoothed, model, rt, start, stop)
-
-    # Split overlapping neighbours at the valley between them; they form a group
-    group = np.zeros(len(peaks), dtype=int)
-    split_sd = np.zeros(len(peaks))  # uncertainty of the split after each peak [s]
-    for i in range(len(peaks) - 1):
-        j = i + 1
-        if stop[i] > start[j]:
-            cut, split_sd[i] = _valley(t, smoothed, max(rt[i], start[j]), min(rt[j], stop[i]), model)
-            stop[i] = start[j] = cut
-            group[j] = group[i]
-        else:
-            group[j] = group[i] + 1
 
     values = np.full((len(peaks), len(PEAK_COLUMNS)), np.nan)
-    for g in np.unique(group):
-        members = np.flatnonzero(group == g)
-        g_start, g_stop = start[members[0]], stop[members[-1]]
+    groups = []  # (members, start, stop, start moved back to a valley, stop moved back)
+    for overlapping in _groups(start, stop):
+        # Outer bounds, back to a valley if another (unpicked) peak starts there
+        g_start, valley_start = _clip_bound(t, smoothed, model, rt[overlapping[0]], start[overlapping].min())
+        g_stop, valley_stop = _clip_bound(t, smoothed, model, rt[overlapping[-1]], stop[overlapping].max())
+        # Separate baselines where the signal comes back to the baseline between two peaks
+        bounds = [(0, g_start, valley_start)] + [(n, v, False) for n, v in _resets(t, smoothed, model, overlapping, rt, start, stop)]
+        ends = [(v, False) for _, v, _ in bounds[1:]] + [(g_stop, valley_stop)]
+        for (n, lo, lo_valley), (hi, hi_valley), n_next in zip(bounds, ends, [b[0] for b in bounds[1:]] + [len(overlapping)]):
+            groups.append((overlapping[n:n_next], lo, hi, lo_valley, hi_valley))
+
+    for members, g_start, g_stop, valley_start, valley_stop in groups:
         if not g_stop > g_start:
             continue
         flat = None
@@ -289,23 +495,52 @@ def integrate_mass(
             flat = "stop"
         elif g_start <= t[0] and g_stop < t[-1]:
             flat = "start"
-        baseline = _baseline(
-            t, smoothed, model, g_start, g_stop, flat, valley_start[members[0]], valley_stop[members[-1]]
-        )
+        baseline = _baseline(t, smoothed, model, g_start, g_stop, flat, valley_start, valley_stop)
         if baselines is not None:
             baselines.append((baseline.x, baseline.y))
+        # Small peaks on the tail of a large one: exponential skim, below
+        riders = _riders(t, smoothed, model, baseline, members, rt, start, stop)
+        members = [k for k in members if k not in riders]
+        # Split at the valleys between consecutive apexes
+        cuts, cut_sds = [], []
+        for a, b in zip(members[:-1], members[1:]):
+            cut, sd = _valley(t, smoothed, rt[a], rt[b], model)
+            cuts.append(min(max(cut, g_start), g_stop))
+            cut_sds.append(sd)
 
-        for k in members:
-            s, e = start[k], stop[k]
-            if not e > s:
+        # Riders: above the tail of the large peak, extrapolated under them
+        spans = {k: (r.valley, min(r.end, g_stop)) for k, r in riders.items() if min(r.end, g_stop) > r.valley}
+
+        def above_tail(lo, hi):
+            """Signal of the riders above the tail, between lo and hi: not in the other peaks."""
+            total = 0.0
+            for k, (r_lo, r_hi) in spans.items():
+                a, b = max(lo, r_lo), min(hi, r_hi)
+                if b > a:
+                    tt, yy = _points(t, y, a, b)
+                    total += float(np.trapezoid(yy - riders[k].under(tt, baseline), tt))
+            return total
+
+        for k, parts in _pieces(members, rt, start, stop, cuts, cut_sds, g_start, g_stop).items():
+            area, pieces = 0.0, []
+            for lo, hi, sd_lo, sd_hi in parts:
+                if not hi > lo:
+                    continue
+                tt, yy = _points(t, y, lo, hi)
+                area += float(np.trapezoid(yy - baseline(tt), tt)) - above_tail(lo, hi)
+                pieces.append((tt, sd_lo, sd_hi))
+            if not pieces:
                 continue
-            inner = _scans(t, s, e, inclusive=False)
-            tt = np.concatenate([[s], t[inner], [e]])
-            yy = np.concatenate([[np.interp(s, t, y)], y[inner], [np.interp(e, t, y)]])
-            area = float(np.trapezoid(yy - baseline(tt), tt))
-            splits = ((s, split_sd[k - 1] if k > 0 else 0.0), (e, split_sd[k]))
-            uncertainty = math.sqrt(_area_variance(t, smoothed, model, baseline, tt, splits))
+            s, e = pieces[0][0][0], pieces[-1][0][-1]
+            uncertainty = math.sqrt(_area_variance(t, smoothed, model, baseline, pieces))
             values[k] = (s, e, baseline(s), baseline(e), area, uncertainty)
+
+        for k, (lo, hi) in spans.items():
+            tt, yy = _points(t, y, lo, hi)
+            under = riders[k].under(tt, baseline)
+            area = float(np.trapezoid(yy - under, tt))
+            uncertainty = math.sqrt(_area_variance(t, smoothed, model, baseline, [(tt, riders[k].valley_sd, 0.0)]))
+            values[k] = (lo, hi, under[0], under[-1], area, uncertainty)
     out.loc[peaks.index] = values
     return out
 
@@ -351,18 +586,25 @@ def compound_areas(peaks: pd.DataFrame) -> pd.DataFrame:
 
     ``peaks`` has the columns compound_idx, mass, area and area_unc. Peaks on
     the same mass are summed, masses without area are left out of the ranking.
-    The uncertainties of summed areas are added in quadrature (independent).
+    The uncertainties of summed areas are added in quadrature (independent);
+    a sum is unknown (NaN) if one of its areas has an unknown uncertainty.
     """
     index = pd.Index(peaks["compound_idx"].unique(), name="compound_idx")
     compounds = pd.DataFrame(index=index, columns=COMPOUND_COLUMNS, dtype=float)
     if peaks.empty:
         return compounds
-    peaks = peaks.assign(area_var=peaks["area_unc"] ** 2)
+    # Variance: 0 for peaks without area (not in the sums), NaN when the uncertainty is unknown
+    area_var = peaks["area_unc"].pow(2).where(peaks["area"].notna(), 0.0)
+    peaks = peaks.assign(area_var=area_var, unknown=area_var.isna())
     by_compound = peaks.groupby("compound_idx")
     compounds["area_sum"] = by_compound["area"].sum(min_count=1)
-    compounds["area_sum_unc"] = np.sqrt(by_compound["area_var"].sum(min_count=1))
-    by_mass = peaks.groupby(["compound_idx", "mass"])[["area", "area_var"]].sum(min_count=1)
-    by_mass = by_mass.dropna(subset=["area"]).reset_index()
+    compounds["area_sum_unc"] = np.sqrt(by_compound["area_var"].sum().where(~by_compound["unknown"].any()))
+    by_mass = peaks.groupby(["compound_idx", "mass"]).agg(
+        area=("area", "sum"), area_var=("area_var", "sum"), unknown=("unknown", "any"), n=("area", "count")
+    )
+    by_mass = by_mass[by_mass["n"] > 0]
+    by_mass["area_var"] = by_mass["area_var"].where(~by_mass["unknown"])
+    by_mass = by_mass.reset_index()
     by_mass = by_mass.sort_values(["compound_idx", "area"], ascending=[True, False])
     by_mass["rank"] = by_mass.groupby("compound_idx").cumcount() + 1
     for i in range(1, db.N_QUALIFIERS + 1):
