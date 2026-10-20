@@ -182,6 +182,8 @@ class ChromatogramPanel(BasePanel):
 
     def _update_peaking(self) -> None:
         """After a pan/zoom: redraw (keeping the view) if other masses peak in it."""
+        if not self.isVisible():
+            return
         if self.selection.measurement_id is not None and self._overlay_masses() != self._overlaid:
             self._keep_range = True
             self.invalidate()
