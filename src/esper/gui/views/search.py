@@ -102,6 +102,8 @@ class SearchView(BaseView):
         for edit in (self.lo_edit, self.hi_edit, self.masses_edit):
             edit.returnPressed.connect(self.search)
         search_button.clicked.connect(self.search)
+        self._window = self.window_combo.currentText()
+        self.window_combo.currentTextChanged.connect(self._convert_window)
         from_selection.clicked.connect(self.fill_from_selection)
         self.runtype_box.selected.connect(lambda runtype: self.results.set_options(runtype=runtype))
         self.x_combo.currentTextChanged.connect(lambda x: self.results.set_options(x=x))
@@ -109,11 +111,40 @@ class SearchView(BaseView):
         self.all_masses.toggled.connect(lambda checked: self.results.set_options(all_masses=checked))
         self.valid_only.toggled.connect(lambda checked: self.results.set_options(valid_only=checked))
         self.results.summary_changed.connect(self.status.setText)
+        # Compound the search was last filled from; refilled when the view is shown with another one
+        self._filled_from: tuple[int, int] | None = None
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if self.runtype_box.combo.count() == 0:
             self.runtype_box.set_items([(ALL, ALL)] + [(t, t) for t in self.data.sample_types()], ALL)
+        sel = self.selection
+        if sel.measurement_id is not None and sel.compound_idx is not None:
+            if self._filled_from != (sel.measurement_id, sel.compound_idx):
+                self.fill_from_selection()
+
+    def _convert_window(self, window: str) -> None:
+        """Convert the window between rt and retention index, with the RI anchors of the selected measurement."""
+        old, self._window = WINDOWS[self._window][0], window
+        new = WINDOWS[window][0]
+        mid = self.selection.measurement_id
+        try:
+            bounds = [float(self.lo_edit.text()), float(self.hi_edit.text())]
+        except ValueError:
+            return
+        if old == new:
+            return
+        if mid is None:
+            self.status.setText("Select a measurement to convert the window")
+            return
+        convert = self.data.expected_ris if new == "ri" else self.data.expected_rts
+        lo, hi = convert(mid, bounds)
+        if not (np.isfinite(lo) and np.isfinite(hi)):
+            self.status.setText("The selected measurement has no retention index anchors")
+            return
+        self.lo_edit.setText(f"{lo:.1f}")
+        self.hi_edit.setText(f"{hi:.1f}")
+        self.search()
 
     def fill_from_selection(self) -> None:
         sel = self.selection
@@ -127,6 +158,7 @@ class SearchView(BaseView):
             self.status.setText("The selected compound has no retention index")
             return
         half = SELECTION_HALF_WINDOW[window]
+        self._filled_from = (sel.measurement_id, sel.compound_idx)
         self.lo_edit.setText(f"{centre - half:.1f}")
         self.hi_edit.setText(f"{centre + half:.1f}")
 

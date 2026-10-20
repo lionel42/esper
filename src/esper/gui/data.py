@@ -231,6 +231,14 @@ class EsperData:
             return np.full(ri.shape, np.nan)
         return interp_extrapolate(ri, anchors_ri, anchors_rt)
 
+    def expected_ris(self, measurement_id: int, rt) -> np.ndarray:
+        """Retention indexes of rts in a measurement (NaN if not possible)."""
+        rt = np.asarray(rt, dtype=float)
+        anchors_ri, anchors_rt = self.ri_anchors(measurement_id)
+        if len(anchors_ri) < 2:
+            return np.full(rt.shape, np.nan)
+        return interp_extrapolate(rt, anchors_rt, anchors_ri)
+
     def expected_rt(self, measurement_id: int, target: str) -> float | None:
         """rt where the target should elute in the measurement, from its retention index."""
         if target not in self.targets.index:
