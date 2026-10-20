@@ -16,7 +16,8 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from esper import db
-from esper.integration import integration_bounds, peak_area
+from esper.integration import COMPOUND_COLUMNS, integrate_mass
+from esper.noise import NoiseParameters, measurement_noise
 from esper.libraries import Spectrum
 from esper.targets import interp_extrapolate
 
@@ -30,9 +31,27 @@ class EsperData:
         self._measurements: pd.DataFrame | None = None
         self._chromatograms: OrderedDict = OrderedDict()
         self._chromatogram_cache_size = chromatogram_cache_size
+        # Incremented by reload(), part of the cache keys of the panels
+        self.generation = 0
 
     def close(self) -> None:
         self.con.close()
+
+    def reload(self) -> None:
+        """Forget the cached tables, after the database was changed (e.g. integrated)."""
+        self._measurements = None
+        for method in (
+            EsperData.compounds, EsperData.peaks, EsperData.compound_spectrum, EsperData._candidates,
+            EsperData.ri_anchors, EsperData.targets_found, EsperData.noise_parameters,
+        ):
+            method.cache_clear()
+        self.__dict__.pop("compound_columns", None)
+        self.generation += 1
+
+    @cached_property
+    def compound_columns(self) -> frozenset[str]:
+        """Columns of the compound table (older databases lack some integration columns)."""
+        return frozenset(db.table_columns(self.con, "compound"))
 
     def _query(self, sql: str, params=(), **kwargs) -> pd.DataFrame:
         return pd.read_sql(sql, self.con, params=params, **kwargs)
@@ -105,24 +124,43 @@ class EsperData:
     def compound_spectrum(self, measurement_id: int, compound_idx: int, intensity: str) -> Spectrum:
         """Spectrum of a compound: unit masses and 'prominence', 'height' or 'area' of its peaks.
 
-        Peaks on the same unit mass are summed. The area is integrated in the
-        chromatograms (reads the chromatogram of every mass of the compound).
+        Peaks on the same unit mass are summed, negative areas count as 0. The
+        area is the stored one, or integrated in the chromatograms if the
+        measurement was not integrated (reads the chromatogram of every mass).
         """
         peaks = self.compound_peaks(measurement_id, compound_idx)
         if intensity != "area":
             return Spectrum.from_pairs(peaks["mass"], peaks[intensity])
-        masses, areas = [], []
-        for mass, group in peaks.groupby("mass"):
-            series = self.chromatogram(measurement_id, int(mass))
-            if series is None:
-                continue
-            t = series.index.to_numpy(dtype=float)
-            y = series.to_numpy(dtype=float)
-            start, stop = integration_bounds(group, t)
-            for a, b in zip(start, stop):
-                masses.append(mass)
-                areas.append(max(peak_area(t, y, a, b), 0.0))
-        return Spectrum.from_pairs(masses, np.nan_to_num(areas))
+        if "area" in peaks and peaks["area"].notna().any():
+            areas = peaks["area"]
+        else:
+            all_peaks = self.peaks(measurement_id)
+            areas = pd.Series(np.nan, index=peaks.index)
+            for mass in peaks["mass"].unique():
+                series = self.chromatogram(measurement_id, int(mass))
+                if series is None:
+                    continue
+                # All the peaks of the mass: overlapping peaks are split
+                result = integrate_mass(
+                    all_peaks[all_peaks["mass"] == mass],
+                    series.index.to_numpy(dtype=float),
+                    series.to_numpy(dtype=float),
+                    self.noise_parameters(measurement_id),
+                )
+                areas.update(result["area"])
+        return Spectrum.from_pairs(peaks["mass"], np.nan_to_num(areas.clip(lower=0).to_numpy(dtype=float)))
+
+    @lru_cache(maxsize=32)
+    def noise_parameters(self, measurement_id: int) -> NoiseParameters:
+        """Noise parameters of a measurement: stored by the integration, or estimated as it
+        would (reads the whole chromatogram file)."""
+        stored = NoiseParameters.from_columns(self.measurements.loc[measurement_id])
+        if stored is not None:
+            return stored
+        frame = self.chromatogram_frame(measurement_id)
+        if frame is None:
+            return NoiseParameters()
+        return measurement_noise(self.peaks(measurement_id), frame)
 
     @lru_cache(maxsize=32)
     def _candidates(self, measurement_id: int) -> pd.DataFrame:
@@ -255,11 +293,15 @@ class EsperData:
     def results(self, name: str, valid_only: bool) -> pd.DataFrame:
         """All occurrences of a compound in the measurements, with peak summaries."""
         where = "AND c.valid_candidate = 1" if valid_only else ""
+        # Areas of the compound (NULL in a database without integration)
+        areas = ", ".join(
+            f"c.{col}" if col in self.compound_columns else f"NULL AS {col}" for col in COMPOUND_COLUMNS
+        )
         df = self._query(
             f"""
             SELECT
                 c.measurement_id, c.compound_idx, c.rt_mean_s, c.retention_index,
-                c.valid_candidate,
+                c.valid_candidate, {areas},
                 COUNT(p.peak_idx) AS n_peaks,
                 SUM(p.prominence) AS prominence_sum,
                 MAX(p.height) AS max_height,

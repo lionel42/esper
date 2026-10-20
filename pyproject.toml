@@ -21,6 +21,9 @@ dependencies = [
     "pyyaml",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest", "scipy"]
+
 [project.scripts]
 esper = "esper.cli.main:main"
 

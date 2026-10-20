@@ -36,6 +36,8 @@ class Settings:
     n_best_matches: int = 20
     # Data directories opened before, most recent first
     recent_data_dirs: list[str] = field(default_factory=list)
+    # Show the uncertainty of the values that have one (columns <value>_unc)
+    show_uncertainties: bool = False
 
     @property
     def processing(self) -> Processing:

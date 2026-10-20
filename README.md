@@ -12,7 +12,8 @@ pip install -e .
 ## Usage
 
 ```
-esper upload /path/to/alpinac/results /path/to/esper/data   # import / update
+esper upload /path/to/alpinac/results /path/to/esper/data   # import / update (and integrate)
+esper integrate /path/to/esper/data                         # integrate what is not yet
 esper targets /shared/data/substances.xlsx /path/to/esper/data  # import the target compounds
 esper gui /path/to/esper/data                               # open the GUI
 ```
@@ -32,6 +33,15 @@ user who ran sudo). `--uninstall` removes it all.
 
 `upload` accepts a single `.alpinac` folder or a directory searched recursively.
 Measurements whose `pipeline.nc` did not change are skipped (`--force` to reimport).
+The peaks of the imported measurements are integrated (see [Integration](#integration)),
+unless `--skip-integration` is given.
+
+`integrate` computes the peak areas of the measurements not integrated yet, or integrated
+with an older version of the method (`--force`: all). `--since` / `--until` (date or date
+and time) choose the measurements by acquisition time, `--name` and `--rt FROM TO` only
+integrate some compounds (the measurement is then not marked as integrated). Each
+measurement is committed, so it can be stopped and run again. Also in the GUI: Calculate >
+Integrate.
 
 `targets` replaces all the target compounds of the database. The source is read by a loader
 chosen from its file suffix (`esper.targets.LOADERS`); the Excel loader uses alpinac's
@@ -54,7 +64,10 @@ browse for another one.
   linked) show the same curves, each rescaled to the range of the main mass in the visible
   window.
 - **Results** (Ctrl+2): one compound (Cmp) across all measurements. Click a point to select
-  that measurement/compound, double click to open its chromatogram.
+  that measurement/compound, double click to open its chromatogram. Yaxis: values of alpinac
+  and, once integrated, the area of all the compound's peaks (area sum) and the areas of
+  its masses by decreasing area (q1 area … q5 area; the tooltip gives the mass, which may
+  differ between measurements).
 - **Search** (Ctrl+3): peaks of some masses (e.g. `85, 87 101-103`) in an rt or retention
   index window, across all measurements. Color = mass, symbol = run type. "only runs with all
   masses" keeps the runs where every mass has a peak in the window. "From selection" fills the
@@ -67,6 +80,11 @@ spectrum shows one stick per mass of the selected compound (prominence, % of the
 the masses plotted in the chromatogram panel of the same view have the same colors there
 (main mass black, others grey). Clicking a stick selects that mass. Panel heights are adjustable
 with the splitters.
+
+View > Show uncertainties (remembered) shows the uncertainty of the values that have one: error
+bars and ± in the tooltip in Results (area sum, q1–q5 area), A = area ± uncertainty in the
+chromatogram labels. A value has an uncertainty when the database has a column of the same
+name with `_unc` appended (`db.UNC_SUFFIX`); other variables get it the same way.
 
 The target table (left of Chromatograms, below the compounds) lists the targets with their RI,
 the rt expected in the selected measurement (from the RI and the measurement's reference
@@ -84,8 +102,8 @@ search box searches the spectra of all the configured libraries, also the disabl
 `library/name` (e.g. `nist_ch/` or `CFC-11`), scored against the compound.
 
 File > Settings (saved in `~/.config/esper/settings.json`):
-- intensity of the measured peaks: prominence (default), height or area (integrated in the
-  chromatograms, slower);
+- intensity of the measured peaks: prominence (default), height or area (the stored areas,
+  or integrated in the chromatograms if the measurement is not integrated, slower);
 - spectral libraries (peaksdb folders: NIST `.jdx` and alpinac fragment `.txt` files, read like
   peaksdb's `db_reader` but without it, whose import takes seconds), checked = used, ordered by
   priority: a spectrum in several libraries is taken from the first one. alpinac's references
@@ -99,8 +117,56 @@ The compound table (left of Chromatograms) lists the compounds extracted in the 
 measurement (rt, RI, name, scores, valid, number of peaks, main ion); it is sortable, has a
 text filter and a "valid only" filter, and choosing a row selects the compound.
 
-A is computed by esper from the chromatogram, above a straight baseline over
-±3 half widths at half maximum, limited to the prominence bases of the peak.
+Calculate > Integrate computes the peak areas (see [Integration](#integration)) of the
+measurements acquired in a time range (all, last year, month, week, day counted back from
+now, or chosen), optionally only for the selected substance and/or an rt range. It runs in
+the background, the data can be browsed meanwhile; the panels are updated when it is done.
+Closing the dialog cancels it after the current measurement.
+
+## Integration
+
+`src/esper/integration.py` (noise model: `src/esper/noise.py`), areas in counts·s:
+
+- **Window:** from 4 half widths at half maximum before the apex to 6 after (each side with
+  its own half width, longer on the tail side because GC peaks tail), limited to the
+  prominence bases of the peak. A bound falling on another peak that alpinac did not pick is
+  moved back to the valley before it.
+- **Overlapping peaks** of the same mass are split at the lowest point between their apexes
+  (drop line) and share one baseline. Known limit: a small peak on the tail of a large one
+  gets the part of the tail under it.
+- **Baseline:** straight from the start to the end of the group, on the signal smoothed over
+  11 scans, but never clearly above the signal: where the signal goes below it by more than
+  4× the noise, it follows the lower convex hull of the signal. When the window is cut by the
+  end of the chromatogram, the baseline is flat.
+
+**Uncertainty** (`area_unc`, 1σ, statistical only: not the choice of window or baseline):
+- noise model per measurement, from the quiet parts of 60 of its chromatograms: variance per
+  scan = floor (per mass) + gain × signal (counting noise), and the correlation between
+  neighbouring scans (on the TOF data ~0.7–0.85 at 1 scan, ~0.3 at 2), which makes the noise
+  of a sum of scans ~3× larger than for independent scans;
+- propagated through the trapezoid sum: noise of the signal under the peak, of the baseline
+  levels (means of 11 scans) and, for split peaks, of the split position (noise of the slope
+  over the curvature of the valley; opposite for the two peaks, so their sum is not affected);
+- summed areas (`area_sum`, a q with several peaks) add the uncertainties in quadrature.
+
+Checks: on synthetic chromatograms with this kind of noise, the scatter of the areas over
+repeated noise is 0.85–0.95× the uncertainty (single, large, small, split and tailing peaks).
+On empty quiet windows of real chromatograms: about right above ~10 counts of background,
+conservative (up to ~1.7×) on nearly empty masses; areas of empty windows are positive by
+~0.3σ on average (the baseline rules can only lower the baseline). Bumps not picked by alpinac
+are signal, not noise, and are not covered.
+
+Stored per peak (`int_start_s`, `int_stop_s`, `base_start`, `base_stop`, `area`,
+`area_unc`), per compound (`area_sum`, `area_sum_unc`, and `q1_mass`, `q1_area`,
+`q1_area_unc` … `q5_…`: its masses by decreasing area, peaks on the same mass summed) and
+per measurement (`integration_version`, `integrated_at`, and the noise parameters
+`noise_gain`, `noise_factor`, `noise_d2_ratio`, so that the GUI integrates exactly as stored). `INTEGRATION_VERSION` is increased when the method changes, so that
+`esper integrate` redoes the measurements integrated before. The chromatogram view
+integrates the shown mass itself, to draw the exact baselines; the areas are the same.
+
+Tests on synthetic gaussian and tailing (exponentially modified gaussian) peaks, with
+correlated counting noise for the uncertainties, and an end-to-end test of a small synthetic
+data directory (`tests/test_database.py`): `pip install -e .[dev]` then `pytest tests`.
 
 ## GUI structure (`src/esper/gui/`)
 
@@ -137,9 +203,11 @@ database: /home/me/Data/esper/esper.sqlite
 ```
 
 Without `esper.yaml`, or without `database` in it, the database is `esper.sqlite` in the data
-directory. All commands (`upload`, `targets`, `gui`) follow it; `upload` creates the database
+directory. All commands (`upload`, `integrate`, `targets`, `gui`) follow it; `upload` creates the database
 there if it does not exist yet.
 
 Tables: `measurement`, `mass_cal`, `mass_cal_rt`, `mass_cal_mass`, `compound`,
 `compound_candidate`, `peak`, and the view `peak_full` (peaks joined with their
-measurement, compound and best library candidate). See `src/esper/db.py`.
+measurement, compound and best library candidate). See `src/esper/db.py`. Schema version 3
+adds the integration columns; older databases get them (empty) the next time `upload`,
+`targets` or `integrate` opens them for writing.

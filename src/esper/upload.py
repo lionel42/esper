@@ -12,6 +12,8 @@ from pathlib import Path
 import pandas as pd
 
 from esper import db
+from esper.integration import INTEGRATION_VERSION, integrate_chromatograms
+from esper.noise import NoiseParameters
 from esper.alpinac import (
     ALPINAC_SUFFIX,
     DATED_PIPELINE_GLOB,
@@ -79,33 +81,56 @@ def _insert(con: sqlite3.Connection, table: str, df: pd.DataFrame) -> None:
     )
 
 
-def store_result(con: sqlite3.Connection, result: AlpinacResult, chromatogram_file: str | None) -> None:
-    """Replace the measurement in the database (single transaction)."""
+def _integrate(result: AlpinacResult) -> NoiseParameters | None:
+    """Add the areas to the peaks and compounds of the result.
+
+    Returns the noise parameters of the measurement, None if it could not be integrated.
+    """
+    if result.chromatogram_file is None:
+        return None
+    try:
+        peaks = result.peaks.set_index("peak_idx")
+        peak_results, compound_results, noise = integrate_chromatograms(peaks, result.chromatogram_file)
+    except Exception as e:
+        logger.warning(f"{result.name}: integration failed, imported without areas ({e!r})")
+        return None
+    result.peaks = result.peaks.join(peak_results, on="peak_idx")
+    result.compounds = result.compounds.join(compound_results, on="compound_idx")
+    return noise
+
+
+def store_result(
+    con: sqlite3.Connection, result: AlpinacResult, chromatogram_file: str | None,
+    noise: NoiseParameters | None = None,
+) -> None:
+    """Replace the measurement in the database (single transaction).
+
+    ``noise``: the peaks and compounds of the result have their areas, computed
+    with these noise parameters (None: not integrated).
+    """
     stat = result.pipeline_file.stat()
+    now = datetime.now().isoformat(timespec="seconds")
+    measurement = {
+        "name": result.name,
+        **parse_measurement_name(result.name),
+        "rt_start_s": result.attrs["rt_start_s"],
+        "rt_stop_s": result.attrs["rt_stop_s"],
+        "cleaning": result.attrs["cleaning"],
+        "n_peaks": len(result.peaks),
+        "n_compounds": len(result.compounds),
+        "chromatogram_file": chromatogram_file,
+        "source_dir": str(result.folder.resolve()),
+        "source_mtime": stat.st_mtime,
+        "source_size": stat.st_size,
+        "imported_at": now,
+    }
+    if noise is not None:
+        measurement |= {"integration_version": INTEGRATION_VERSION, "integrated_at": now, **noise.to_columns()}
     with con:
         con.execute("DELETE FROM measurement WHERE name = ?", (result.name,))
         cur = con.execute(
-            """
-            INSERT INTO measurement (
-                name, acq_datetime, sample_type, sample_number,
-                rt_start_s, rt_stop_s, cleaning, n_peaks, n_compounds,
-                chromatogram_file, source_dir, source_mtime, source_size, imported_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                result.name,
-                *parse_measurement_name(result.name).values(),
-                result.attrs["rt_start_s"],
-                result.attrs["rt_stop_s"],
-                result.attrs["cleaning"],
-                len(result.peaks),
-                len(result.compounds),
-                chromatogram_file,
-                str(result.folder.resolve()),
-                stat.st_mtime,
-                stat.st_size,
-                datetime.now().isoformat(timespec="seconds"),
-            ),
+            f"INSERT INTO measurement ({', '.join(measurement)}) VALUES ({', '.join('?' * len(measurement))})",
+            tuple(measurement.values()),
         )
         mid = cur.lastrowid
 
@@ -120,7 +145,8 @@ def store_result(con: sqlite3.Connection, result: AlpinacResult, chromatogram_fi
         _insert(con, "peak", result.peaks.assign(measurement_id=mid))
 
 
-def upload(source: Path, data_dir: Path, force: bool = False) -> UploadSummary:
+def upload(source: Path, data_dir: Path, force: bool = False, integrate: bool = True) -> UploadSummary:
+    """Import the .alpinac folders of ``source``; ``integrate``: compute the peak areas."""
     data_dir = Path(data_dir)
     summary = UploadSummary([], [], [], [])
     con = db.connect(data_dir, create=True)
@@ -139,8 +165,9 @@ def upload(source: Path, data_dir: Path, force: bool = False) -> UploadSummary:
                 result = read_alpinac_folder(folder)
                 for w in result.warnings:
                     logger.warning(f"{name}: {w}")
+                noise = _integrate(result) if integrate else None
                 chromatogram_file = _copy_chromatograms(result, data_dir)
-                store_result(con, result, chromatogram_file)
+                store_result(con, result, chromatogram_file, noise)
             except Exception as e:
                 logger.exception(f"{name}: import failed")
                 summary.failed.append((name, repr(e)))

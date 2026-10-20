@@ -123,6 +123,10 @@ class Selection(QObject):
                 values.update(self._compound_values(self.measurement_id, compound_idx))
         self._set(**values)
 
+    def refresh(self) -> None:
+        """Tell all the panels to redraw, e.g. after the database changed."""
+        self.changed.emit({"measurement_id", "compound_idx", "cmp_name", "mass", "rt", "target", "reference"})
+
     def select_reference(self, reference: tuple[str, str] | None) -> None:
         self._set(reference=reference)
 

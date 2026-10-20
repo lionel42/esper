@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from importlib import resources
 from pathlib import Path
 
@@ -64,9 +65,19 @@ class MainWindow(QMainWindow):
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
 
-        # Panels of the current view, filled by show_view
+        # Panels of the current view, filled by show_view, then the display options
         self.view_menu = self.menuBar().addMenu("&View")
+        self.uncertainties_action = QAction("Show &uncertainties", self, checkable=True)
+        self.uncertainties_action.setChecked(settings_manager().settings.show_uncertainties)
+        self.uncertainties_action.toggled.connect(self._set_show_uncertainties)
         self._fill_view_menu()
+
+        calculate_menu = self.menuBar().addMenu("&Calculate")
+        self.integrate_action = QAction("&Integrate…", self)
+        self.integrate_action.setEnabled(False)
+        self.integrate_action.triggered.connect(self._open_integrate)
+        calculate_menu.addAction(self.integrate_action)
+        self.integrate_dialog = None
 
         # Switch views with Ctrl+1, Ctrl+2, ...
         for i in range(len(VIEWS)):
@@ -90,6 +101,13 @@ class MainWindow(QMainWindow):
         if not actions:
             empty = self.view_menu.addAction("No panels for this view")
             empty.setEnabled(False)
+        self.view_menu.addSeparator()
+        self.view_menu.addAction(self.uncertainties_action)
+
+    def _set_show_uncertainties(self, show: bool) -> None:
+        manager = settings_manager()
+        if manager.settings.show_uncertainties != show:
+            manager.update(replace(manager.settings, show_uncertainties=show))
 
     def _build_statusbar(self) -> None:
         self.status_label = QLabel()
@@ -133,6 +151,20 @@ class MainWindow(QMainWindow):
 
         SettingsDialog(self).exec()
 
+    def _open_integrate(self) -> None:
+        from esper.gui.integrate_dialog import IntegrateDialog
+
+        if self.integrate_dialog is None:
+            # Not modal: the data can be browsed during a long integration
+            self.integrate_dialog = IntegrateDialog(self.data, self.selection, self)
+            self.integrate_dialog.integrated.connect(self._on_integrated)
+        self.integrate_dialog.show()
+        self.integrate_dialog.raise_()
+
+    def _on_integrated(self) -> None:
+        self.data.reload()
+        self.selection.refresh()
+
     def _ask_data_dir(self) -> None:
         path = ask_data_dir(self, "Open esper data directory")
         if path is not None:
@@ -167,6 +199,10 @@ class MainWindow(QMainWindow):
             widget = self.stack.widget(0)
             self.stack.removeWidget(widget)
             widget.deleteLater()
+        if self.integrate_dialog is not None:
+            self.integrate_dialog.close()
+            self.integrate_dialog.deleteLater()
+            self.integrate_dialog = None
         if self.data is not None:
             self.data.close()
         settings_manager().remember_data_dir(data_dir)
@@ -181,6 +217,7 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(view)
             self.views.append(view)
         self.setWindowTitle(f"esper - {data_dir}")
+        self.integrate_action.setEnabled(True)
 
         if not data.measurements.empty:
             self.selection.select_measurement(int(data.measurements.index[-1]))

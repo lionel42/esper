@@ -22,9 +22,41 @@ DB_FILENAME = "esper.sqlite"
 CONFIG_FILENAME = "esper.yaml"
 CHROMATOGRAMS_DIRNAME = "chromatograms"
 
-SCHEMA_VERSION = 2
-# Versions that are upgraded by creating the missing tables
-COMPATIBLE_VERSIONS = (0, 1, 2)
+SCHEMA_VERSION = 3
+# Versions that are upgraded by creating the missing tables and columns
+COMPATIBLE_VERSIONS = (0, 1, 2, 3)
+
+# Number of masses of a compound with their area (q1 has the largest area)
+N_QUALIFIERS = 5
+
+# Uncertainties (1 sigma) are in a column named after the value with UNC_SUFFIX
+UNC_SUFFIX = "_unc"
+
+# Columns added in version 3, filled by esper.integration (NULL until integrated).
+# Not in the CREATE TABLE statements: added by ALTER TABLE, to new and old databases alike.
+ADDED_COLUMNS = {
+    "measurement": [
+        ("integration_version", "INTEGER"),     # esper.integration.INTEGRATION_VERSION, NULL: not integrated
+        ("integrated_at", "TEXT"),
+        ("noise_gain", "REAL"),                 # noise of the chromatograms (esper.integration.NoiseParameters)
+        ("noise_factor", "REAL"),
+        ("noise_d2_ratio", "REAL"),
+    ],
+    "peak": [
+        ("int_start_s", "REAL"),                # integration bounds
+        ("int_stop_s", "REAL"),
+        ("base_start", "REAL"),                 # baseline at the bounds [counts]
+        ("base_stop", "REAL"),
+        ("area", "REAL"),                       # above the baseline [counts * s]
+        ("area_unc", "REAL"),                   # its statistical uncertainty (1 sigma)
+    ],
+    "compound": [("area_sum", "REAL"), ("area_sum_unc", "REAL")]  # area of all its peaks
+    + [                                         # its masses by decreasing area
+        (f"q{i}_{kind}", sql_type)
+        for i in range(1, N_QUALIFIERS + 1)
+        for kind, sql_type in (("mass", "INTEGER"), ("area", "REAL"), ("area_unc", "REAL"))
+    ],
+}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS measurement (
@@ -249,5 +281,19 @@ def connect(data_dir: Path, create: bool = False, readonly: bool = False) -> sql
                 f"{path} has schema version {version}, expected one of {COMPATIBLE_VERSIONS}"
             )
         con.executescript(SCHEMA)
+        _add_columns(con)
         con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     return con
+
+
+def table_columns(con: sqlite3.Connection, table: str) -> list[str]:
+    return [row[1] for row in con.execute(f"PRAGMA table_info({table})")]
+
+
+def _add_columns(con: sqlite3.Connection) -> None:
+    for table, columns in ADDED_COLUMNS.items():
+        existing = set(table_columns(con, table))
+        for name, sql_type in columns:
+            if name not in existing:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
+    con.commit()

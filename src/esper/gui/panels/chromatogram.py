@@ -11,10 +11,11 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import QCheckBox, QVBoxLayout, QWidgetAction
 
 from esper.gui.data import TIC, EsperData
-from esper.integration import integration_bounds, peak_area
+from esper.integration import integrate_mass
 from esper.gui.panels.base import BasePanel
 from esper.gui.plotting import add_curve, make_plot
 from esper.gui.selection import Selection
+from esper.gui.settings import settings_manager
 from esper.gui.style import OVERLAY_COLORS
 
 # Half width of the rt window shown around the selected compound [s]
@@ -76,6 +77,8 @@ class ChromatogramPanel(BasePanel):
     ) -> None:
         super().__init__(data, selection, parent)
         self.show_info = show_info
+        self.settings = settings_manager()
+        self.settings.changed.connect(self.invalidate)
         self._keep_range = False
         self._annotations: list = []
         self._overlay_items: list = []
@@ -300,20 +303,29 @@ class ChromatogramPanel(BasePanel):
             return
         names = self.data.compounds(sel.measurement_id)["compound_name"]
 
+        # Integrated here (a few ms) rather than read from the database, for the exact
+        # shape of the baselines; the areas are the same as the stored ones
+        baselines = []
+        integration = integrate_mass(peaks, t, y, self.data.noise_parameters(sel.measurement_id), baselines)
         rt = peaks["rt_s"].to_numpy(dtype=float)
-        start, stop = integration_bounds(peaks, t)
-        y_start, y_stop, y_apex = np.interp(start, t, y), np.interp(stop, t, y), np.interp(rt, t, y)
-        y_base = y_start + (y_stop - y_start) * (rt - start) / np.where(stop > start, stop - start, 1)
+        start, stop = integration["int_start_s"].to_numpy(), integration["int_stop_s"].to_numpy()
+        y_start, y_stop = integration["base_start"].to_numpy(), integration["base_stop"].to_numpy()
+        y_apex = np.interp(rt, t, y)
+        y_base = np.interp(rt, t, y)  # without baseline, the apex line has no length
+        for base_x, base_y in baselines:
+            inside = (rt >= base_x[0]) & (rt <= base_x[-1])
+            y_base[inside] = np.interp(rt[inside], base_x, base_y)
+            self._add(pg.PlotDataItem(base_x, base_y, pen=pg.mkPen("r", width=1)))
 
         def pairs(a0, a1):
             return np.column_stack([a0, a1]).ravel()
 
-        self._add(pg.PlotDataItem(pairs(start, stop), pairs(y_start, y_stop), connect="pairs", pen=pg.mkPen("r", width=1)))
         self._add(pg.PlotDataItem(pairs(rt, rt), pairs(y_base, y_apex), connect="pairs", pen=pg.mkPen("k", width=0.5)))
+        bounds = np.isfinite(start) & np.isfinite(stop)
         self._add(
             pg.ScatterPlotItem(
-                np.concatenate([start, stop]),
-                np.concatenate([y_start, y_stop]),
+                np.concatenate([start[bounds], stop[bounds]]),
+                np.concatenate([y_start[bounds], y_stop[bounds]]),
                 symbol="|", size=20, pen=pg.mkPen("r", width=1.5),
             )
         )
@@ -330,10 +342,12 @@ class ChromatogramPanel(BasePanel):
 
         for i, (_, p) in enumerate(peaks.iterrows()):
             selected = p.compound_idx == sel.compound_idx
-            area = peak_area(t, y, start[i], stop[i])
+            area = f"{integration['area'].iloc[i]:.0f}"
+            if self.settings.settings.show_uncertainties:
+                area += f" ± {integration['area_unc'].iloc[i]:.2g}"
             text = (
                 f"{p.rt_s:.1f}<br>{html.escape(compound_label(names.get(p.compound_idx), p.compound_idx))}"
-                f"<br>H = {p.height:.0f}<br>A = {area:.0f}<br>W = {p.width_s:.2f}"
+                f"<br>H = {p.height:.0f}<br>A = {area}<br>W = {p.width_s:.2f}"
             )
             color = "#0050c8" if selected else "#000"
             weight = "bold" if selected else "normal"
@@ -341,7 +355,7 @@ class ChromatogramPanel(BasePanel):
                 html=f'<div style="text-align:center; color:{color}; font-weight:{weight}; font-size:8pt">{text}</div>',
                 anchor=(0.5, 0),
             )
-            label.setPos(rt[i], min(y_start[i], y_stop[i]))
+            label.setPos(rt[i], np.nanmin([y_start[i], y_stop[i], y_apex[i]]))
             self._add(label)
 
     def _on_apex_clicked(self, item, points, ev=None) -> None:
