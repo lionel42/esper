@@ -60,7 +60,10 @@ browse for another one.
   with the peaks found at that mass (baseline, rt, compound, height H, area A, width W).
   Click on a peak apex to select its compound. Changing file keeps the compound and the mass.
   Right click > Masses overlays other chromatograms: 2nd to 5th most prominent mass of the
-  compound, all compound masses, all masses, TIC. The relative chromatograms below (x axis
+  compound, all compound masses, masses peaking here (every mass with a peak apex in the
+  visible rt range, most prominent first; follows pans and zooms), all masses, TIC. The main
+  mass is black, up to 5 overlays get the qualifier colors (`style.QUALIFIER_COLORS`), more
+  are colored along magma. The relative chromatograms below (x axis
   linked) show the same curves, each rescaled to the range of the main mass in the visible
   window.
 - **Results** (Ctrl+2): one compound (Cmp) across all measurements. Click a point to select

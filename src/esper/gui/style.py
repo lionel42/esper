@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtGui import QPainterPath
+import numpy as np
+import pyqtgraph as pg
+from PySide6.QtGui import QColor, QPainterPath
 
 
 def _cross() -> QPainterPath:
@@ -19,8 +21,20 @@ CROSS = _cross()
 
 COLORS = ["#1f9e1f", "#ff9900", "#9b30b0", "#202020", "#1030e0", "#a00000", "#e070d0", "#008080"]
 
-# Overlaid chromatograms (no black, used by the main mass)
-OVERLAY_COLORS = ["#d62728", "#1f77b4", "#2ca02c", "#ff7f0e", "#9467bd", "#8c564b", "#e377c2", "#17becf", "#bcbd22", "#7f7f7f"]
+# Overlaid chromatograms, the main mass being black: a few (the qualifiers) get these colors,
+# more get colors sampled from magma, without its ends (near black: the main mass; near
+# white: the background)
+QUALIFIER_COLORS = ["#66c2a5", "#fc8d62", "#8da0cb", "#e78ac3", "#a6d854"]
+MAGMA_RANGE = (0.25, 0.8)
+
+
+def overlay_colors(n: int) -> list[QColor | str]:
+    """Colors of n overlaid curves."""
+    if n <= len(QUALIFIER_COLORS):
+        return QUALIFIER_COLORS[:n]
+    magma = pg.colormap.get("magma")
+    return [magma.map(x, mode="qcolor") for x in np.linspace(*MAGMA_RANGE, n)]
+
 
 # One symbol per run type in the search view
 SYMBOLS = [CROSS, "o", "s", "t", "d", "x", "star", "h"]

@@ -16,7 +16,7 @@ from esper.gui.panels.base import BasePanel
 from esper.gui.plotting import add_curve, make_plot
 from esper.gui.selection import Selection
 from esper.gui.settings import settings_manager
-from esper.gui.style import OVERLAY_COLORS
+from esper.gui.style import overlay_colors
 
 # Half width of the rt window shown around the selected compound [s]
 RT_HALF_WINDOW = 30.0
@@ -29,6 +29,7 @@ OVERLAYS = {
     "rank4": "4th mass",
     "rank5": "5th mass",
     "compound": "all compound masses",
+    "peaking": "masses peaking here",
     "all": "all masses",
     "target": "target ions",
     "tic": "TIC",
@@ -42,6 +43,8 @@ MAX_LEGEND_ENTRIES = 12
 READ_ALL_ABOVE = 20
 # Delay before rescaling the relative plot after a pan/zoom [ms]
 RESCALE_DELAY_MS = 100
+# Delay before updating the masses peaking in the view after a pan/zoom [ms]
+PEAKING_DELAY_MS = 300
 
 
 def compound_label(name, compound_idx) -> str:
@@ -97,6 +100,11 @@ class ChromatogramPanel(BasePanel):
 
         self._check_sets: list[dict[str, QCheckBox]] = []
         self.overlay_checks = self.add_masses_menu(self.plot)
+        # Masses overlaid now, to redraw only when "peaking here" changes them after a pan/zoom
+        self._overlaid: list = []
+        self._peaking_timer = QTimer(self, singleShot=True, interval=PEAKING_DELAY_MS)
+        self._peaking_timer.timeout.connect(self._update_peaking)
+        self.plot.sigXRangeChanged.connect(self._on_x_range_changed)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -155,12 +163,33 @@ class ChromatogramPanel(BasePanel):
             for rank in range(2, 6):
                 if f"rank{rank}" in checked and len(compound_masses) >= rank:
                     masses.append(compound_masses[rank - 1])
+        if "peaking" in checked and "all" not in checked:
+            masses.extend(self._peaking_masses())
         # Expected ions of the target; always when the target is not found in the measurement
         if sel.target is not None and ("target" in checked or sel.compound_idx is None):
             masses.extend(self.data.target_masses(sel.target))
         if "tic" in checked:
             masses.append(TIC)
         return [m for m in dict.fromkeys(masses) if m != sel.mass]
+
+    def _peaking_masses(self) -> list[int]:
+        """Masses with a peak apex in the visible rt range, most prominent first."""
+        lo, hi = self.plot.viewRange()[0]
+        peaks = self.data.peaks(self.selection.measurement_id)
+        here = peaks[(peaks["rt_s"] >= lo) & (peaks["rt_s"] <= hi)]
+        return [int(m) for m in here.groupby("mass")["prominence"].max().sort_values(ascending=False).index]
+
+    def _on_x_range_changed(self, *_) -> None:
+        if self.overlay_checks["peaking"].isChecked():
+            self._peaking_timer.start()
+
+    def _update_peaking(self) -> None:
+        """After a pan/zoom: redraw (keeping the view) if other masses peak in it."""
+        if not self.isVisible():
+            return
+        if self.selection.measurement_id is not None and self._overlay_masses() != self._overlaid:
+            self._keep_range = True
+            self.invalidate()
 
     # --- drawing --------------------------------------------------------------------
 
@@ -213,12 +242,13 @@ class ChromatogramPanel(BasePanel):
     def _draw_overlays(self) -> list[Curve]:
         """Other masses of the measurement, drawn in color behind the main mass."""
         sel = self.selection
-        masses = self._overlay_masses()
+        masses = self._overlaid = self._overlay_masses()
         if not masses:
             return []
         frame = self.data.chromatogram_frame(sel.measurement_id) if len(masses) > READ_ALL_ABOVE else None
 
         n = len(masses)
+        colors = overlay_colors(n)
         show_legend = n <= MAX_LEGEND_ENTRIES
         if show_legend:
             self.legend.addItem(self.curve, mass_label(sel.mass))
@@ -231,7 +261,7 @@ class ChromatogramPanel(BasePanel):
                 series = self.data.chromatogram(sel.measurement_id, mass)
             if series is None:
                 continue
-            color = OVERLAY_COLORS[i] if n <= len(OVERLAY_COLORS) else pg.intColor(i, hues=n)
+            color = colors[i]
             curve = Curve(mass, mass_label(mass), series.index.to_numpy(dtype=float), series.to_numpy(dtype=float), color)
             item = add_curve(self.plot, curve.t, curve.y, color)
             self._overlay_items.append(item)
