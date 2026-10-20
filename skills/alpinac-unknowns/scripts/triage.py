@@ -104,7 +104,7 @@ if args.only_flagged:
     # background gases (N2, O2, Ar, CO2, H2O, NO, Kr, Xe) are hidden unless they carry another flag
     # a label far from its sheet RI (label_dRI) stays visible: it is a mislabel candidate
     show = df[df["flag"].str.replace(r"\bbg\b", "", regex=True).str.strip() != ""]
-    show = show[~(show["flag"].str.contains(r"\bbg\b") & ~show["flag"].str.contains("invalid|lowscore|Br"))]
+    show = show[~(show["flag"].str.contains(r"\bbg\b") & ~show["flag"].str.contains("invalid|lowscore|Br|label_dRI"))]
 else:
     show = df
 print(f"\n{len(show)} of {len(df)} compounds shown")

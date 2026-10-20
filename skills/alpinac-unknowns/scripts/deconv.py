@@ -33,7 +33,8 @@ for rt in map(float, sys.argv[2:]):
         if h < 6 * noise[m] or h < 30:
             continue
         ta = tw[i]
-        if 0 < i < len(yy) - 1:
+        # parabolic apex only at a real local maximum; on a neighbour's flank keep the sample time
+        if 0 < i < len(yy) - 1 and yy[i - 1] <= yy[i] >= yy[i + 1]:
             a, b, c_ = yy[i - 1], yy[i], yy[i + 1]
             den = a - 2 * b + c_
             if den:

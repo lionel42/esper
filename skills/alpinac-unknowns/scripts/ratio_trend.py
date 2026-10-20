@@ -59,6 +59,8 @@ for r in sel:
     row.update({f"r{m}": s[m] / s[a.ref_mz] for m in mzs})
     rows.append(row)
 
+if not rows:
+    raise SystemExit(f"no run has a m/z {a.ref_mz} peak >= 300 within +-{a.search} s of {a.rt}: no trend evidence")
 df = pd.DataFrame(rows).sort_values("run")
 df.to_csv(a.out, index=False)
 df["q"] = pd.to_datetime(df.run.str[:6], format="%y%m%d").dt.to_period("Q")

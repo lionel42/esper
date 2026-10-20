@@ -149,7 +149,7 @@ def _read_jdx(f):
     if len(parts) < 2:
         return None
     s = defaultdict(float)
-    for x, y in re.findall(r"(\d+(?:\.\d+)?),(\d+(?:\.\d+)?)", parts[1].split("##END")[0]):
+    for x, y in re.findall(r"([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*,\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)", parts[1].split("##END")[0]):
         s[int(round(float(x)))] += float(y)
     return dict(s)
 
@@ -169,6 +169,8 @@ def load_spectra():
     for f in (PEAKSDB / "nist_db").glob("*.jdx"):
         if (s := _read_jdx(f)):
             spectra.setdefault(f.stem, {})["nist"] = s
+        else:
+            print(f"warning: no peaks read from {f}", file=sys.stderr)
     for f in (PEAKSDB / "myriam_ei").glob("*.txt"):
         try:
             s = _read_txt(f)
@@ -181,6 +183,8 @@ def load_spectra():
         for f in (PEAKSDB / sub).glob("*.jdx"):
             if (s := _read_jdx(f)):
                 spectra.setdefault(f.stem.split("-", 1)[-1], {})[sub] = s
+            else:
+                print(f"warning: no peaks read from {f}", file=sys.stderr)
     return spectra
 
 
