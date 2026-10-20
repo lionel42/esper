@@ -134,12 +134,17 @@ class SearchView(BaseView):
             return
         if old == new:
             return
+        # Unconvertible bounds are cleared, so that they are not searched in the wrong unit
         if mid is None:
+            self.lo_edit.clear()
+            self.hi_edit.clear()
             self.status.setText("Select a measurement to convert the window")
             return
         convert = self.data.expected_ris if new == "ri" else self.data.expected_rts
         lo, hi = convert(mid, bounds)
         if not (np.isfinite(lo) and np.isfinite(hi)):
+            self.lo_edit.clear()
+            self.hi_edit.clear()
             self.status.setText("The selected measurement has no retention index anchors")
             return
         self.lo_edit.setText(f"{lo:.1f}")
