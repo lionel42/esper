@@ -24,9 +24,15 @@ def norm(s):
 
 sub = pd.read_excel(C.SUBSTANCES, sheet_name="all")
 sub = sub.dropna(subset=["Compound name (Gcwerks)"])
-ri, _ = C.load_ref_ri()
+ri, aliases = C.load_ref_ri()
 S = C.load_spectra()
 Snorm = {norm(k): k for k in S}
+alias_of = {}
+for al, comp in aliases.items():
+    alias_of.setdefault(comp, []).append(al)
+
+if len(sys.argv) < 2:
+    sys.exit(__doc__)
 
 if sys.argv[1] == "--near":
     for x in map(float, sys.argv[2:]):
@@ -34,7 +40,8 @@ if sys.argv[1] == "--near":
         d["dRI"] = x - d.ri
         print(f"--- sheet entries within +-10 RI of {x:.0f} (dRI = sample - sheet)")
         for name, r in d.sort_values("dRI", key=abs).iterrows():
-            spec = "spec" if norm(name) in Snorm else "nospec"
+            # a spectrum stored under an alias counts too
+            spec = "spec" if any(norm(n) in Snorm for n in [name] + alias_of.get(name, [])) else "nospec"
             print(f"   {name:28s} RI {r.ri:6.1f}  dRI {r.dRI:+5.1f}  {str(r.formula):14s} {spec}")
     sys.exit()
 

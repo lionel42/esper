@@ -1,6 +1,6 @@
 """Step 1: triage the N largest compounds of a run.
 
-usage: python triage.py RUN_DIR [--top 200] [--ri-win 8] [--out triage.csv]
+usage: python triage.py RUN_DIR [--top 200] [--ri-win 8] [--out triage.csv] [--txt triage.txt]
 
 Matching is done in retention index (RI), like alpinac: sample RI comes from
 pipeline.nc (RT interpolated between the RI calibrants found in the run),
@@ -13,6 +13,7 @@ reference compounds whose RI is within --ri-win, with spectral cosine to the
 compound alone and to the +-1 s cluster.
 """
 import argparse
+import sys
 
 import numpy as np
 import pandas as pd
@@ -25,7 +26,10 @@ ap.add_argument("--top", type=int, default=200)
 ap.add_argument("--ri-win", type=float, default=8.0)
 ap.add_argument("--out", default=None)
 ap.add_argument("--only-flagged", action="store_true")
+ap.add_argument("--txt", default=None, help="write the printed report to this file instead of stdout")
 args = ap.parse_args()
+if args.txt:
+    sys.stdout = open(args.txt, "w")
 
 c, p = C.load_pipeline(args.run)
 ref, aliases = C.load_ref_ri()
@@ -40,7 +44,10 @@ print("  -> check that each calibrant is the right peak; a wrong calibrant disto
 conf = c[(c.valid_candidate) & (c.bc_score > 0.98) & ~c.is_ref_ri.astype(bool)]
 d = [r.retention_index - ref.loc[r.compound_name, "ri"] for r in conf.itertuples() if r.compound_name in ref.index]
 d = np.array(d)
-print(f"dRI of {len(d)} confident ids: median {np.median(d):+.1f}, 90% within +-{np.percentile(np.abs(d), 90):.1f}")
+if len(d):
+    print(f"dRI of {len(d)} confident ids: median {np.median(d):+.1f}, 90% within +-{np.percentile(np.abs(d), 90):.1f}")
+else:
+    print("dRI: no confident ids in this run -> RI calibration cannot be checked, be careful with dRI")
 
 NOISE = {"N2", "O2", "Ar+O2", "Ar+N2", "N2+O2", "CO2-A", "CO2-B", "H2O", "NO-A", "NO-B", "Kr", "Xe-A"}
 PFC_MARKERS = {119, 131, 169, 219}

@@ -3,6 +3,7 @@
 A run directory is `<...>/<file>.alpinac/` containing `pipeline.nc` and
 `<file>.unit_mass_chromatos.parquet`.
 """
+import os
 import re
 import warnings
 from collections import defaultdict
@@ -75,7 +76,12 @@ def load_refs():
     return ref
 
 
-RI_REFS = Path("/home/coli/gitlabs/halosearch/alpinac/mode_extraction/rt_refs_v2.csv")
+def ri_refs_path():
+    """RI calibrant table shipped with the alpinac package (override with ALPINAC_RI_REFS)."""
+    if os.environ.get("ALPINAC_RI_REFS"):
+        return Path(os.environ["ALPINAC_RI_REFS"])
+    import alpinac
+    return Path(alpinac.__file__).parent / "mode_extraction" / "rt_refs_v2.csv"
 
 
 @lru_cache(None)
@@ -89,7 +95,7 @@ def load_ref_ri():
     Compounds with no sheet RT (0 / NaN) get ri = NaN.
     Returns (DataFrame indexed by compound with rt, ri, formula, hc; aliases dict)."""
     from alpinac.mode_extraction.read_from_excel import load_excel_compounds
-    df, aliases = load_excel_compounds(SUBSTANCES, RI_REFS)
+    df, aliases = load_excel_compounds(SUBSTANCES, ri_refs_path())
     df.loc[~(df.rt > 0), "ri"] = np.nan
     df["hc"] = df.formula.map(is_hydrocarbon)
     return df, aliases

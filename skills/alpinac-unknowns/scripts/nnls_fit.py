@@ -3,9 +3,11 @@
 usage: python nnls_fit.py RUN_DIR RT "name[src];name[src];..." [HALF_WINDOW=5]
   src is one of nist, mygu, nist_CH, nist_CHON, nist_CF, nist_CHF
 Prints each component's apex and height, the residual spectrum (+-1 s) and a
-library search of the residual. A good model leaves < ~10 % residual.
+library search of the residual. A good model leaves < ~10 % under-fit
+and < ~20 % absolute residual.
 Writes nnls_<rt>.png in the current directory.
 """
+import difflib
 import sys
 
 import matplotlib
@@ -32,7 +34,12 @@ tw = Y.index.values
 A = []
 for k in comps:
     name, src = k.rsplit("[", 1)
-    spec = S[name][src.rstrip("]")]
+    src = src.rstrip("]")
+    if src not in S.get(name, {}):
+        low = {n.lower(): n for n in S}
+        close = [low[n] for n in difflib.get_close_matches(name.lower(), low, n=8, cutoff=0.6)]
+        sys.exit(f"no spectrum {k}; sources for {name}: {list(S.get(name, {}))}; similar names: {close}")
+    spec = S[name][src]
     v = np.array([spec.get(m, 0.0) for m in masses], float)
     A.append(v / v.max())
 A = np.array(A).T
@@ -45,7 +52,9 @@ for j, k in enumerate(comps):
     print(f"  {k:<45} apex {tw[i]:.2f}  height {coef[i, j]:.0f}")
 core = (tw > rt - 1) & (tw < rt + 1)
 rsum = res[core].clip(min=0).sum(axis=0)
-print(f"  residual fraction in +-1 s: {rsum.sum() / Y.values[core].sum():.2f}")
+total = Y.values[core].sum()
+# under-fit (signal the model misses) and |residual| (also counts over-fit)
+print(f"  residual fraction in +-1 s: under {rsum.sum() / total:.2f}  abs {np.abs(res[core]).sum() / total:.2f}")
 spec = {masses[i]: rsum[i] for i in range(len(masses)) if rsum[i] > 0.02 * rsum.max()}
 print("  residual:", C.fmt_spec(spec, 15))
 print("  residual lib:", " | ".join(f"{n} {c:.2f}" for c, n in C.libsearch(spec, 8)))

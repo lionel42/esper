@@ -5,7 +5,7 @@ usage: python strip_major.py RUN_DIR RT_APEX PROFILE_MZ [BEFORE=14] [AFTER=40]
   e.g. toluene: RT 2199 PROFILE_MZ 92 (use an ion that is not saturated: check that its ratio to
   another ion of the big compound is flat across the peak). Writes strip_<rt>.png.
 """
-import sys; sys.path.insert(0,'/home/coli/.claude/skills/alpinac-unknowns/scripts')
+import sys
 import common as C, numpy as np, pandas as pd
 import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
 R=sys.argv[1]; rt0=float(sys.argv[2]); pm=int(sys.argv[3])
@@ -40,5 +40,5 @@ for g,gg in d.groupby('g'):
 fig,ax=plt.subplots(2,1,figsize=(11,7),sharex=True)
 ax[0].plot(t,y[pm],label=f'profile m/z {pm}'); ax[0].set_yscale('symlog',linthresh=100); ax[0].legend()
 for m in d.sort_values('h').mz.values[-10:]: ax[1].plot(t,res[m],label=str(m))
-ax[1].legend(ncol=5,fontsize=7); ax[1].set_xlabel('rt (s)'); ax[1].set_title('residual after toluene profile subtraction')
+ax[1].legend(ncol=5,fontsize=7); ax[1].set_xlabel('rt (s)'); ax[1].set_title(f'residual after m/z {pm} profile subtraction')
 plt.tight_layout(); plt.savefig(f'strip_{rt0:.0f}.png',dpi=110)

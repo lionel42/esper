@@ -20,27 +20,31 @@ Inputs: a run directory `/media/Shuttle/TOF-Data/<year>/<file>.alpinac/` with
   (one line per analysed run). Read both before starting. Do not re-investigate what is listed
   under "Settled"; check the "Open issues" RTs first.
 - **No run given** → do not ask. Take the newest **air** run that has both `pipeline.nc` and the
-  parquet and is not yet in `runs.csv`:
+  parquet and is not yet in `runs.csv` (skips runs still being processed, also looks in last
+  year's folder):
   ```
-  for d in $(ls -d /media/Shuttle/TOF-Data/$(date +%Y)/*.air.*.alpinac | sort -r); do
-    [ -f $d/pipeline.nc ] && ls $d/*.unit_mass_chromatos.parquet >/dev/null 2>&1 && \
-    ! grep -q "^$(basename $d .alpinac)," ~/.local/share/alpinac/unknowns/runs.csv && { echo $d; break; }
-  done
+  /shared/pyenv/bin/python ~/.claude/skills/alpinac-unknowns/scripts/pick_run.py
   ```
-  (In January also look in the previous year's folder.) If a newer run is still being processed
-  (no pipeline.nc yet), skip it. Say which run you picked at the top of the reply.
-  If the user names a date or "today", take the newest air run of that day.
+  Say which run you picked at the top of the reply.
+  If the user names a date or "today", add `--date yymmdd` / `--date today`.
 - A std/tank run is only analysed when explicitly asked (or to check a ratio in step 3).
 
-Scripts are in `~/.claude/skills/alpinac-unknowns/scripts/` (python at `/shared/pyenv/bin/python`).
-Run them **from the scratchpad directory** (they write png/csv to the cwd), passing the
-run directory as first argument. `common.py` holds the loaders.
+Scripts are in `~/.claude/skills/alpinac-unknowns/scripts/` (below: `$S`) and run with
+`/shared/pyenv/bin/python` (below: `python`). **Write both out in full in every command**
+(`/shared/pyenv/bin/python ~/.claude/skills/alpinac-unknowns/scripts/triage.py ...`): the daily
+unattended run only allows Bash commands that start with `/shared/pyenv/bin/python`, plus
+`ls`/`head`/`tail`/`grep`/`wc`/`date`, and no shell variables, `cd`, loops or pipes into other programs.
+Run them **from a scratch directory** (they write png/csv to the cwd; in the daily run the cwd
+already is a fresh work directory under `~/.local/share/alpinac/unknowns/work/`), passing the run
+directory as first argument. `common.py` holds the loaders; for ad-hoc analysis use
+`/shared/pyenv/bin/python -c "import common as C; ..."` (the daily run sets `PYTHONPATH` to the
+scripts folder; interactively, add `import sys; sys.path.insert(0, "<scripts folder>")`).
 
 ## Procedure
 
 ### 1. Triage (always)
 ```
-python $S/triage.py RUN_DIR --top 200 --only-flagged --out triage.csv > triage.txt
+python $S/triage.py RUN_DIR --top 200 --only-flagged --out triage.csv --txt triage.txt
 ```
 - **Work in retention index (RI), not seconds.** RI is alpinac's modified Kováts index:
   RT interpolated piecewise-linearly between calibrants with fixed RI
@@ -71,7 +75,8 @@ single ion, Ar ghost at m/z 40), (b) fragment of a neighbouring identified compo
   each group. Use it to see how many components are under a peak.
 - `python $S/nnls_fit.py RUN_DIR RT "name[src];name[src];..." [half]` fits library spectra
   scan by scan. Include every identified neighbour within ±5 s plus your hypotheses.
-  A good model leaves **< ~10 %** residual and each component has a sensible apex.
+  A good model leaves **< ~10 %** under-fit (and < ~20 % abs residual) and each component has a
+  sensible apex.
   Library-search the residual: that is how hidden compounds show up
   (e.g. 2,2-dimethylbutane under CFC-113, methylcyclopentane next to 3-methylpentane).
   Sources: `nist`, `mygu` (myriam_ei, own instrument), `nist_CH`, `nist_CHON`, `nist_CF`, `nist_CHF`.
@@ -133,7 +138,7 @@ open issues no longer present (fixed in the pipeline?).
   "not seen in <run>" when it disappears (remove after ~5 consecutive absences). Add library/sheet
   issues and unexplained real peaks. Edit in place, keep it short; no per-run narrative.
 - `runs.csv`: append `run,analysed_on,top,n_flagged,n_new_findings,report` (report = path of a
-  saved copy, if any). Copy the final report to `~/.local/share/alpinac/unknowns/reports/<run>.md`.
+  saved copy, if any). Save the final report to `~/.local/share/alpinac/unknowns/reports/<run>.md` (Write tool).
 - General lessons about the *method* (a new pitfall, a script bug) go into this SKILL.md
   "Known pitfalls", not into the log. Compound findings go into the log, not the skill.
 
