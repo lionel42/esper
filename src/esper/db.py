@@ -13,6 +13,7 @@ Units are part of the column names: ``_s`` seconds, ``_scans`` time bins.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -22,9 +23,22 @@ DB_FILENAME = "esper.sqlite"
 CONFIG_FILENAME = "esper.yaml"
 CHROMATOGRAMS_DIRNAME = "chromatograms"
 
+logger = logging.getLogger(__name__)
+
 SCHEMA_VERSION = 2
 # Versions that are upgraded by creating the missing tables
 COMPATIBLE_VERSIONS = (0, 1, 2)
+# Oldest SCHEMA_VERSION of esper that can still use a database of this version, stored in
+# the database so that older esper versions know whether they can use it. A schema change
+# that only adds tables or nullable columns keeps it, a breaking change sets it to SCHEMA_VERSION.
+MIN_READER_VERSION = 2
+
+SCHEMA_INFO = """
+CREATE TABLE IF NOT EXISTS schema_info (
+    key TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+);
+"""
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS measurement (
@@ -243,11 +257,39 @@ def connect(data_dir: Path, create: bool = False, readonly: bool = False) -> sql
     con = sqlite3.connect(path)
     con.execute("PRAGMA foreign_keys = ON")
     if create:
-        version = con.execute("PRAGMA user_version").fetchone()[0]
-        if version not in COMPATIBLE_VERSIONS:
-            raise RuntimeError(
-                f"{path} has schema version {version}, expected one of {COMPATIBLE_VERSIONS}"
-            )
-        con.executescript(SCHEMA)
-        con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        _upgrade(con, path)
     return con
+
+
+def min_reader_version(con: sqlite3.Connection) -> int | None:
+    """The oldest SCHEMA_VERSION that can use the database, None if it does not say."""
+    if not con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_info'").fetchone():
+        return None
+    row = con.execute("SELECT value FROM schema_info WHERE key = 'min_reader_version'").fetchone()
+    return None if row is None else row[0]
+
+
+def _upgrade(con: sqlite3.Connection, path: Path) -> None:
+    """Bring the schema of the database to SCHEMA_VERSION, or check that a newer one is usable."""
+    version = con.execute("PRAGMA user_version").fetchone()[0]
+    if version > SCHEMA_VERSION:
+        # Written by a newer esper: used as is (never downgraded) if it is compatible
+        min_reader = min_reader_version(con)
+        if min_reader is None or min_reader > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"{path} has schema version {version}, which needs a newer esper"
+                f" (this one has schema version {SCHEMA_VERSION})"
+            )
+        logger.info(f"{path} has the newer schema version {version}, compatible with {SCHEMA_VERSION}")
+        return
+    if version not in COMPATIBLE_VERSIONS:
+        raise RuntimeError(
+            f"{path} has schema version {version}, expected one of {COMPATIBLE_VERSIONS}"
+        )
+    con.executescript(SCHEMA + SCHEMA_INFO)
+    con.execute(
+        "INSERT OR REPLACE INTO schema_info (key, value) VALUES ('min_reader_version', ?)",
+        (MIN_READER_VERSION,),
+    )
+    con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    con.commit()
