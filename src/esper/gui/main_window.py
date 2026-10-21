@@ -199,8 +199,8 @@ class MainWindow(QMainWindow):
             self.status_label.setText("")
             return
         name = self.data.measurements.loc[sel.measurement_id, "name"]
-        cmp = sel.cmp_name or ""
-        self.status_label.setText(f"{name} ({cmp})" if cmp else name)
+        label = sel.label
+        self.status_label.setText(f"{name} ({label})" if label else name)
 
 
 def run(data_dir: Path | None = None) -> int:

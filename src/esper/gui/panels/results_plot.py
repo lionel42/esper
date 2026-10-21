@@ -59,14 +59,14 @@ class ResultsPlotPanel(BasePanel):
         self.invalidate()
 
     def on_selection_changed(self, fields: set) -> None:
-        if "cmp_name" in fields:
+        if fields & {"candidate", "target"}:
             self.invalidate()
         elif fields & {"measurement_id", "compound_idx"}:
             self._update_highlight()
 
     def redraw(self) -> None:
         # Query the database only when the compound or the validity filter changed
-        name = self.selection.cmp_name
+        name = self.selection.label
         key = (name, self.options["valid_only"])
         if key != self._loaded_key:
             self._loaded_key = key
@@ -88,7 +88,7 @@ class ResultsPlotPanel(BasePanel):
         x_option, y_option = self.options["x"], self.options["y"]
         set_x_axis(self.plot, x_option, time=x_option == "Time")
         self.plot.getAxis("left").setLabel(y_option)
-        self.plot.setTitle(f"{self.selection.cmp_name or ''} {y_option}", color="k")
+        self.plot.setTitle(f"{self.selection.label or ''} {y_option}", color="k")
         self.plot.addItem(self.highlight)
         self.plotted = None
 

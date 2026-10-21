@@ -206,7 +206,7 @@ class ChromatogramPanel(BasePanel):
         title = mass_label(sel.mass)
         if not self.show_info:
             name = self.data.measurements.loc[sel.measurement_id, "name"]
-            title = f"{name}   {html.escape(sel.cmp_name or '')}   {title}"
+            title = f"{name}   {html.escape(sel.label or '')}   {title}"
         self.title_label.setText(title if series is not None else f"{title} (no chromatogram)")
         if self.show_info:
             self._update_info()
@@ -280,7 +280,7 @@ class ChromatogramPanel(BasePanel):
         if sel.compound_idx is not None:
             c = self.data.compounds(sel.measurement_id).loc[sel.compound_idx]
             lines += [
-                ("cmp", f"{compound_label(c.compound_name, sel.compound_idx)} (#{sel.compound_idx})"),
+                ("cmp", f"{compound_label(c.main_name, sel.compound_idx)} (#{sel.compound_idx})"),
                 ("rt", f"{c.rt_mean_s:.1f} ± {c.rt_std_s:.2f} s"),
                 ("RI", f"{c.retention_index:.1f}"),
                 ("spectrum", f"{c.best_spectrum}"),
@@ -328,7 +328,7 @@ class ChromatogramPanel(BasePanel):
         peaks = peaks[peaks["mass"] == sel.mass]
         if peaks.empty:
             return
-        names = self.data.compounds(sel.measurement_id)["compound_name"]
+        names = self.data.compounds(sel.measurement_id)["main_name"]
 
         rt = peaks["rt_s"].to_numpy(dtype=float)
         start, stop = integration_bounds(peaks, t)

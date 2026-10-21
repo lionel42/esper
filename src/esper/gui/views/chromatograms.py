@@ -74,12 +74,12 @@ class ChromatogramToolbar(BasePanel):
         if mid is None:
             return
         compounds = self.data.compounds(mid)
-        names = compounds["compound_name"].dropna()
+        names = compounds["main_name"].dropna()
         matching = names[names.str.lower() == text.lower()]
         if matching.empty:
             matching = names[names.str.contains(text, case=False, regex=False)]
         if not matching.empty:
-            self.selection.select_cmp_name(matching.iloc[0])
+            self.selection.select_candidate(matching.iloc[0])
 
     def _on_mass_text(self, text: str) -> None:
         text = text.strip().lower()
@@ -110,11 +110,11 @@ class ChromatogramToolbar(BasePanel):
             if sel.measurement_id is not None:
                 compounds = self.data.compounds(sel.measurement_id)
                 items = [
-                    (f"{compound_label(c.compound_name, idx)}  ({c.rt_mean_s:.1f})", int(idx))
+                    (f"{compound_label(c.main_name, idx)}  ({c.rt_mean_s:.1f})", int(idx))
                     for idx, c in compounds.iterrows()
                 ]
             self.cmp_box.set_items(items)
-        self.cmp_box.set_current(sel.compound_idx, sel.cmp_name)
+        self.cmp_box.set_current(sel.compound_idx, sel.label)
 
         key = (sel.measurement_id, sel.compound_idx)
         if self._mass_items_key != key:
