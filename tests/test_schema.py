@@ -48,11 +48,27 @@ def test_newer_compatible_database_is_not_downgraded(tmp_path):
     assert _version(tmp_path) == db.SCHEMA_VERSION + 10
 
 
+@pytest.mark.parametrize("kwargs", [{}, {"readonly": True}])
+def test_newer_compatible_database_is_opened(tmp_path, kwargs):
+    _make_newer(tmp_path, min_reader=db.SCHEMA_VERSION)
+    db.connect(tmp_path, **kwargs).close()
+    assert _version(tmp_path) == db.SCHEMA_VERSION + 10
+
+
+@pytest.mark.parametrize("kwargs", [{"create": True}, {}, {"readonly": True}])
 @pytest.mark.parametrize("min_reader", [None, db.SCHEMA_VERSION + 10])
-def test_newer_incompatible_database_is_refused(tmp_path, min_reader):
+def test_newer_incompatible_database_is_refused(tmp_path, min_reader, kwargs):
     _make_newer(tmp_path, min_reader=min_reader)
-    with pytest.raises(RuntimeError, match="needs a newer esper"):
-        db.connect(tmp_path, create=True)
+    with pytest.raises(db.SchemaVersionError, match="needs a newer esper"):
+        db.connect(tmp_path, **kwargs)
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"readonly": True}])
+def test_older_database_is_not_upgraded_without_create(tmp_path, kwargs):
+    with sqlite3.connect(db.db_path(tmp_path)) as con:
+        con.execute("PRAGMA user_version = 1")
+    db.connect(tmp_path, **kwargs).close()
+    assert _version(tmp_path) == 1
 
 
 @pytest.mark.skipif(db.SCHEMA_VERSION >= 3, reason="version 3 is not newer")

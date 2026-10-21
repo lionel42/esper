@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
 )
 
-from esper import __version__
+from esper import __version__, db
 from esper.gui.data import EsperData
 from esper.gui.library_loader import library_loader
 from esper.gui.open_dialog import OpenDataDialog, ask_data_dir, is_data_dir
@@ -159,7 +159,7 @@ class MainWindow(QMainWindow):
     def open_data(self, data_dir: Path) -> None:
         try:
             data = EsperData(data_dir)
-        except (FileNotFoundError, ValueError) as e:
+        except (FileNotFoundError, ValueError, db.SchemaVersionError) as e:
             QMessageBox.critical(self, "esper", str(e))
             return
 

@@ -247,19 +247,31 @@ def chromatograms_dir(data_dir: Path) -> Path:
     return Path(data_dir) / CHROMATOGRAMS_DIRNAME
 
 
+class SchemaVersionError(RuntimeError):
+    """The database has a schema version that this esper cannot use."""
+
+
 def connect(data_dir: Path, create: bool = False, readonly: bool = False) -> sqlite3.Connection:
-    """Open the database of a data directory, creating the schema if asked."""
+    """Open the database of a data directory, creating the schema if asked.
+
+    Every connection checks that the schema version is usable; only ``create`` upgrades it.
+    """
     path = db_path(data_dir)
     if not create and not path.is_file():
         raise FileNotFoundError(f"No esper database at {path}")
     if readonly:
-        return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    con = sqlite3.connect(path)
-    con.execute("PRAGMA foreign_keys = ON")
-    if create:
-        _upgrade(con, path)
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(path)
+        con.execute("PRAGMA foreign_keys = ON")
+    try:
+        version = _check_version(con, path)
+        if create and not readonly and version <= SCHEMA_VERSION:
+            _upgrade(con, path, version)
+    except BaseException:
+        con.close()
+        raise
     return con
 
 
@@ -271,21 +283,25 @@ def min_reader_version(con: sqlite3.Connection) -> int | None:
     return None if row is None else row[0]
 
 
-def _upgrade(con: sqlite3.Connection, path: Path) -> None:
-    """Bring the schema of the database to SCHEMA_VERSION, or check that a newer one is usable."""
+def _check_version(con: sqlite3.Connection, path: Path) -> int:
+    """The schema version of the database, if this esper can use it."""
     version = con.execute("PRAGMA user_version").fetchone()[0]
     if version > SCHEMA_VERSION:
         # Written by a newer esper: used as is (never downgraded) if it is compatible
         min_reader = min_reader_version(con) or LEGACY_MIN_READER_VERSIONS.get(version)
         if min_reader is None or min_reader > SCHEMA_VERSION:
-            raise RuntimeError(
+            raise SchemaVersionError(
                 f"{path} has schema version {version}, which needs a newer esper"
                 f" (this one has schema version {SCHEMA_VERSION})"
             )
         logger.info(f"{path} has the newer schema version {version}, compatible with {SCHEMA_VERSION}")
-        return
+    return version
+
+
+def _upgrade(con: sqlite3.Connection, path: Path, version: int) -> None:
+    """Bring the schema of the database from an older or the same version to SCHEMA_VERSION."""
     if version not in COMPATIBLE_VERSIONS:
-        raise RuntimeError(
+        raise SchemaVersionError(
             f"{path} has schema version {version}, expected one of {COMPATIBLE_VERSIONS}"
         )
     con.executescript(SCHEMA + SCHEMA_INFO)
