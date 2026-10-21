@@ -32,6 +32,8 @@ COMPATIBLE_VERSIONS = (0, 1, 2)
 # the database so that older esper versions know whether they can use it. A schema change
 # that only adds tables or nullable columns keeps it, a breaking change sets it to SCHEMA_VERSION.
 MIN_READER_VERSION = 2
+# MIN_READER_VERSION of the schema versions written before schema_info existed
+LEGACY_MIN_READER_VERSIONS = {3: 2}  # 3 only adds nullable columns
 
 SCHEMA_INFO = """
 CREATE TABLE IF NOT EXISTS schema_info (
@@ -274,7 +276,7 @@ def _upgrade(con: sqlite3.Connection, path: Path) -> None:
     version = con.execute("PRAGMA user_version").fetchone()[0]
     if version > SCHEMA_VERSION:
         # Written by a newer esper: used as is (never downgraded) if it is compatible
-        min_reader = min_reader_version(con)
+        min_reader = min_reader_version(con) or LEGACY_MIN_READER_VERSIONS.get(version)
         if min_reader is None or min_reader > SCHEMA_VERSION:
             raise RuntimeError(
                 f"{path} has schema version {version}, which needs a newer esper"

@@ -14,14 +14,14 @@ def _version(tmp_path) -> int:
         return con.execute("PRAGMA user_version").fetchone()[0]
 
 
-def _make_newer(tmp_path, min_reader: int | None) -> None:
+def _make_newer(tmp_path, min_reader: int | None, version: int = db.SCHEMA_VERSION + 10) -> None:
     """Turn the database into one written by a newer esper."""
     con = db.connect(tmp_path, create=True)
     if min_reader is None:
         con.execute("DROP TABLE schema_info")
     else:
         con.execute("UPDATE schema_info SET value = ? WHERE key = 'min_reader_version'", (min_reader,))
-    con.execute(f"PRAGMA user_version = {db.SCHEMA_VERSION + 1}")
+    con.execute(f"PRAGMA user_version = {version}")
     con.commit()
     con.close()
 
@@ -45,11 +45,18 @@ def test_older_database_is_upgraded(tmp_path):
 def test_newer_compatible_database_is_not_downgraded(tmp_path):
     _make_newer(tmp_path, min_reader=db.SCHEMA_VERSION)
     db.connect(tmp_path, create=True).close()
-    assert _version(tmp_path) == db.SCHEMA_VERSION + 1
+    assert _version(tmp_path) == db.SCHEMA_VERSION + 10
 
 
-@pytest.mark.parametrize("min_reader", [None, db.SCHEMA_VERSION + 1])
+@pytest.mark.parametrize("min_reader", [None, db.SCHEMA_VERSION + 10])
 def test_newer_incompatible_database_is_refused(tmp_path, min_reader):
     _make_newer(tmp_path, min_reader=min_reader)
     with pytest.raises(RuntimeError, match="needs a newer esper"):
         db.connect(tmp_path, create=True)
+
+
+@pytest.mark.skipif(db.SCHEMA_VERSION >= 3, reason="version 3 is not newer")
+def test_legacy_version_3_without_schema_info(tmp_path):
+    _make_newer(tmp_path, min_reader=None, version=3)
+    db.connect(tmp_path, create=True).close()
+    assert _version(tmp_path) == 3
