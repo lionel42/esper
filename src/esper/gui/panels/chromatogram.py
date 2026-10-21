@@ -83,7 +83,7 @@ class ChromatogramPanel(BasePanel):
         self._annotations: list = []
         self._overlay_items: list = []
 
-        self.plot = make_plot(x_label="rt [s]")
+        self.plot = make_plot()
         self.curve = self.plot.plot(pen=pg.mkPen("k", width=1))
         self.curve.setClipToView(True)
 
@@ -425,7 +425,7 @@ class RelativeChromatogramPanel(BasePanel):
         self._overlays: list[Curve] = []
         self._items: list = []
 
-        self.plot = make_plot(x_label="rt [s]", y_label="scaled")
+        self.plot = make_plot()
         self.plot.setXLink(source.plot)
         self.curve = self.plot.plot(pen=pg.mkPen("k", width=1))
         self.curve.setClipToView(True)

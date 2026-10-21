@@ -12,13 +12,11 @@ from esper.gui.style import CROSS
 LEFT_AXIS_WIDTH = 75
 
 
-def make_plot(x_label: str | None = None, y_label: str | None = None) -> pg.PlotWidget:
+def make_plot() -> pg.PlotWidget:
     plot = pg.PlotWidget()
     plot.getAxis("left").setWidth(LEFT_AXIS_WIDTH)
-    for axis, label in (("bottom", x_label), ("left", y_label)):
+    for axis in ("bottom", "left"):
         plot.getAxis(axis).enableAutoSIPrefix(False)
-        if label:
-            plot.getAxis(axis).setLabel(label)
     return plot
 
 
@@ -38,11 +36,10 @@ def add_curve(plot: pg.PlotWidget, t, y, color, z: float = -1) -> pg.PlotDataIte
     return item
 
 
-def set_x_axis(plot: pg.PlotWidget, label: str, time: bool) -> None:
+def set_x_axis(plot: pg.PlotWidget, time: bool) -> None:
     """Date axis for acquisition times, plain axis otherwise."""
     axis = pg.DateAxisItem(utcOffset=0) if time else pg.AxisItem("bottom")
     plot.setAxisItems({"bottom": axis})
-    axis.setLabel(label)
 
 
 def time_values(df: pd.DataFrame) -> np.ndarray:

@@ -124,8 +124,7 @@ class SearchPlotPanel(BasePanel):
         self.plot.clear()
         self.legend.clear()
         x_option, y_option = self.options["x"], self.options["y"]
-        set_x_axis(self.plot, x_option, time=x_option == "Time")
-        self.plot.getAxis("left").setLabel(y_option)
+        set_x_axis(self.plot, time=x_option == "Time")
         self.plot.addItem(self.highlight)
         self.plotted = None
 

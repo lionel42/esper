@@ -71,7 +71,7 @@ class SpectrumPanel(BasePanel):
         self.loader.loaded.connect(self.invalidate)
         self._reference: tuple[str, str] | None = None
 
-        self.plot = make_plot(x_label="m/z")
+        self.plot = make_plot()
         self.plot.setMouseEnabled(y=False)
         self.title_label = pg.LabelItem(color="k", size="10pt")
         self.title_label.setParentItem(self.plot.getViewBox())
@@ -132,7 +132,6 @@ class SpectrumPanel(BasePanel):
             f"   rt {compound.rt_mean_s:.1f} s"
         )
         kind = self.settings.settings.spectrum_intensity
-        self.plot.getAxis("left").setLabel(f"{kind} [%]")
         spectrum = self.data.compound_spectrum(sel.measurement_id, sel.compound_idx, kind)
         if not len(spectrum) or spectrum.intensities.max() <= 0:
             return
