@@ -206,7 +206,7 @@ class ChromatogramPanel(BasePanel):
         title = mass_label(sel.mass)
         if not self.show_info:
             name = self.data.measurements.loc[sel.measurement_id, "name"]
-            title = f"{name}   {html.escape(sel.cmp_name or '')}   {title}"
+            title = f"{name}   {html.escape(sel.label or '')}   {title}"
         self.title_label.setText(title if series is not None else f"{title} (no chromatogram)")
         if self.show_info:
             self._update_info()

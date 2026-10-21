@@ -79,7 +79,7 @@ class ChromatogramToolbar(BasePanel):
         if matching.empty:
             matching = names[names.str.contains(text, case=False, regex=False)]
         if not matching.empty:
-            self.selection.select_cmp_name(matching.iloc[0])
+            self.selection.select_candidate(matching.iloc[0])
 
     def _on_mass_text(self, text: str) -> None:
         text = text.strip().lower()
@@ -114,7 +114,7 @@ class ChromatogramToolbar(BasePanel):
                     for idx, c in compounds.iterrows()
                 ]
             self.cmp_box.set_items(items)
-        self.cmp_box.set_current(sel.compound_idx, sel.cmp_name)
+        self.cmp_box.set_current(sel.compound_idx, sel.label)
 
         key = (sel.measurement_id, sel.compound_idx)
         if self._mass_items_key != key:

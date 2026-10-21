@@ -56,8 +56,8 @@ class EsperData:
     def sample_types(self) -> list[str]:
         return sorted(self.measurements["sample_type"].dropna().unique())
 
-    def compound_names(self, valid_only: bool) -> pd.Series:
-        """Number of occurrences of each compound name."""
+    def candidate_names(self, valid_only: bool) -> pd.Series:
+        """Number of compounds of all measurements with each best candidate name."""
         where = "AND valid_candidate = 1" if valid_only else ""
         df = self._query(
             f"""
@@ -70,7 +70,10 @@ class EsperData:
 
     @lru_cache(maxsize=32)
     def compounds(self, measurement_id: int) -> pd.DataFrame:
-        """Compounds of a measurement with their best candidate, sorted by rt."""
+        """Compounds detected in a measurement with their best candidate, sorted by rt.
+
+        ``compound_name`` is the name of alpinac's best candidate, not a target name.
+        """
         return self._query(
             """
             SELECT c.*,
@@ -136,6 +139,11 @@ class EsperData:
         df = self._candidates(measurement_id)
         return df[df["compound_idx"] == compound_idx]
 
+    def candidate_of(self, measurement_id: int, compound_idx: int) -> str | None:
+        """Name of alpinac's best candidate for a compound, None if it has none."""
+        name = self.compounds(measurement_id).loc[compound_idx, "compound_name"]
+        return name if isinstance(name, str) else None
+
     def main_ion(self, measurement_id: int, compound_idx: int) -> int | None:
         """Mass of the most prominent peak of the compound."""
         peaks = self.compound_peaks(measurement_id, compound_idx)
@@ -144,16 +152,16 @@ class EsperData:
         return int(peaks.loc[peaks["prominence"].idxmax(), "mass"])
 
     def find_compound(
-        self, measurement_id: int, name: str | list[str] | None, near_rt: float | None = None
+        self, measurement_id: int, candidate: str | list[str] | None, near_rt: float | None = None
     ) -> int | None:
-        """Compound of the measurement with that name (or one of these names).
+        """Compound of the measurement with that best candidate name (or one of these names).
 
         Valid candidates are preferred, then the one closest to ``near_rt``,
         or the most intense one.
         """
-        if name is None:
+        if candidate is None:
             return None
-        names = [name] if isinstance(name, str) else list(name)
+        names = [candidate] if isinstance(candidate, str) else list(candidate)
         compounds = self.compounds(measurement_id)
         matching = compounds[compounds["compound_name"].isin(names)]
         if matching.empty:
@@ -199,7 +207,7 @@ class EsperData:
         return mapping
 
     def target_of(self, name: str | None) -> str | None:
-        """The target that a compound name (or alias) stands for."""
+        """The target that a candidate name (a target name or alias) stands for."""
         return self._target_by_name.get(name) if name is not None else None
 
     def target_names(self, target: str) -> list[str]:
@@ -260,14 +268,15 @@ class EsperData:
 
     # --- across measurements ------------------------------------------------------------
 
-    def results(self, name: str, valid_only: bool) -> pd.DataFrame:
-        """All occurrences of a compound in the measurements, with peak summaries."""
+    def results(self, candidates: list[str], valid_only: bool) -> pd.DataFrame:
+        """All compounds with one of these best candidate names, with peak summaries."""
         where = "AND c.valid_candidate = 1" if valid_only else ""
+        placeholders = ", ".join("?" * len(candidates))
         df = self._query(
             f"""
             SELECT
                 c.measurement_id, c.compound_idx, c.rt_mean_s, c.retention_index,
-                c.valid_candidate,
+                c.compound_name, c.valid_candidate,
                 COUNT(p.peak_idx) AS n_peaks,
                 SUM(p.prominence) AS prominence_sum,
                 MAX(p.height) AS max_height,
@@ -281,10 +290,10 @@ class EsperData:
                 ON cc.measurement_id = c.measurement_id
                 AND cc.compound_idx = c.compound_idx
                 AND cc.is_best = 1
-            WHERE c.compound_name = ? {where}
+            WHERE c.compound_name IN ({placeholders}) {where}
             GROUP BY c.measurement_id, c.compound_idx
             """,
-            (name,),
+            tuple(candidates),
         )
         meas = self.measurements[["name", "acq_datetime", "sample_type", "sample_number"]]
         df = df.join(meas, on="measurement_id")
