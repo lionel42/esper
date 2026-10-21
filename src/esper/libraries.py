@@ -98,6 +98,51 @@ def read_jdx(file: Path) -> Spectrum:
     return Spectrum.from_pairs(data["x"], data["y"])
 
 
+# Intensity of the base peak in a written .jdx, as in the NIST files
+JDX_MAX_Y = 9999
+# Peaks per line of the peak table, as in the NIST files
+JDX_PEAKS_PER_LINE = 4
+
+
+def write_jdx(file: Path, spectrum: Spectrum, title: str, comments: dict[str, str] | None = None) -> None:
+    """Write a spectrum as a NIST-like JCAMP-DX file, readable with ``read_jdx``.
+
+    Intensities are scaled to ``JDX_MAX_Y`` for the base peak, peaks rounding
+    to 0 are dropped. ``comments`` are written as private ``##$KEY=value`` fields.
+    """
+    keep = spectrum.intensities > 0
+    mz = spectrum.mz[keep].astype(int)
+    y = np.round(JDX_MAX_Y * spectrum.intensities[keep] / spectrum.intensities[keep].max()).astype(int)
+    mz, y = mz[y > 0], y[y > 0]
+    header = {
+        "TITLE": title,
+        "JCAMP-DX": "4.24",
+        "DATA TYPE": "MASS SPECTRUM",
+        "ORIGIN": "esper",
+        "OWNER": "",
+        **{f"${key}": value for key, value in (comments or {}).items()},
+        "XUNITS": "M/Z",
+        "YUNITS": "RELATIVE INTENSITY",
+        "XFACTOR": "1",
+        "YFACTOR": "1",
+        "FIRSTX": mz[0],
+        "LASTX": mz[-1],
+        "FIRSTY": y[0],
+        "MAXX": mz.max(),
+        "MINX": mz.min(),
+        "MAXY": y.max(),
+        "MINY": y.min(),
+        "NPOINTS": len(mz),
+        "PEAK TABLE": "(XY..XY)",
+    }
+    lines = [f"##{key}={value}" for key, value in header.items()]
+    pairs = [f"{m},{i}" for m, i in zip(mz, y)]
+    for start in range(0, len(pairs), JDX_PEAKS_PER_LINE):
+        lines.append(" ".join(pairs[start : start + JDX_PEAKS_PER_LINE]))
+    lines.append("##END=")
+    Path(file).write_text("\n".join(lines) + "\n")
+
+
 def read_alpinac_fragments(file: Path) -> Spectrum:
     """alpinac fragment file: peaks assigned to a compound, area summed per unit mass
     (as ``db_reader.AlpinacFragmentsReader`` with ``integer_masses=True``)."""
