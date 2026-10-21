@@ -15,6 +15,7 @@ class Selection(QObject):
     - the *compound*: a group of co-eluting peaks detected in the measurement
       (``compound_idx``). ``candidate`` is the name of alpinac's best library
       candidate for it, used to follow the same compound in other measurements.
+      An alias is resolved: the candidate is then the name of its target.
     - the *target*: a substance of the target list (``target``), with its
       expected retention index and ions. It is the target of the candidate, or
       a target chosen in the target table, which may not be found in the

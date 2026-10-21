@@ -48,7 +48,8 @@ def selection(tmp_path):
 
 def test_compound_with_target(selection):
     selection.select_compound(1, 0)
-    assert (selection.compound_idx, selection.candidate, selection.target) == (0, "CFC12", "CFC-12")
+    # The alias is resolved
+    assert (selection.compound_idx, selection.candidate, selection.target) == (0, "CFC-12", "CFC-12")
     assert selection.label == "CFC-12"
 
 
@@ -73,7 +74,7 @@ def test_target_not_found_is_not_a_candidate(selection):
 def test_target_followed_through_its_aliases(selection):
     selection.select_measurement(1)
     selection.select_target("CFC-12")
-    assert (selection.compound_idx, selection.candidate) == (0, "CFC12")
+    assert (selection.compound_idx, selection.candidate) == (0, "CFC-12")
     selection.select_measurement(2)
     assert (selection.compound_idx, selection.candidate, selection.target) == (0, "CFC-12", "CFC-12")
 
@@ -86,5 +87,12 @@ def test_candidate_followed_across_measurements(selection):
 
 def test_results_of_all_names_of_a_target(selection):
     data = selection.data
-    results = data.results(data.target_names("CFC-12"), valid_only=False)
+    results = data.results("CFC-12", valid_only=False)
     assert sorted(results["compound_name"]) == ["CFC-12", "CFC12"]
+
+
+def test_aliases_are_not_shown(selection):
+    data = selection.data
+    assert data.candidate_names(valid_only=False).to_dict() == {"CFC-12": 2, "Unknown X": 1}
+    assert list(data.compounds(1)["main_name"].fillna("-")) == ["CFC-12", "Unknown X", "-"]
+    assert sorted(data.search([85], "rt", 0, 1000)["main_name"].fillna("-")) == ["-", "CFC-12", "CFC-12", "Unknown X"]

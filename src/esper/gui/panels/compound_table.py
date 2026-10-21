@@ -50,7 +50,7 @@ class CompoundTablePanel(TablePanel):
 
         df = compounds.copy()
         df["compound_idx"] = df.index
-        df["name"] = [compound_label(n, i) for i, n in df["compound_name"].items()]
+        df["name"] = [compound_label(n, i) for i, n in df["main_name"].items()]
         df["n_peaks"] = grouped.size().reindex(df.index).fillna(0).astype(int)
         df["main_ion"] = main_ion.reindex(df.index).astype("Int64")
         return df

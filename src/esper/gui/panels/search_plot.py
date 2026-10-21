@@ -151,7 +151,7 @@ class SearchPlotPanel(BasePanel):
                 sub["x"].to_numpy(), sub["y"].to_numpy(),
                 data=list(zip(
                     sub["measurement_id"], sub["compound_idx"], sub["mass"], sub["rt_s"],
-                    sub["name"], sub["compound_name"],
+                    sub["name"], sub["main_name"],
                 )),
                 symbol=symbols[stype], size=12, pen=pg.mkPen(colors[mass], width=1.5), brush=None,
                 hoverable=True, hoverPen=pg.mkPen("c", width=3), hoverSize=18,
