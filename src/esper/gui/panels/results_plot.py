@@ -59,19 +59,26 @@ class ResultsPlotPanel(BasePanel):
         self.invalidate()
 
     def on_selection_changed(self, fields: set) -> None:
-        if "cmp_name" in fields:
+        if fields & {"candidate", "target"}:
             self.invalidate()
         elif fields & {"measurement_id", "compound_idx"}:
             self._update_highlight()
 
     def redraw(self) -> None:
-        # Query the database only when the compound or the validity filter changed
-        name = self.selection.cmp_name
-        key = (name, self.options["valid_only"])
+        # Query the database only when the candidates or the validity filter changed
+        candidates = self._candidates()
+        key = (candidates, self.options["valid_only"])
         if key != self._loaded_key:
             self._loaded_key = key
-            self.df = None if name is None else self.data.results(name, self.options["valid_only"])
+            self.df = None if not candidates else self.data.results(list(candidates), self.options["valid_only"])
         self._plot()
+
+    def _candidates(self) -> tuple[str, ...]:
+        """Candidate names plotted: all names of the selected target, or the selected candidate."""
+        sel = self.selection
+        if sel.target is not None:
+            return tuple(self.data.target_names(sel.target))
+        return (sel.candidate,) if sel.candidate is not None else ()
 
     def _x_values(self, df: pd.DataFrame) -> np.ndarray:
         match self.options["x"]:
@@ -88,7 +95,7 @@ class ResultsPlotPanel(BasePanel):
         x_option, y_option = self.options["x"], self.options["y"]
         set_x_axis(self.plot, x_option, time=x_option == "Time")
         self.plot.getAxis("left").setLabel(y_option)
-        self.plot.setTitle(f"{self.selection.cmp_name or ''} {y_option}", color="k")
+        self.plot.setTitle(f"{self.selection.label or ''} {y_option}", color="k")
         self.plot.addItem(self.highlight)
         self.plotted = None
 

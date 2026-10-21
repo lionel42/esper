@@ -50,7 +50,7 @@ class ResultsView(BaseView):
         )
         self.spectrum = self.add_panel(SpectrumPanel(data, selection, chromatogram=self.chromatogram), stretch=1, optional=True)
 
-        self.cmp_box.selected.connect(self.selection.select_cmp_name)
+        self.cmp_box.selected.connect(self.selection.select_candidate)
         self.cmp_box.text_entered.connect(self._on_cmp_text)
         self.runtype_box.selected.connect(lambda runtype: self.results.set_options(runtype=runtype))
         self.x_combo.currentTextChanged.connect(lambda x: self.results.set_options(x=x))
@@ -64,18 +64,18 @@ class ResultsView(BaseView):
             self._load_names()
 
     def _on_selection_changed(self, fields: set) -> None:
-        if "cmp_name" in fields:
-            self.cmp_box.set_current(self.selection.cmp_name, self.selection.cmp_name)
+        if fields & {"candidate", "target"}:
+            self.cmp_box.set_current(self.selection.candidate, self.selection.label)
 
     def _load_names(self) -> None:
-        """Compound names for the Cmp box; selects the most frequent one if none is selected."""
+        """Candidate names for the Cmp box; selects the most frequent one if nothing is selected."""
         self._names_loaded = True
         self.runtype_box.set_items([(ALL, ALL)] + [(t, t) for t in self.data.sample_types()], ALL)
-        counts = self.data.compound_names(self.valid_only.isChecked())
+        counts = self.data.candidate_names(self.valid_only.isChecked())
         self.cmp_box.set_items([(name, name) for name in counts.index])
-        if self.selection.cmp_name is None and not counts.empty:
-            self.selection.select_cmp_name(counts.idxmax())
-        self.cmp_box.set_current(self.selection.cmp_name, self.selection.cmp_name)
+        if self.selection.label is None and not counts.empty:
+            self.selection.select_candidate(counts.idxmax())
+        self.cmp_box.set_current(self.selection.candidate, self.selection.label)
 
     def _on_valid_only(self, valid_only: bool) -> None:
         self._load_names()
@@ -85,5 +85,5 @@ class ResultsView(BaseView):
         for i in range(self.cmp_box.combo.count()):
             name = self.cmp_box.combo.itemData(i)
             if text.lower() in name.lower():
-                self.selection.select_cmp_name(name)
+                self.selection.select_candidate(name)
                 return
