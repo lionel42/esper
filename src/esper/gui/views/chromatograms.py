@@ -74,7 +74,7 @@ class ChromatogramToolbar(BasePanel):
         if mid is None:
             return
         compounds = self.data.compounds(mid)
-        names = compounds["compound_name"].dropna()
+        names = compounds["main_name"].dropna()
         matching = names[names.str.lower() == text.lower()]
         if matching.empty:
             matching = names[names.str.contains(text, case=False, regex=False)]
@@ -110,7 +110,7 @@ class ChromatogramToolbar(BasePanel):
             if sel.measurement_id is not None:
                 compounds = self.data.compounds(sel.measurement_id)
                 items = [
-                    (f"{compound_label(c.compound_name, idx)}  ({c.rt_mean_s:.1f})", int(idx))
+                    (f"{compound_label(c.main_name, idx)}  ({c.rt_mean_s:.1f})", int(idx))
                     for idx, c in compounds.iterrows()
                 ]
             self.cmp_box.set_items(items)

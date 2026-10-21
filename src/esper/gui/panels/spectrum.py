@@ -128,7 +128,7 @@ class SpectrumPanel(BasePanel):
 
         compound = self.data.compounds(sel.measurement_id).loc[sel.compound_idx]
         self.title_label.setText(
-            f"{html.escape(compound_label(compound.compound_name, sel.compound_idx))}"
+            f"{html.escape(compound_label(compound.main_name, sel.compound_idx))}"
             f"   rt {compound.rt_mean_s:.1f} s"
         )
         kind = self.settings.settings.spectrum_intensity

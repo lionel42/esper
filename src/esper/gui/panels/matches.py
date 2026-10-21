@@ -31,6 +31,7 @@ class BestMatchesPanel(TablePanel):
 
     columns = [
         Column("name", "name"),
+        Column("compound", "compound", tooltip="Target that this spectrum name is an alias of"),
         Column("library", "library"),
         Column(
             "score", "score", "{:.3f}", "Cosine score with the compound (settings: intensity, processing)", score_color
@@ -69,6 +70,9 @@ class BestMatchesPanel(TablePanel):
         df = pd.DataFrame([vars(m) for m in matches])
         df["spectrum"] = df["library"] + "/" + df["name"]
         df.index = df["spectrum"]
+        df["compound"] = [
+            target if (target := self.data.target_of(name)) not in (None, name) else "" for name in df["name"]
+        ]
         targets = self.data.targets
         df["ri"] = [
             targets.at[t, "ri"] if (t := self.data.target_of(name)) is not None else np.nan
