@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import html
+import re
+from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QVBoxLayout
+from PySide6.QtWidgets import QFileDialog, QMessageBox, QVBoxLayout
 
 from esper.gui.data import EsperData
 from esper.gui.panels.base import BasePanel
@@ -17,6 +19,7 @@ from esper.gui.library_loader import library_loader
 from esper.gui.references import current_reference
 from esper.gui.selection import Selection
 from esper.gui.settings import settings_manager
+from esper.libraries import write_jdx
 
 # Number of most intense masses labelled with their m/z
 N_LABELS = 12
@@ -43,6 +46,7 @@ class SpectrumPanel(BasePanel):
     The reference spectrum (``selection.reference``, by default alpinac's best
     candidate) is mirrored below, the library can be chosen with a right click.
     The intensity of the measured peaks is set in the settings.
+    The measured spectrum can be exported with a right click.
     """
 
     title = "Spectrum"
@@ -84,6 +88,16 @@ class SpectrumPanel(BasePanel):
         menu.addSeparator()
         self.library_menu = menu.addMenu("Reference library")
         self.library_menu.aboutToShow.connect(self._fill_library_menu)
+        self.export_menu = menu.addMenu("Export spectrum")
+        self.export_jdx_action = self.export_menu.addAction("JCAMP-DX (.jdx)…")
+        self.export_jdx_action.triggered.connect(self._export_jdx)
+        # TODO: alpinac fragment file (.txt), as read by libraries.read_alpinac_fragments
+        self.export_menu.addAction("alpinac (.txt)… (not implemented yet)").setEnabled(False)
+        self.export_menu.aboutToShow.connect(
+            lambda: self.export_jdx_action.setEnabled(self.selection.compound_idx is not None)
+        )
+        # Folder of the last export
+        self._export_dir = Path.home()
         self.plot.scene().sigMouseClicked.connect(self._on_click)
 
         layout = QVBoxLayout(self)
@@ -232,6 +246,42 @@ class SpectrumPanel(BasePanel):
             action.setCheckable(True)
             action.setChecked(library == current)
             action.triggered.connect(lambda _=False, lib=library: self.selection.select_reference((lib, name)))
+
+    def _export_jdx(self) -> None:
+        """Save the measured spectrum of the selected compound (current intensity) as .jdx."""
+        sel = self.selection
+        if sel.measurement_id is None or sel.compound_idx is None:
+            return
+        measurement = self.data.measurements.loc[sel.measurement_id, "name"]
+        compound = self.data.compounds(sel.measurement_id).loc[sel.compound_idx]
+        label = compound_label(compound.main_name, sel.compound_idx)
+        kind = self.settings.settings.spectrum_intensity
+        spectrum = self.data.compound_spectrum(sel.measurement_id, sel.compound_idx, kind)
+        if not len(spectrum) or spectrum.intensities.max() <= 0:
+            QMessageBox.warning(self, "Export spectrum", f"{label} has no spectrum to export.")
+            return
+        default = re.sub(r"[^\w.,+-]+", "_", f"{measurement}_{label}_rt{compound.rt_mean_s:.0f}s") + ".jdx"
+        file, _ = QFileDialog.getSaveFileName(
+            self, "Export spectrum", str(self._export_dir / default), "JCAMP-DX (*.jdx)"
+        )
+        if not file:
+            return
+        file = Path(file)
+        # Not with_suffix: measurement names contain dots
+        if file.suffix.lower() != ".jdx":
+            file = file.with_name(file.name + ".jdx")
+        comments = {
+            "MEASUREMENT": measurement,
+            "COMPOUND INDEX": str(sel.compound_idx),
+            "RETENTION TIME [S]": f"{compound.rt_mean_s:.2f}",
+            "INTENSITY": kind,
+        }
+        try:
+            write_jdx(file, spectrum, title=label, comments=comments)
+        except OSError as e:
+            QMessageBox.critical(self, "Export spectrum", f"Could not write {file}:\n{e}")
+            return
+        self._export_dir = file.parent
 
     def _mark_expected(self, masses: list[int]) -> None:
         """Dashed lines at the expected ions of the target, labelled with their rank."""
