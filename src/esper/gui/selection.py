@@ -21,6 +21,9 @@ class Selection(QObject):
       a target chosen in the target table, which may not be found in the
       measurement (then ``compound_idx`` and ``candidate`` are None).
 
+    Several compounds can be selected together (``compound_idxs``, e.g. to merge
+    them): they are shown combined, ``compound_idx`` is the main one (lowest index).
+
     ``label`` is the name shown for the selection: the target, else the candidate.
 
     ``reference`` is the library spectrum compared with the compound, as
@@ -37,6 +40,7 @@ class Selection(QObject):
         self.data = data
         self.measurement_id: int | None = None
         self.compound_idx: int | None = None
+        self.compound_idxs: tuple[int, ...] = ()  # compound_idx and the others selected with it
         self.candidate: str | None = None
         self.mass: int | None = None  # None: TIC
         self.rt: float | None = None
@@ -44,6 +48,9 @@ class Selection(QObject):
         self.reference: tuple[str, str] | None = None
 
     def _set(self, **values) -> None:
+        if "compound_idx" in values and "compound_idxs" not in values:
+            compound_idx = values["compound_idx"]
+            values["compound_idxs"] = () if compound_idx is None else (compound_idx,)
         if "reference" not in values and {"measurement_id", "compound_idx"} & {
             k for k, v in values.items() if getattr(self, k) != v
         }:
@@ -67,12 +74,18 @@ class Selection(QObject):
         }
 
     def select_compound(self, measurement_id: int, compound_idx: int) -> None:
-        candidate = self.data.candidate_of(measurement_id, compound_idx)
+        self.select_compounds(measurement_id, [compound_idx])
+
+    def select_compounds(self, measurement_id: int, compound_idxs) -> None:
+        """Select compounds together: the one with the lowest index is the main one."""
+        idxs = tuple(sorted({int(i) for i in compound_idxs}))
+        candidate = self.data.candidate_of(measurement_id, idxs[0])
         self._set(
             measurement_id=measurement_id,
             candidate=candidate,
             target=self.data.target_of(candidate),
-            **self._compound_values(measurement_id, compound_idx),
+            **self._compound_values(measurement_id, idxs[0]),
+            compound_idxs=idxs,
         )
 
     def _target_values(self, measurement_id: int, target: str, keep_mass: bool) -> dict:
@@ -136,6 +149,20 @@ class Selection(QObject):
             if compound_idx is not None:
                 values.update(self._compound_values(self.measurement_id, compound_idx))
         self._set(**values)
+
+    def identification_edited(self) -> None:
+        """The identification of a compound was edited (or compounds merged): the selected compound may have a new name.
+
+        ``changed`` is emitted with ``"identification"``, for what shows the names to reload.
+        """
+        values = {}
+        if self.measurement_id is not None and self.compound_idx is not None:
+            candidate = self.data.candidate_of(self.measurement_id, self.compound_idx)
+            values = {"candidate": candidate, "target": self.data.target_of(candidate)}
+        changed = {k for k, v in values.items() if getattr(self, k) != v}
+        for k in changed:
+            setattr(self, k, values[k])
+        self.changed.emit(changed | {"identification"})
 
     def select_reference(self, reference: tuple[str, str] | None) -> None:
         self._set(reference=reference)

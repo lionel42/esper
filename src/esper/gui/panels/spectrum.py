@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox, QVBoxLayout
 
 from esper.gui.data import EsperData
 from esper.gui.panels.base import BasePanel
-from esper.gui.panels.chromatogram import TARGET_COLOR, ChromatogramPanel, Curve, compound_label
+from esper.gui.panels.chromatogram import TARGET_COLOR, ChromatogramPanel, Curve, combined_label, compound_label
 from esper.gui.plotting import make_plot
 from esper.gui.library_loader import library_loader
 from esper.gui.references import current_reference
@@ -40,17 +40,20 @@ N_REFERENCE_LABELS = 8
 class SpectrumPanel(BasePanel):
     """Spectrum of the selected compound: one stick per mass, height = peak prominence.
 
+    With several compounds selected, their peaks are combined in one spectrum.
+
     Clicking a stick selects that mass. With a visible chromatogram panel as
     ``chromatogram``, the masses plotted there get the same colors here.
     The expected ions of the selected target are marked with dashed lines.
     The reference spectrum (``selection.reference``, by default alpinac's best
-    candidate) is mirrored below, the library can be chosen with a right click.
+    candidate, or the one of the identification edited by hand) is mirrored below, the library can be chosen with a right click.
     The intensity of the measured peaks is set in the settings.
     The measured spectrum can be exported with a right click.
     """
 
     title = "Spectrum"
-    watches = {"measurement_id", "compound_idx", "mass", "target", "reference"}
+    # identification: the reference may be the spectrum of a name given by hand
+    watches = {"measurement_id", "compound_idx", "compound_idxs", "mass", "target", "reference", "identification"}
 
     def __init__(
         self,
@@ -143,10 +146,10 @@ class SpectrumPanel(BasePanel):
         compound = self.data.compounds(sel.measurement_id).loc[sel.compound_idx]
         self.title_label.setText(
             f"{html.escape(compound_label(compound.main_name, sel.compound_idx))}"
-            f"   rt {compound.rt_mean_s:.1f} s"
+            f"{combined_label(sel.compound_idxs)}   rt {compound.rt_mean_s:.1f} s"
         )
         kind = self.settings.settings.spectrum_intensity
-        spectrum = self.data.compound_spectrum(sel.measurement_id, sel.compound_idx, kind)
+        spectrum = self.data.compound_spectrum(sel.measurement_id, sel.compound_idxs, kind)
         if not len(spectrum) or spectrum.intensities.max() <= 0:
             return
         masses = spectrum.mz.astype(float)
@@ -254,9 +257,9 @@ class SpectrumPanel(BasePanel):
             return
         measurement = self.data.measurements.loc[sel.measurement_id, "name"]
         compound = self.data.compounds(sel.measurement_id).loc[sel.compound_idx]
-        label = compound_label(compound.main_name, sel.compound_idx)
+        label = compound_label(compound.main_name, sel.compound_idx) + combined_label(sel.compound_idxs)
         kind = self.settings.settings.spectrum_intensity
-        spectrum = self.data.compound_spectrum(sel.measurement_id, sel.compound_idx, kind)
+        spectrum = self.data.compound_spectrum(sel.measurement_id, sel.compound_idxs, kind)
         if not len(spectrum) or spectrum.intensities.max() <= 0:
             QMessageBox.warning(self, "Export spectrum", f"{label} has no spectrum to export.")
             return
@@ -272,7 +275,7 @@ class SpectrumPanel(BasePanel):
             file = file.with_name(file.name + ".jdx")
         comments = {
             "MEASUREMENT": measurement,
-            "COMPOUND INDEX": str(sel.compound_idx),
+            "COMPOUND INDEX": ", ".join(map(str, sel.compound_idxs)),
             "RETENTION TIME [S]": f"{compound.rt_mean_s:.2f}",
             "INTENSITY": kind,
         }

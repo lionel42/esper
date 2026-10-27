@@ -153,6 +153,21 @@ CREATE TABLE IF NOT EXISTS peak (
         REFERENCES compound (measurement_id, compound_idx) ON DELETE CASCADE
 );
 
+-- Identification of a compound edited by hand, replacing alpinac's compound_name and best
+-- candidate (name NULL: marked as not identified). Lost when the measurement is imported again.
+CREATE TABLE IF NOT EXISTS compound_identification (
+    measurement_id      INTEGER,
+    compound_idx        INTEGER,
+    name                TEXT,                   -- a target, alias or any name
+    edited_at           TEXT NOT NULL,
+    spectrum_ref        TEXT,                   -- best library spectrum of the name, e.g. 'nist_CFC-12'
+    score               REAL,                   -- as compound_candidate (NULL: no spectrum)
+    score_combined      REAL,
+    PRIMARY KEY (measurement_id, compound_idx),
+    FOREIGN KEY (measurement_id, compound_idx)
+        REFERENCES compound (measurement_id, compound_idx) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS peak_mass_rt ON peak (mass, rt_s);
 CREATE INDEX IF NOT EXISTS peak_compound ON peak (measurement_id, compound_idx);
 CREATE INDEX IF NOT EXISTS compound_name_idx ON compound (compound_name);

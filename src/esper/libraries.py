@@ -196,6 +196,19 @@ def cosine(query: Spectrum, reference: Spectrum) -> tuple[float, int]:
     return float(query.intensities[iq] @ reference.intensities[ir] / norm), len(common)
 
 
+# alpinac's combined score: the spectral score, lowered by 1 % per unit of retention index
+# difference (0 from RI_DIFF_ZERO on), or by NO_RI_FACTOR without a retention index
+RI_DIFF_ZERO = 100.0
+NO_RI_FACTOR = 0.9
+
+
+def combined_score(score: float, ri_diff: float | None) -> float:
+    """Spectral score combined with the retention index difference, as alpinac does."""
+    if ri_diff is None or not np.isfinite(ri_diff):
+        return score * NO_RI_FACTOR
+    return score * max(0.0, 1.0 - abs(ri_diff) / RI_DIFF_ZERO)
+
+
 @dataclass
 class Match:
     library: str

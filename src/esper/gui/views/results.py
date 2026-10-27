@@ -64,6 +64,11 @@ class ResultsView(BaseView):
             self._load_names()
 
     def _on_selection_changed(self, fields: set) -> None:
+        if "identification" in fields:
+            # A compound may have a new name
+            self._names_loaded = False
+            if self.isVisible():
+                self._load_names()
         if fields & {"candidate", "target"}:
             self.cmp_box.set_current(self.selection.candidate, self.selection.label)
 
