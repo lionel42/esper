@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
-from PySide6.QtGui import QColor, QGuiApplication, QKeySequence
 from PySide6.QtCore import (
     QAbstractTableModel,
     QItemSelection,
@@ -18,6 +17,7 @@ from PySide6.QtCore import (
     Qt,
     QTimer,
 )
+from PySide6.QtGui import QColor, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -43,7 +43,11 @@ MAX_COLUMN_WIDTH = 220
 
 
 def _missing(value) -> bool:
-    return value is None or (isinstance(value, float) and math.isnan(value)) or value is pd.NA
+    return (
+        value is None
+        or (isinstance(value, float) and math.isnan(value))
+        or value is pd.NA
+    )
 
 
 def score_color(value) -> str | None:
@@ -107,7 +111,11 @@ class DataFrameModel(QAbstractTableModel):
         self._df = df
         self._columns = columns
         # Plain Python values per row: much faster than DataFrame lookups in data()
-        self._values = df[[c.key for c in columns]].astype(object).values.tolist() if len(df) else []
+        self._values = (
+            df[[c.key for c in columns]].astype(object).values.tolist()
+            if len(df)
+            else []
+        )
         self._numeric = [pd.api.types.is_numeric_dtype(df[c.key]) for c in columns]
         self.endResetModel()
 
@@ -213,7 +221,9 @@ class TablePanel(BasePanel):
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().hide()
         self.table.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.selectionModel().selectionChanged.connect(self._on_rows_selected)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -291,7 +301,9 @@ class TablePanel(BasePanel):
         if first_fill and len(df):
             self.table.resizeColumnsToContents()
             for i in range(len(self.columns)):
-                self.table.setColumnWidth(i, min(self.table.columnWidth(i), MAX_COLUMN_WIDTH))
+                self.table.setColumnWidth(
+                    i, min(self.table.columnWidth(i), MAX_COLUMN_WIDTH)
+                )
         self._update_count()
         self.show_current()
 
@@ -320,7 +332,13 @@ class TablePanel(BasePanel):
         """Make the rows of the selected items selected (the first one current), without selecting them again."""
         keys = self.current_keys() if self.model.rowCount() else []
         rows = [row for row in map(self.model.row_of, keys) if row >= 0]
-        indexes = [i for i in (self.proxy.mapFromSource(self.model.index(row, 0)) for row in rows) if i.isValid()]
+        indexes = [
+            i
+            for i in (
+                self.proxy.mapFromSource(self.model.index(row, 0)) for row in rows
+            )
+            if i.isValid()
+        ]
         self._updating = True
         selection = self.table.selectionModel()
         if indexes:
@@ -355,7 +373,9 @@ class TablePanel(BasePanel):
         row = self.proxy.mapToSource(index).row()
         column = self.proxy.mapToSource(index).column()
         menu = QMenu(self)
-        copy = menu.addAction("Copy", lambda: self._copy(self.model.index(row, column).data()))
+        copy = menu.addAction(
+            "Copy", lambda: self._copy(self.model.index(row, column).data())
+        )
         copy.setShortcut(QKeySequence.StandardKey.Copy)
         menu.addAction("Copy row", lambda: self._copy(self._row_text(row)))
         self.add_context_actions(menu, self.model.key(row))
@@ -363,7 +383,10 @@ class TablePanel(BasePanel):
 
     def _row_text(self, row: int) -> str:
         """The displayed values of a row, separated by tabs (pasted in cells of a spreadsheet)."""
-        return "\t".join(self.model.index(row, i).data() or "" for i in range(self.model.columnCount()))
+        return "\t".join(
+            self.model.index(row, i).data() or ""
+            for i in range(self.model.columnCount())
+        )
 
     @staticmethod
     def _copy(text: str | None) -> None:

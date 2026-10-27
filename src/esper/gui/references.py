@@ -25,7 +25,9 @@ def current_reference(data: EsperData, selection: Selection) -> tuple[str, str] 
     if not library_loader().ensure():
         return None
     # alpinac's best candidate, or the spectrum of the identification edited by hand
-    best = data.compounds(selection.measurement_id).at[selection.compound_idx, "best_spectrum"]
+    best = data.compounds(selection.measurement_id).at[
+        selection.compound_idx, "best_spectrum"
+    ]
     return settings_manager().libraries.resolve(best) if isinstance(best, str) else None
 
 
@@ -53,9 +55,15 @@ def identification_candidate(
         loader.wait()
     manager = settings_manager()
     libraries = manager.libraries
-    spectrum = data.compound_spectrum(measurement_id, compound_idx, manager.settings.spectrum_intensity)
+    spectrum = data.compound_spectrum(
+        measurement_id, compound_idx, manager.settings.spectrum_intensity
+    )
     scored = [
-        (libraries.score(spectrum, libraries.spectrum(library, spectrum_name))[0], library, spectrum_name)
+        (
+            libraries.score(spectrum, libraries.spectrum(library, spectrum_name))[0],
+            library,
+            spectrum_name,
+        )
         for spectrum_name in data.names_of(main_name)
         for library in libraries.libraries_with(spectrum_name)
     ]

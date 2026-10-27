@@ -7,7 +7,11 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit
 
 from esper.gui.data import TIC, EsperData
 from esper.gui.panels.base import BasePanel
-from esper.gui.panels.chromatogram import ChromatogramPanel, RelativeChromatogramPanel, compound_label
+from esper.gui.panels.chromatogram import (
+    ChromatogramPanel,
+    RelativeChromatogramPanel,
+    compound_label,
+)
 from esper.gui.panels.compound_table import CompoundTablePanel
 from esper.gui.panels.matches import BestMatchesPanel
 from esper.gui.panels.spectrum import SpectrumPanel
@@ -67,7 +71,9 @@ class ChromatogramToolbar(BasePanel):
 
     def _on_cmp_selected(self, compound_idx) -> None:
         if compound_idx is not None and self.selection.measurement_id is not None:
-            self.selection.select_compound(self.selection.measurement_id, int(compound_idx))
+            self.selection.select_compound(
+                self.selection.measurement_id, int(compound_idx)
+            )
 
     def _on_cmp_text(self, text: str) -> None:
         mid = self.selection.measurement_id
@@ -101,7 +107,9 @@ class ChromatogramToolbar(BasePanel):
         meas = self.data.measurements
 
         if self.file_box.combo.count() != len(meas):
-            self.file_box.set_items([(name, int(mid)) for mid, name in meas["name"].items()])
+            self.file_box.set_items(
+                [(name, int(mid)) for mid, name in meas["name"].items()]
+            )
         self.file_box.set_current(sel.measurement_id)
 
         if self._cmp_items_mid != sel.measurement_id:
@@ -110,7 +118,10 @@ class ChromatogramToolbar(BasePanel):
             if sel.measurement_id is not None:
                 compounds = self.data.compounds(sel.measurement_id)
                 items = [
-                    (f"{compound_label(c.main_name, idx)}  ({c.rt_mean_s:.1f})", int(idx))
+                    (
+                        f"{compound_label(c.main_name, idx)}  ({c.rt_mean_s:.1f})",
+                        int(idx),
+                    )
                     for idx, c in compounds.iterrows()
                 ]
             self.cmp_box.set_items(items)
@@ -120,7 +131,9 @@ class ChromatogramToolbar(BasePanel):
         if self._mass_items_key != key:
             self._mass_items_key = key
             if sel.measurement_id is not None and sel.compound_idx is not None:
-                peaks = self.data.compound_peaks(*key).sort_values("prominence", ascending=False)
+                peaks = self.data.compound_peaks(*key).sort_values(
+                    "prominence", ascending=False
+                )
                 masses = [int(m) for m in peaks["mass"].drop_duplicates()]
             else:
                 masses = list(range(2, 301))
@@ -137,9 +150,23 @@ class ChromatogramsView(BaseView):
         super().__init__(data, selection, parent)
         self.toolbar = ChromatogramToolbar(data, selection)
         self.add_toolbar(self.toolbar)
-        self.chromatogram = self.add_panel(ChromatogramPanel(data, selection), stretch=3)
-        self.relative = self.add_panel(RelativeChromatogramPanel(self.chromatogram), stretch=1, optional=True)
-        self.compounds = self.add_panel(CompoundTablePanel(data, selection), optional=True, left=True)
-        self.targets = self.add_panel(TargetTablePanel(data, selection), optional=True, left=True)
-        self.best_matches = self.add_panel(BestMatchesPanel(data, selection), optional=True, left=True)
-        self.spectrum = self.add_panel(SpectrumPanel(data, selection, chromatogram=self.chromatogram), stretch=1, optional=True)
+        self.chromatogram = self.add_panel(
+            ChromatogramPanel(data, selection), stretch=3
+        )
+        self.relative = self.add_panel(
+            RelativeChromatogramPanel(self.chromatogram), stretch=1, optional=True
+        )
+        self.compounds = self.add_panel(
+            CompoundTablePanel(data, selection), optional=True, left=True
+        )
+        self.targets = self.add_panel(
+            TargetTablePanel(data, selection), optional=True, left=True
+        )
+        self.best_matches = self.add_panel(
+            BestMatchesPanel(data, selection), optional=True, left=True
+        )
+        self.spectrum = self.add_panel(
+            SpectrumPanel(data, selection, chromatogram=self.chromatogram),
+            stretch=1,
+            optional=True,
+        )

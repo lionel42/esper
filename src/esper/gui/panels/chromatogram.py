@@ -11,11 +11,11 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import QCheckBox, QVBoxLayout, QWidgetAction
 
 from esper.gui.data import TIC, EsperData
-from esper.integration import integration_bounds, peak_area
 from esper.gui.panels.base import BasePanel
 from esper.gui.plotting import add_curve, make_plot
 from esper.gui.selection import Selection
 from esper.gui.style import overlay_colors
+from esper.integration import integration_bounds, peak_area
 
 # Half width of the rt window shown around the selected compound [s]
 RT_HALF_WINDOW = 30.0
@@ -52,7 +52,11 @@ def compound_label(name, compound_idx) -> str:
 
 def combined_label(compound_idxs: tuple[int, ...]) -> str:
     """The other compounds selected with the main one, e.g. ' + #12, #15'."""
-    return " + " + ", ".join(f"#{i}" for i in compound_idxs[1:]) if len(compound_idxs) > 1 else ""
+    return (
+        " + " + ", ".join(f"#{i}" for i in compound_idxs[1:])
+        if len(compound_idxs) > 1
+        else ""
+    )
 
 
 def mass_label(mass: int | None) -> str:
@@ -179,7 +183,13 @@ class ChromatogramPanel(BasePanel):
         lo, hi = self.plot.viewRange()[0]
         peaks = self.data.peaks(self.selection.measurement_id)
         here = peaks[(peaks["rt_s"] >= lo) & (peaks["rt_s"] <= hi)]
-        return [int(m) for m in here.groupby("mass")["prominence"].max().sort_values(ascending=False).index]
+        return [
+            int(m)
+            for m in here.groupby("mass")["prominence"]
+            .max()
+            .sort_values(ascending=False)
+            .index
+        ]
 
     def _on_x_range_changed(self, *_) -> None:
         if self.overlay_checks["peaking"].isChecked():
@@ -189,7 +199,10 @@ class ChromatogramPanel(BasePanel):
         """After a pan/zoom: redraw (keeping the view) if other masses peak in it."""
         if not self.isVisible():
             return
-        if self.selection.measurement_id is not None and self._overlay_masses() != self._overlaid:
+        if (
+            self.selection.measurement_id is not None
+            and self._overlay_masses() != self._overlaid
+        ):
             self._keep_range = True
             self.invalidate()
 
@@ -212,7 +225,9 @@ class ChromatogramPanel(BasePanel):
         if not self.show_info:
             name = self.data.measurements.loc[sel.measurement_id, "name"]
             title = f"{name}   {html.escape(sel.label or '')}   {title}"
-        self.title_label.setText(title if series is not None else f"{title} (no chromatogram)")
+        self.title_label.setText(
+            title if series is not None else f"{title} (no chromatogram)"
+        )
         if self.show_info:
             self._update_info()
         else:
@@ -232,7 +247,9 @@ class ChromatogramPanel(BasePanel):
         else:
             self._set_range(t, y)
         overlays = self._draw_overlays()
-        self.curves_changed.emit(Curve(sel.mass, mass_label(sel.mass), t, y, "k"), overlays)
+        self.curves_changed.emit(
+            Curve(sel.mass, mass_label(sel.mass), t, y, "k"), overlays
+        )
 
     def _clear(self) -> None:
         for item in self._annotations + self._overlay_items:
@@ -247,7 +264,11 @@ class ChromatogramPanel(BasePanel):
         masses = self._overlaid = self._overlay_masses()
         if not masses:
             return []
-        frame = self.data.chromatogram_frame(sel.measurement_id) if len(masses) > READ_ALL_ABOVE else None
+        frame = (
+            self.data.chromatogram_frame(sel.measurement_id)
+            if len(masses) > READ_ALL_ABOVE
+            else None
+        )
 
         n = len(masses)
         colors = overlay_colors(n)
@@ -264,7 +285,13 @@ class ChromatogramPanel(BasePanel):
             if series is None:
                 continue
             color = colors[i]
-            curve = Curve(mass, mass_label(mass), series.index.to_numpy(dtype=float), series.to_numpy(dtype=float), color)
+            curve = Curve(
+                mass,
+                mass_label(mass),
+                series.index.to_numpy(dtype=float),
+                series.to_numpy(dtype=float),
+                color,
+            )
             item = add_curve(self.plot, curve.t, curve.y, color)
             self._overlay_items.append(item)
             curves.append(curve)
@@ -285,7 +312,10 @@ class ChromatogramPanel(BasePanel):
         if sel.compound_idx is not None:
             c = self.data.compounds(sel.measurement_id).loc[sel.compound_idx]
             lines += [
-                ("cmp", f"{compound_label(c.main_name, sel.compound_idx)} (#{sel.compound_idx}){combined_label(sel.compound_idxs)}"),
+                (
+                    "cmp",
+                    f"{compound_label(c.main_name, sel.compound_idx)} (#{sel.compound_idx}){combined_label(sel.compound_idxs)}",
+                ),
                 ("rt", f"{c.rt_mean_s:.1f} ± {c.rt_std_s:.2f} s"),
                 ("RI", f"{c.retention_index:.1f}"),
                 ("spectrum", f"{c.best_spectrum}"),
@@ -297,9 +327,21 @@ class ChromatogramPanel(BasePanel):
             expected_rt = self.data.expected_rt(sel.measurement_id, sel.target)
             masses = self.data.target_masses(sel.target)
             lines += [
-                ("target", sel.target + ("" if sel.compound_idx is not None else " (not found)")),
-                ("expected RI", "unknown" if not np.isfinite(target["ri"]) else f"{target['ri']:.1f}"),
-                ("expected rt", "unknown" if expected_rt is None else f"{expected_rt:.1f} s"),
+                (
+                    "target",
+                    sel.target
+                    + ("" if sel.compound_idx is not None else " (not found)"),
+                ),
+                (
+                    "expected RI",
+                    "unknown"
+                    if not np.isfinite(target["ri"])
+                    else f"{target['ri']:.1f}",
+                ),
+                (
+                    "expected rt",
+                    "unknown" if expected_rt is None else f"{expected_rt:.1f} s",
+                ),
                 ("expected ions", ", ".join(map(str, masses)) or "unknown"),
             ]
         self.info_label.setText(
@@ -315,8 +357,11 @@ class ChromatogramPanel(BasePanel):
         if rt is None:
             return
         line = pg.InfiniteLine(
-            pos=rt, angle=90, pen=pg.mkPen(TARGET_COLOR, width=1, style=Qt.PenStyle.DashLine),
-            label=f"{sel.target} expected", labelOpts={"position": 0.92, "color": TARGET_COLOR},
+            pos=rt,
+            angle=90,
+            pen=pg.mkPen(TARGET_COLOR, width=1, style=Qt.PenStyle.DashLine),
+            label=f"{sel.target} expected",
+            labelOpts={"position": 0.92, "color": TARGET_COLOR},
         )
         self._add(line)
 
@@ -337,28 +382,58 @@ class ChromatogramPanel(BasePanel):
 
         rt = peaks["rt_s"].to_numpy(dtype=float)
         start, stop = integration_bounds(peaks, t)
-        y_start, y_stop, y_apex = np.interp(start, t, y), np.interp(stop, t, y), np.interp(rt, t, y)
-        y_base = y_start + (y_stop - y_start) * (rt - start) / np.where(stop > start, stop - start, 1)
+        y_start, y_stop, y_apex = (
+            np.interp(start, t, y),
+            np.interp(stop, t, y),
+            np.interp(rt, t, y),
+        )
+        y_base = y_start + (y_stop - y_start) * (rt - start) / np.where(
+            stop > start, stop - start, 1
+        )
 
         def pairs(a0, a1):
             return np.column_stack([a0, a1]).ravel()
 
-        self._add(pg.PlotDataItem(pairs(start, stop), pairs(y_start, y_stop), connect="pairs", pen=pg.mkPen("r", width=1)))
-        self._add(pg.PlotDataItem(pairs(rt, rt), pairs(y_base, y_apex), connect="pairs", pen=pg.mkPen("k", width=0.5)))
+        self._add(
+            pg.PlotDataItem(
+                pairs(start, stop),
+                pairs(y_start, y_stop),
+                connect="pairs",
+                pen=pg.mkPen("r", width=1),
+            )
+        )
+        self._add(
+            pg.PlotDataItem(
+                pairs(rt, rt),
+                pairs(y_base, y_apex),
+                connect="pairs",
+                pen=pg.mkPen("k", width=0.5),
+            )
+        )
         self._add(
             pg.ScatterPlotItem(
                 np.concatenate([start, stop]),
                 np.concatenate([y_start, y_stop]),
-                symbol="|", size=20, pen=pg.mkPen("r", width=1.5),
+                symbol="|",
+                size=20,
+                pen=pg.mkPen("r", width=1.5),
             )
         )
 
         # Invisible markers at the apex to select a compound by clicking on its peak
         apex = pg.ScatterPlotItem(
-            rt, y_apex, data=peaks["compound_idx"].to_numpy(), symbol="o", size=14,
-            pen=None, brush=pg.mkBrush(0, 0, 0, 0), hoverable=True,
+            rt,
+            y_apex,
+            data=peaks["compound_idx"].to_numpy(),
+            symbol="o",
+            size=14,
+            pen=None,
+            brush=pg.mkBrush(0, 0, 0, 0),
+            hoverable=True,
             hoverBrush=pg.mkBrush(0, 120, 255, 80),
-            tip=lambda x, y, data: f"{compound_label(names.get(data), data)}\nrt {x:.1f}",
+            tip=lambda x, y, data: (
+                f"{compound_label(names.get(data), data)}\nrt {x:.1f}"
+            ),
         )
         apex.sigClicked.connect(self._on_apex_clicked)
         self._add(apex)
@@ -381,7 +456,9 @@ class ChromatogramPanel(BasePanel):
 
     def _on_apex_clicked(self, item, points, ev=None) -> None:
         if len(points) and self.selection.measurement_id is not None:
-            self.selection.select_compound(self.selection.measurement_id, int(points[0].data()))
+            self.selection.select_compound(
+                self.selection.measurement_id, int(points[0].data())
+            )
 
     def _set_range(self, t: np.ndarray, y: np.ndarray) -> None:
         sel = self.selection

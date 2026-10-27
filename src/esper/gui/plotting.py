@@ -22,7 +22,9 @@ def make_plot() -> pg.PlotWidget:
 
 def make_highlight() -> pg.ScatterPlotItem:
     """Large cyan cross marking the selected point."""
-    item = pg.ScatterPlotItem(symbol=CROSS, size=50, pen=pg.mkPen("c", width=2), brush=None)
+    item = pg.ScatterPlotItem(
+        symbol=CROSS, size=50, pen=pg.mkPen("c", width=2), brush=None
+    )
     item.setZValue(10)
     return item
 
@@ -44,4 +46,6 @@ def set_x_axis(plot: pg.PlotWidget, time: bool) -> None:
 
 def time_values(df: pd.DataFrame) -> np.ndarray:
     """Acquisition time as seconds since epoch, for a DateAxisItem."""
-    return ((df["acq_datetime"] - pd.Timestamp(0)) / pd.Timedelta(seconds=1)).to_numpy(dtype=float)
+    return ((df["acq_datetime"] - pd.Timestamp(0)) / pd.Timedelta(seconds=1)).to_numpy(
+        dtype=float
+    )

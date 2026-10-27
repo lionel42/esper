@@ -46,14 +46,22 @@ def esper_executable() -> Path:
         return candidate
     found = shutil.which("esper")
     if found is None:
-        raise FileNotFoundError("esper executable not found, is esper installed (pip install)?")
+        raise FileNotFoundError(
+            "esper executable not found, is esper installed (pip install)?"
+        )
     return Path(found)
 
 
 def _paths(prefix: Path) -> dict[str, Path]:
     return {
         "desktop": prefix / "share" / "applications" / f"{APP_ID}.desktop",
-        "icon": prefix / "share" / "icons" / "hicolor" / "scalable" / "apps" / f"{APP_ID}.svg",
+        "icon": prefix
+        / "share"
+        / "icons"
+        / "hicolor"
+        / "scalable"
+        / "apps"
+        / f"{APP_ID}.svg",
         "bin": prefix / "bin" / "esper",
     }
 
@@ -122,20 +130,36 @@ def install(
     written.append(paths["bin"])
 
     _run("update-desktop-database", str(paths["desktop"].parent))
-    _run("gtk-update-icon-cache", "--quiet", "--ignore-theme-index", str(prefix / "share" / "icons" / "hicolor"))
+    _run(
+        "gtk-update-icon-cache",
+        "--quiet",
+        "--ignore-theme-index",
+        str(prefix / "share" / "icons" / "hicolor"),
+    )
 
     if desktop_shortcut:
         desktop = user_desktop_dir()
         desktop.mkdir(parents=True, exist_ok=True)
         shortcut = desktop / f"{APP_ID}.desktop"
         # Absolute icon path: works even if the icon theme is not refreshed yet
-        shortcut.write_text(DESKTOP_ENTRY.format(exec=command, icon=paths["icon"], app_id=APP_ID))
+        shortcut.write_text(
+            DESKTOP_ENTRY.format(exec=command, icon=paths["icon"], app_id=APP_ID)
+        )
         shortcut.chmod(0o755)
         invoking = _invoking_user()
         if invoking is not None:
             shutil.chown(shortcut, user=invoking[0])
             # GNOME: allow launching without the "untrusted launcher" question
-            _run("sudo", "-u", invoking[0], "gio", "set", str(shortcut), "metadata::trusted", "true")
+            _run(
+                "sudo",
+                "-u",
+                invoking[0],
+                "gio",
+                "set",
+                str(shortcut),
+                "metadata::trusted",
+                "true",
+            )
         else:
             _run("gio", "set", str(shortcut), "metadata::trusted", "true")
         written.append(shortcut)
@@ -146,7 +170,9 @@ def uninstall(system: bool, prefix: Path | None = None) -> list[Path]:
     """Remove what ``install`` wrote (and the current user's desktop shortcut)."""
     prefix = prefix or (SYSTEM_PREFIX if system else USER_PREFIX)
     removed = []
-    candidates = list(_paths(prefix).values()) + [user_desktop_dir() / f"{APP_ID}.desktop"]
+    candidates = list(_paths(prefix).values()) + [
+        user_desktop_dir() / f"{APP_ID}.desktop"
+    ]
     for path in candidates:
         if path.is_symlink() or path.exists():
             path.unlink()

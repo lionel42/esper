@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
-    QPushButton,
     QVBoxLayout,
 )
 
@@ -30,7 +29,9 @@ def is_data_dir(path: Path) -> bool:
         return False
 
 
-def ask_data_dir(parent=None, title: str = "Choose a folder with an esper database") -> Path | None:
+def ask_data_dir(
+    parent=None, title: str = "Choose a folder with an esper database"
+) -> Path | None:
     """File dialog for a data directory, checked to contain an esper database."""
     folder = QFileDialog.getExistingDirectory(parent, title)
     if not folder:
@@ -41,7 +42,9 @@ def ask_data_dir(parent=None, title: str = "Choose a folder with an esper databa
         QMessageBox.warning(parent, "esper", str(e))
         return None
     if not path.is_file():
-        QMessageBox.warning(parent, "esper", f"No esper database for {folder} (looked for {path})")
+        QMessageBox.warning(
+            parent, "esper", f"No esper database for {folder} (looked for {path})"
+        )
         return None
     return Path(folder)
 
@@ -59,9 +62,16 @@ class OpenDataDialog(QDialog):
         self.list = QListWidget(self)
         self.list.itemDoubleClicked.connect(lambda _: self.accept())
 
-        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Open | QDialogButtonBox.StandardButton.Cancel)
-        browse = self.buttons.addButton("Browse…", QDialogButtonBox.ButtonRole.ActionRole)
-        self.remove = self.buttons.addButton("Remove from list", QDialogButtonBox.ButtonRole.ActionRole)
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Open
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        browse = self.buttons.addButton(
+            "Browse…", QDialogButtonBox.ButtonRole.ActionRole
+        )
+        self.remove = self.buttons.addButton(
+            "Remove from list", QDialogButtonBox.ButtonRole.ActionRole
+        )
         browse.clicked.connect(self._browse)
         self.remove.clicked.connect(self._remove)
         self.buttons.accepted.connect(self.accept)

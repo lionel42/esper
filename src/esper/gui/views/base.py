@@ -10,7 +10,6 @@ from esper.gui.data import EsperData
 from esper.gui.panels.base import BasePanel
 from esper.gui.selection import Selection
 
-
 # Initial width of the left column and of the main stack
 COLUMN_RATIO = (1, 2)
 
@@ -93,7 +92,9 @@ class BaseView(QWidget):
 
     def _update_left_column(self) -> None:
         """Hide the left column when none of its panels is shown."""
-        panels = [self.left_splitter.widget(i) for i in range(self.left_splitter.count())]
+        panels = [
+            self.left_splitter.widget(i) for i in range(self.left_splitter.count())
+        ]
         self.left_splitter.setVisible(any(not p.isHidden() for p in panels))
 
     def panel_actions(self) -> list[QAction]:

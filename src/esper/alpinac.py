@@ -17,7 +17,9 @@ PIPELINE_FILENAME = "pipeline.nc"
 DATED_PIPELINE_GLOB = "pipeline_*.nc"
 
 # e.g. 241007.0423.air.1
-_NAME_RE = re.compile(r"^(?P<date>\d{6})\.(?P<time>\d{4})\.(?P<type>[^.]+)\.(?P<number>\d+)$")
+_NAME_RE = re.compile(
+    r"^(?P<date>\d{6})\.(?P<time>\d{4})\.(?P<type>[^.]+)\.(?P<number>\d+)$"
+)
 
 _RANKS = {1: "first", 2: "second", 3: "third"}
 
@@ -91,7 +93,7 @@ class MassCalibration:
 
 def read_mass_cal(path: Path) -> MassCalibration:
     """Read a ``<name>.<ionization>_mc.txt`` file written by ``alpinac.io_tools.export_mc``."""
-    lines = [l.split("\t") for l in path.read_text().splitlines() if l.strip()]
+    lines = [line.split("\t") for line in path.read_text().splitlines() if line.strip()]
 
     header = {}
     for values in lines[: len(_MC_HEADER)]:
@@ -106,7 +108,9 @@ def read_mass_cal(path: Path) -> MassCalibration:
 
     rt_rows = [[float(v) for v in values] for values in body[:n_rt]]
     n_params = len(rt_rows[0]) - 1 if rt_rows else 0
-    rt = pd.DataFrame(rt_rows, columns=["rt_idx"] + [f"p{i}" for i in range(1, n_params + 1)])
+    rt = pd.DataFrame(
+        rt_rows, columns=["rt_idx"] + [f"p{i}" for i in range(1, n_params + 1)]
+    )
     rt["rt_idx"] = rt["rt_idx"].astype(int)
     rt["rt_s"] = rt["rt_idx"] * header["s_per_bin"]
     header["n_params"] = n_params
@@ -197,12 +201,17 @@ def read_alpinac_folder(folder: Path) -> AlpinacResult:
                     "ri": ds[f"{prefix}_ri"].values,
                     "ri_diff": ds[f"{prefix}_ri_diff"].values,
                     "score_combined": ds[f"{prefix}_score_combined"].values,
-                    "is_best": [int(s is not None and s == bc) for s, bc in zip(spectra, bc_spectra)],
+                    "is_best": [
+                        int(s is not None and s == bc)
+                        for s, bc in zip(spectra, bc_spectra)
+                    ],
                 }
             )
         )
     candidates = pd.concat(candidates, ignore_index=True)
-    candidates = candidates[candidates["spectrum_ref"].notna() | candidates["candidate_name"].notna()]
+    candidates = candidates[
+        candidates["spectrum_ref"].notna() | candidates["candidate_name"].notna()
+    ]
     # Only one best candidate per compound (the highest ranked if the same spectrum appears twice)
     best = candidates[candidates["is_best"] == 1].sort_values("rank")
     duplicated = best.duplicated("compound_idx")
@@ -210,7 +219,9 @@ def read_alpinac_folder(folder: Path) -> AlpinacResult:
 
     missing = set(peaks["compound_idx"]) - set(compounds["compound_idx"])
     if missing:
-        warnings.append(f"{len(missing)} compound ids of peaks are not in the compound table")
+        warnings.append(
+            f"{len(missing)} compound ids of peaks are not in the compound table"
+        )
 
     mc_files = sorted(folder.glob("*_mc.txt"))
     mass_cal = None

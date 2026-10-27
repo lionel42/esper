@@ -14,13 +14,18 @@ def _version(tmp_path) -> int:
         return con.execute("PRAGMA user_version").fetchone()[0]
 
 
-def _make_newer(tmp_path, min_reader: int | None, version: int = db.SCHEMA_VERSION + 10) -> None:
+def _make_newer(
+    tmp_path, min_reader: int | None, version: int = db.SCHEMA_VERSION + 10
+) -> None:
     """Turn the database into one written by a newer esper."""
     con = db.connect(tmp_path, create=True)
     if min_reader is None:
         con.execute("DROP TABLE schema_info")
     else:
-        con.execute("UPDATE schema_info SET value = ? WHERE key = 'min_reader_version'", (min_reader,))
+        con.execute(
+            "UPDATE schema_info SET value = ? WHERE key = 'min_reader_version'",
+            (min_reader,),
+        )
     con.execute(f"PRAGMA user_version = {version}")
     con.commit()
     con.close()

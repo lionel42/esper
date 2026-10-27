@@ -133,13 +133,16 @@ class SearchPlotPanel(BasePanel):
             return
         q = self.query
         self.plot.setTitle(
-            f"m/z {', '.join(map(str, q.masses))}  in {q.window} {q.lo:g} – {q.hi:g}", color="k"
+            f"m/z {', '.join(map(str, q.masses))}  in {q.window} {q.lo:g} – {q.hi:g}",
+            color="k",
         )
         df = self._filtered()
         df = df.assign(x=self._x_values(df), y=df[Y_OPTIONS[y_option]].astype(float))
         df = df[np.isfinite(df["x"]) & np.isfinite(df["y"])]
         self.plotted = df
-        self.summary_changed.emit(f"{len(df)} peaks in {df['measurement_id'].nunique()} runs")
+        self.summary_changed.emit(
+            f"{len(df)} peaks in {df['measurement_id'].nunique()} runs"
+        )
 
         sample_types = self.data.sample_types()
         symbols = {t: SYMBOLS[i % len(SYMBOLS)] for i, t in enumerate(sample_types)}
@@ -147,14 +150,28 @@ class SearchPlotPanel(BasePanel):
 
         for (mass, stype), sub in df.groupby(["mass", "sample_type"]):
             item = pg.ScatterPlotItem(
-                sub["x"].to_numpy(), sub["y"].to_numpy(),
-                data=list(zip(
-                    sub["measurement_id"], sub["compound_idx"], sub["mass"], sub["rt_s"],
-                    sub["name"], sub["main_name"],
-                )),
-                symbol=symbols[stype], size=12, pen=pg.mkPen(colors[mass], width=1.5), brush=None,
-                hoverable=True, hoverPen=pg.mkPen("c", width=3), hoverSize=18,
-                tip=lambda x, y, data: f"{data[4]}\nm/z {data[2]}, rt {data[3]:.1f} s\n{data[5]}\n{y:.4g}",
+                sub["x"].to_numpy(),
+                sub["y"].to_numpy(),
+                data=list(
+                    zip(
+                        sub["measurement_id"],
+                        sub["compound_idx"],
+                        sub["mass"],
+                        sub["rt_s"],
+                        sub["name"],
+                        sub["main_name"],
+                    )
+                ),
+                symbol=symbols[stype],
+                size=12,
+                pen=pg.mkPen(colors[mass], width=1.5),
+                brush=None,
+                hoverable=True,
+                hoverPen=pg.mkPen("c", width=3),
+                hoverSize=18,
+                tip=lambda x, y, data: (
+                    f"{data[4]}\nm/z {data[2]}, rt {data[3]:.1f} s\n{data[5]}\n{y:.4g}"
+                ),
             )
             item.sigClicked.connect(self._on_clicked)
             self.plot.addItem(item)
@@ -162,11 +179,18 @@ class SearchPlotPanel(BasePanel):
         # Legend: one entry per mass (color) and per run type (symbol)
         for mass in q.masses:
             if mass in set(df["mass"]):
-                entry = pg.ScatterPlotItem(symbol="s", size=10, pen=None, brush=pg.mkBrush(colors[mass]))
+                entry = pg.ScatterPlotItem(
+                    symbol="s", size=10, pen=None, brush=pg.mkBrush(colors[mass])
+                )
                 self.legend.addItem(entry, f"m/z {mass}")
         for stype in sample_types:
             if stype in set(df["sample_type"]):
-                entry = pg.ScatterPlotItem(symbol=symbols[stype], size=12, pen=pg.mkPen("k", width=1.5), brush=None)
+                entry = pg.ScatterPlotItem(
+                    symbol=symbols[stype],
+                    size=12,
+                    pen=pg.mkPen("k", width=1.5),
+                    brush=None,
+                )
                 self.legend.addItem(entry, stype)
 
         self._update_highlight()
@@ -192,6 +216,8 @@ class SearchPlotPanel(BasePanel):
         if not len(points):
             return
         measurement_id, compound_idx, mass, rt, *_ = points[0].data()
-        self.selection.select_peak(int(measurement_id), int(compound_idx), int(mass), float(rt))
+        self.selection.select_peak(
+            int(measurement_id), int(compound_idx), int(mass), float(rt)
+        )
         if ev is not None and ev.double():
             self.open_chromatogram.emit()

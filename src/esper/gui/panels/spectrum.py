@@ -12,10 +12,16 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFileDialog, QMessageBox, QVBoxLayout
 
 from esper.gui.data import EsperData
-from esper.gui.panels.base import BasePanel
-from esper.gui.panels.chromatogram import TARGET_COLOR, ChromatogramPanel, Curve, combined_label, compound_label
-from esper.gui.plotting import make_plot
 from esper.gui.library_loader import library_loader
+from esper.gui.panels.base import BasePanel
+from esper.gui.panels.chromatogram import (
+    TARGET_COLOR,
+    ChromatogramPanel,
+    Curve,
+    combined_label,
+    compound_label,
+)
+from esper.gui.plotting import make_plot
 from esper.gui.references import current_reference
 from esper.gui.selection import Selection
 from esper.gui.settings import settings_manager
@@ -53,7 +59,15 @@ class SpectrumPanel(BasePanel):
 
     title = "Spectrum"
     # identification: the reference may be the spectrum of a name given by hand
-    watches = {"measurement_id", "compound_idx", "compound_idxs", "mass", "target", "reference", "identification"}
+    watches = {
+        "measurement_id",
+        "compound_idx",
+        "compound_idxs",
+        "mass",
+        "target",
+        "reference",
+        "identification",
+    }
 
     def __init__(
         self,
@@ -95,9 +109,13 @@ class SpectrumPanel(BasePanel):
         self.export_jdx_action = self.export_menu.addAction("JCAMP-DX (.jdx)…")
         self.export_jdx_action.triggered.connect(self._export_jdx)
         # TODO: alpinac fragment file (.txt), as read by libraries.read_alpinac_fragments
-        self.export_menu.addAction("alpinac (.txt)… (not implemented yet)").setEnabled(False)
+        self.export_menu.addAction("alpinac (.txt)… (not implemented yet)").setEnabled(
+            False
+        )
         self.export_menu.aboutToShow.connect(
-            lambda: self.export_jdx_action.setEnabled(self.selection.compound_idx is not None)
+            lambda: self.export_jdx_action.setEnabled(
+                self.selection.compound_idx is not None
+            )
         )
         # Folder of the last export
         self._export_dir = Path.home()
@@ -135,7 +153,9 @@ class SpectrumPanel(BasePanel):
         self._mark_expected(expected)
         if sel.measurement_id is None or sel.compound_idx is None:
             if sel.target is not None:
-                self.title_label.setText(f"{html.escape(sel.target)}: not found, expected ions")
+                self.title_label.setText(
+                    f"{html.escape(sel.target)}: not found, expected ions"
+                )
                 if expected:
                     self.plot.setXRange(min(expected) - 5, max(expected) + 5, padding=0)
                     self.plot.setYRange(0, Y_MAX, padding=0)
@@ -149,7 +169,9 @@ class SpectrumPanel(BasePanel):
             f"{combined_label(sel.compound_idxs)}   rt {compound.rt_mean_s:.1f} s"
         )
         kind = self.settings.settings.spectrum_intensity
-        spectrum = self.data.compound_spectrum(sel.measurement_id, sel.compound_idxs, kind)
+        spectrum = self.data.compound_spectrum(
+            sel.measurement_id, sel.compound_idxs, kind
+        )
         if not len(spectrum) or spectrum.intensities.max() <= 0:
             return
         masses = spectrum.mz.astype(float)
@@ -161,7 +183,9 @@ class SpectrumPanel(BasePanel):
 
         for i, mass in enumerate(masses):
             item = pg.PlotDataItem(
-                [mass, mass], [0, intensity[i]], pen=pg.mkPen(colors[i], width=3 if plotted[i] else 2)
+                [mass, mass],
+                [0, intensity[i]],
+                pen=pg.mkPen(colors[i], width=3 if plotted[i] else 2),
             )
             item.setZValue(1 if plotted[i] else 0)
             self.plot.addItem(item)
@@ -169,8 +193,14 @@ class SpectrumPanel(BasePanel):
 
         # Hover tooltips at the top of the sticks
         tips = pg.ScatterPlotItem(
-            masses, intensity, data=list(values),
-            symbol="o", size=10, pen=None, brush=pg.mkBrush(0, 0, 0, 0), hoverable=True,
+            masses,
+            intensity,
+            data=list(values),
+            symbol="o",
+            size=10,
+            pen=None,
+            brush=pg.mkBrush(0, 0, 0, 0),
+            hoverable=True,
             hoverBrush=pg.mkBrush(0, 120, 255, 80),
             tip=lambda x, y, data: f"m/z {x:.0f}: {y:.1f} %\n{kind} {data:.0f}",
         )
@@ -178,7 +208,9 @@ class SpectrumPanel(BasePanel):
         self._items.append(tips)
 
         # m/z labels on the most intense sticks and on the selected one
-        labelled = set(np.argsort(intensity)[::-1][:N_LABELS]) | set(np.flatnonzero(selected))
+        labelled = set(np.argsort(intensity)[::-1][:N_LABELS]) | set(
+            np.flatnonzero(selected)
+        )
         for i in sorted(labelled):
             color = colors[i] if plotted[i] else "k"
             label = pg.TextItem(f"{masses[i]:.0f}", color=color, anchor=(0.5, 1))
@@ -221,14 +253,18 @@ class SpectrumPanel(BasePanel):
         ref = 100 * reference.intensities / reference.intensities.max()
         x = np.repeat(reference.mz.astype(float), 2)
         y = np.column_stack([np.zeros(len(ref)), -ref]).ravel()
-        item = pg.PlotDataItem(x, y, connect="pairs", pen=pg.mkPen(REFERENCE_COLOR, width=2))
+        item = pg.PlotDataItem(
+            x, y, connect="pairs", pen=pg.mkPen(REFERENCE_COLOR, width=2)
+        )
         self.plot.addItem(item)
         self._items.append(item)
         axis = pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen("k", width=1))
         self.plot.addItem(axis)
         self._items.append(axis)
         for i in np.argsort(ref)[::-1][:N_REFERENCE_LABELS]:
-            label = pg.TextItem(f"{reference.mz[i]:.0f}", color=REFERENCE_COLOR, anchor=(0.5, 0))
+            label = pg.TextItem(
+                f"{reference.mz[i]:.0f}", color=REFERENCE_COLOR, anchor=(0.5, 0)
+            )
             label.setPos(float(reference.mz[i]), -ref[i])
             self.plot.addItem(label)
             self._items.append(label)
@@ -248,7 +284,11 @@ class SpectrumPanel(BasePanel):
             action = self.library_menu.addAction(library)
             action.setCheckable(True)
             action.setChecked(library == current)
-            action.triggered.connect(lambda _=False, lib=library: self.selection.select_reference((lib, name)))
+            action.triggered.connect(
+                lambda _=False, lib=library: self.selection.select_reference(
+                    (lib, name)
+                )
+            )
 
     def _export_jdx(self) -> None:
         """Save the measured spectrum of the selected compound (current intensity) as .jdx."""
@@ -257,13 +297,24 @@ class SpectrumPanel(BasePanel):
             return
         measurement = self.data.measurements.loc[sel.measurement_id, "name"]
         compound = self.data.compounds(sel.measurement_id).loc[sel.compound_idx]
-        label = compound_label(compound.main_name, sel.compound_idx) + combined_label(sel.compound_idxs)
+        label = compound_label(compound.main_name, sel.compound_idx) + combined_label(
+            sel.compound_idxs
+        )
         kind = self.settings.settings.spectrum_intensity
-        spectrum = self.data.compound_spectrum(sel.measurement_id, sel.compound_idxs, kind)
+        spectrum = self.data.compound_spectrum(
+            sel.measurement_id, sel.compound_idxs, kind
+        )
         if not len(spectrum) or spectrum.intensities.max() <= 0:
-            QMessageBox.warning(self, "Export spectrum", f"{label} has no spectrum to export.")
+            QMessageBox.warning(
+                self, "Export spectrum", f"{label} has no spectrum to export."
+            )
             return
-        default = re.sub(r"[^\w.,+-]+", "_", f"{measurement}_{label}_rt{compound.rt_mean_s:.0f}s") + ".jdx"
+        default = (
+            re.sub(
+                r"[^\w.,+-]+", "_", f"{measurement}_{label}_rt{compound.rt_mean_s:.0f}s"
+            )
+            + ".jdx"
+        )
         file, _ = QFileDialog.getSaveFileName(
             self, "Export spectrum", str(self._export_dir / default), "JCAMP-DX (*.jdx)"
         )
@@ -282,7 +333,9 @@ class SpectrumPanel(BasePanel):
         try:
             write_jdx(file, spectrum, title=label, comments=comments)
         except OSError as e:
-            QMessageBox.critical(self, "Export spectrum", f"Could not write {file}:\n{e}")
+            QMessageBox.critical(
+                self, "Export spectrum", f"Could not write {file}:\n{e}"
+            )
             return
         self._export_dir = file.parent
 

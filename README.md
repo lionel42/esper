@@ -146,3 +146,13 @@ there if it does not exist yet.
 Tables: `measurement`, `mass_cal`, `mass_cal_rt`, `mass_cal_mass`, `compound`,
 `compound_candidate`, `peak`, and the view `peak_full` (peaks joined with their
 measurement, compound and best library candidate). See `src/esper/db.py`.
+
+## Development
+
+Code is formatted and linted with [ruff](https://docs.astral.sh/ruff/); CI fails if either check does not pass.
+
+```bash
+pip install ruff
+ruff check --fix .
+ruff format .
+```

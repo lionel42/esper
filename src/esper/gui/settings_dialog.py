@@ -141,7 +141,9 @@ class SettingsDialog(QDialog):
         item = QListWidgetItem(f"{library.name}    {library.path}")
         item.setData(LIBRARY_ROLE, library)
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-        item.setCheckState(Qt.CheckState.Checked if library.enabled else Qt.CheckState.Unchecked)
+        item.setCheckState(
+            Qt.CheckState.Checked if library.enabled else Qt.CheckState.Unchecked
+        )
         if not Path(library.path).is_dir():
             item.setToolTip("Folder not found")
             item.setForeground(Qt.GlobalColor.red)
@@ -157,11 +159,16 @@ class SettingsDialog(QDialog):
         self.library_list.setCurrentRow(new)
 
     def _add_library(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Library folder (.jdx or alpinac .txt spectra)")
+        folder = QFileDialog.getExistingDirectory(
+            self, "Library folder (.jdx or alpinac .txt spectra)"
+        )
         if not folder:
             return
         name, ok = QInputDialog.getText(
-            self, "Library name", "Name (prefix before '_' = family, e.g. nist_xyz):", text=Path(folder).name.lower()
+            self,
+            "Library name",
+            "Name (prefix before '_' = family, e.g. nist_xyz):",
+            text=Path(folder).name.lower(),
         )
         if ok and name:
             self._add_item(Library(name, Path(folder), True))
@@ -192,7 +199,11 @@ class SettingsDialog(QDialog):
 
     def settings(self) -> Settings:
         """The current settings with the values of the dialog (other fields kept)."""
-        ignored = [float(t) for t in self.ignored.text().replace(";", ",").replace(" ", ",").split(",") if t.strip()]
+        ignored = [
+            float(t)
+            for t in self.ignored.text().replace(";", ",").replace(" ", ",").split(",")
+            if t.strip()
+        ]
         return replace(
             settings_manager().settings,
             spectrum_intensity=self.intensity.currentText(),

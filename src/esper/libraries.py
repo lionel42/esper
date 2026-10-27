@@ -104,7 +104,9 @@ JDX_MAX_Y = 9999
 JDX_PEAKS_PER_LINE = 4
 
 
-def write_jdx(file: Path, spectrum: Spectrum, title: str, comments: dict[str, str] | None = None) -> None:
+def write_jdx(
+    file: Path, spectrum: Spectrum, title: str, comments: dict[str, str] | None = None
+) -> None:
     """Write a spectrum as a NIST-like JCAMP-DX file, readable with ``read_jdx``.
 
     Intensities are scaled to ``JDX_MAX_Y`` for the base peak, peaks rounding
@@ -112,7 +114,9 @@ def write_jdx(file: Path, spectrum: Spectrum, title: str, comments: dict[str, st
     """
     keep = spectrum.intensities > 0
     mz = spectrum.mz[keep].astype(int)
-    y = np.round(JDX_MAX_Y * spectrum.intensities[keep] / spectrum.intensities[keep].max()).astype(int)
+    y = np.round(
+        JDX_MAX_Y * spectrum.intensities[keep] / spectrum.intensities[keep].max()
+    ).astype(int)
     mz, y = mz[y > 0], y[y > 0]
     header = {
         "TITLE": title,
@@ -160,7 +164,9 @@ READERS: dict[str, Callable[[Path], Spectrum]] = {
 }
 
 
-def read_library(path: Path, progress: Callable[[int, int], None] | None = None) -> dict[str, Spectrum]:
+def read_library(
+    path: Path, progress: Callable[[int, int], None] | None = None
+) -> dict[str, Spectrum]:
     """All the spectra of a library folder, by name (file stem).
 
     ``progress(done, total)`` is called after each file. Unreadable files are
@@ -245,7 +251,9 @@ class LibraryCollection:
     def is_loaded(self, library: str) -> bool:
         return library in self._spectra
 
-    def load(self, library: str, progress: Callable[[int, int], None] | None = None) -> None:
+    def load(
+        self, library: str, progress: Callable[[int, int], None] | None = None
+    ) -> None:
         """Read a library (can run in another thread: the result is stored at the end)."""
         lib = next(lib for lib in self.libraries if lib.name == library)
         spectra = read_library(lib.path, progress)
@@ -266,7 +274,8 @@ class LibraryCollection:
         return [
             lib.name
             for lib in self.enabled
-            if (family is None or lib.family == family) and name in self.spectra(lib.name)
+            if (family is None or lib.family == family)
+            and name in self.spectra(lib.name)
         ]
 
     def resolve(self, spectrum_ref: str | None) -> tuple[str, str] | None:
@@ -300,7 +309,9 @@ class LibraryCollection:
             self._matrices[all_libraries] = (keys, matrix / norms[:, None], matrix > 0)
         return self._matrices[all_libraries]
 
-    def best_matches(self, query: Spectrum, n: int | None, search: str = "") -> list[Match]:
+    def best_matches(
+        self, query: Spectrum, n: int | None, search: str = ""
+    ) -> list[Match]:
         """The best scoring spectra of the enabled libraries for a (raw) spectrum.
 
         With ``search``, the spectra of all the libraries (also the disabled ones)
@@ -320,9 +331,19 @@ class LibraryCollection:
         rows = np.arange(len(keys))
         if search:
             search = search.lower()
-            rows = np.array([i for i, (lib, name) in enumerate(keys) if search in f"{lib}/{name}".lower()], dtype=int)
+            rows = np.array(
+                [
+                    i
+                    for i, (lib, name) in enumerate(keys)
+                    if search in f"{lib}/{name}".lower()
+                ],
+                dtype=int,
+            )
         best = rows[np.argsort(scores[rows])[::-1]][:n]
-        return [Match(keys[i][0], keys[i][1], float(scores[i]), int(matched[i])) for i in best]
+        return [
+            Match(keys[i][0], keys[i][1], float(scores[i]), int(matched[i]))
+            for i in best
+        ]
 
     def score(self, query: Spectrum, reference: Spectrum) -> tuple[float, int]:
         return cosine(self.processing.apply(query), self.processing.apply(reference))

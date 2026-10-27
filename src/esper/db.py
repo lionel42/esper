@@ -266,7 +266,9 @@ class SchemaVersionError(RuntimeError):
     """The database has a schema version that this esper cannot use."""
 
 
-def connect(data_dir: Path, create: bool = False, readonly: bool = False) -> sqlite3.Connection:
+def connect(
+    data_dir: Path, create: bool = False, readonly: bool = False
+) -> sqlite3.Connection:
     """Open the database of a data directory, creating the schema if asked.
 
     Every connection checks that the schema version is usable; only ``create`` upgrades it.
@@ -292,9 +294,13 @@ def connect(data_dir: Path, create: bool = False, readonly: bool = False) -> sql
 
 def min_reader_version(con: sqlite3.Connection) -> int | None:
     """The oldest SCHEMA_VERSION that can use the database, None if it does not say."""
-    if not con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_info'").fetchone():
+    if not con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_info'"
+    ).fetchone():
         return None
-    row = con.execute("SELECT value FROM schema_info WHERE key = 'min_reader_version'").fetchone()
+    row = con.execute(
+        "SELECT value FROM schema_info WHERE key = 'min_reader_version'"
+    ).fetchone()
     return None if row is None else row[0]
 
 
@@ -309,7 +315,9 @@ def _check_version(con: sqlite3.Connection, path: Path) -> int:
                 f"{path} has schema version {version}, which needs a newer esper"
                 f" (this one has schema version {SCHEMA_VERSION})"
             )
-        logger.info(f"{path} has the newer schema version {version}, compatible with {SCHEMA_VERSION}")
+        logger.info(
+            f"{path} has the newer schema version {version}, compatible with {SCHEMA_VERSION}"
+        )
     return version
 
 

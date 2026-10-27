@@ -26,10 +26,18 @@ class TargetTablePanel(TablePanel):
     columns = [
         Column("name", "name"),
         Column("ri", "RI", "{:.1f}", "Expected retention index"),
-        Column("expected_rt", "exp. rt", "{:.1f}", "rt expected in this measurement, from the RI [s]"),
         Column(
-            "found", "found", lambda v: "✓" if v else "",
-            "A compound of this measurement is identified as the target", bool_color,
+            "expected_rt",
+            "exp. rt",
+            "{:.1f}",
+            "rt expected in this measurement, from the RI [s]",
+        ),
+        Column(
+            "found",
+            "found",
+            lambda v: "✓" if v else "",
+            "A compound of this measurement is identified as the target",
+            bool_color,
         ),
         Column("ions", "ions", tooltip="Expected unit masses, main ion first"),
         Column("formula", "formula"),
@@ -49,7 +57,9 @@ class TargetTablePanel(TablePanel):
         self.toolbar.insertWidget(1, self.with_ri)
         self.toolbar.insertWidget(2, self.found_only)
         if self.data.targets.empty:
-            self.filter_edit.setPlaceholderText("No targets, import them with: esper targets")
+            self.filter_edit.setPlaceholderText(
+                "No targets, import them with: esper targets"
+            )
 
     def load(self) -> pd.DataFrame:
         df = self.data.targets.copy()

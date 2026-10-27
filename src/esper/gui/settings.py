@@ -14,7 +14,11 @@ from esper.libraries import Library, LibraryCollection, Processing, default_libr
 
 logger = logging.getLogger(__name__)
 
-SETTINGS_FILE = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "esper" / "settings.json"
+SETTINGS_FILE = (
+    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    / "esper"
+    / "settings.json"
+)
 
 # Number of data directories remembered
 MAX_RECENT_DATA_DIRS = 10
@@ -43,7 +47,10 @@ class Settings:
 
     def to_json(self) -> str:
         data = asdict(self)
-        data["libraries"] = [{"name": lib.name, "path": str(lib.path), "enabled": lib.enabled} for lib in self.libraries]
+        data["libraries"] = [
+            {"name": lib.name, "path": str(lib.path), "enabled": lib.enabled}
+            for lib in self.libraries
+        ]
         return json.dumps(data, indent=4)
 
     @classmethod
@@ -51,7 +58,10 @@ class Settings:
         data = json.loads(text)
         known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
         if "libraries" in known:
-            known["libraries"] = [Library(d["name"], Path(d["path"]), d.get("enabled", True)) for d in known["libraries"]]
+            known["libraries"] = [
+                Library(d["name"], Path(d["path"]), d.get("enabled", True))
+                for d in known["libraries"]
+            ]
         settings = cls(**known)
         if settings.spectrum_intensity not in INTENSITIES:
             settings.spectrum_intensity = INTENSITIES[0]
@@ -96,14 +106,18 @@ class SettingsManager(QObject):
         self.save()
 
     def forget_data_dir(self, data_dir: str) -> None:
-        self.settings.recent_data_dirs = [p for p in self.settings.recent_data_dirs if p != data_dir]
+        self.settings.recent_data_dirs = [
+            p for p in self.settings.recent_data_dirs if p != data_dir
+        ]
         self.save()
 
     def update(self, settings: Settings) -> None:
         old = self.settings
         self.settings = settings
         if self._libraries is not None:
-            if [asdict(lib) for lib in old.libraries] != [asdict(lib) for lib in settings.libraries]:
+            if [asdict(lib) for lib in old.libraries] != [
+                asdict(lib) for lib in settings.libraries
+            ]:
                 self._libraries = None
             elif old.processing != settings.processing:
                 self._libraries = self._libraries.with_processing(settings.processing)
@@ -113,7 +127,9 @@ class SettingsManager(QObject):
     @property
     def libraries(self) -> LibraryCollection:
         if self._libraries is None:
-            self._libraries = LibraryCollection(list(self.settings.libraries), self.settings.processing)
+            self._libraries = LibraryCollection(
+                list(self.settings.libraries), self.settings.processing
+            )
         return self._libraries
 
 

@@ -23,8 +23,8 @@ from esper import __version__, db
 from esper.gui.data import EsperData
 from esper.gui.library_loader import library_loader
 from esper.gui.open_dialog import OpenDataDialog, ask_data_dir, is_data_dir
-from esper.gui.settings import settings_manager
 from esper.gui.selection import Selection
+from esper.gui.settings import settings_manager
 from esper.gui.views.base import BaseView
 from esper.gui.views.chromatograms import ChromatogramsView
 from esper.gui.views.results import ResultsView
@@ -52,7 +52,9 @@ class MainWindow(QMainWindow):
 
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
-        open_action = QAction("&Open data directory…", self, shortcut=QKeySequence.StandardKey.Open)
+        open_action = QAction(
+            "&Open data directory…", self, shortcut=QKeySequence.StandardKey.Open
+        )
         open_action.triggered.connect(self._ask_data_dir)
         file_menu.addAction(open_action)
         self.recent_menu = file_menu.addMenu("Open &recent")
@@ -77,7 +79,9 @@ class MainWindow(QMainWindow):
         help_menu = self.menuBar().addMenu("&Help")
         about = QAction("&About", self)
         about.triggered.connect(
-            lambda: QMessageBox.about(self, "esper", f"esper {__version__}\nPeaks extracted by alpinac.")
+            lambda: QMessageBox.about(
+                self, "esper", f"esper {__version__}\nPeaks extracted by alpinac."
+            )
         )
         help_menu.addAction(about)
 
