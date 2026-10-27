@@ -19,7 +19,7 @@ class TargetTablePanel(TablePanel):
     """
 
     title = "Targets"
-    watches = {"measurement_id"}
+    watches = {"measurement_id", "identification"}
     follows = {"target"}
     default_sort = ("name", Qt.SortOrder.AscendingOrder)
 

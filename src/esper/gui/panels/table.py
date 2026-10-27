@@ -8,9 +8,26 @@ from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
-from PySide6.QtGui import QColor
-from PySide6.QtCore import QAbstractTableModel, QItemSelectionModel, QModelIndex, QSortFilterProxyModel, Qt, QTimer
-from PySide6.QtWidgets import QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QTableView, QVBoxLayout
+from PySide6.QtGui import QColor, QGuiApplication, QKeySequence
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QItemSelection,
+    QItemSelectionModel,
+    QModelIndex,
+    QSortFilterProxyModel,
+    Qt,
+    QTimer,
+)
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QTableView,
+    QVBoxLayout,
+)
 
 from esper.gui.data import EsperData
 from esper.gui.panels.base import BasePanel
@@ -152,7 +169,10 @@ class TablePanel(BasePanel):
     - ``current_key()``: key of the item matching the selection (or None)
     - ``select(key)``: update the selection when a row is chosen
 
-    and may override ``filter_rows`` and add widgets to ``self.toolbar``.
+    and may override ``filter_rows`` and ``add_context_actions``, and add
+    widgets to ``self.toolbar``. With ``multi_select``, several rows can be
+    selected (ctrl/shift click): they implement ``current_keys()`` and
+    ``select_many(keys)`` too.
     ``watches`` triggers a reload, ``follows`` only moves the current row.
 
     The text box filters the loaded rows; with ``search_reloads`` it is a
@@ -165,6 +185,8 @@ class TablePanel(BasePanel):
     default_sort: tuple[str, Qt.SortOrder] | None = None
     # The text box searches in the source (reload) instead of filtering the rows
     search_reloads = False
+    # Several rows can be selected together
+    multi_select = False
 
     def __init__(self, data: EsperData, selection: Selection, parent=None) -> None:
         super().__init__(data, selection, parent)
@@ -182,14 +204,20 @@ class TablePanel(BasePanel):
         self.table.setModel(self.proxy)
         self.table.setSortingEnabled(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+            if self.multi_select
+            else QAbstractItemView.SelectionMode.SingleSelection
+        )
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().hide()
         self.table.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.selectionModel().currentRowChanged.connect(self._on_current_row_changed)
+        self.table.selectionModel().selectionChanged.connect(self._on_rows_selected)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
         if self.default_sort is not None:
             key, order = self.default_sort
             column = [c.key for c in self.columns].index(key)
@@ -225,9 +253,21 @@ class TablePanel(BasePanel):
     def select(self, key) -> None:
         raise NotImplementedError
 
+    def current_keys(self) -> list:
+        """Keys of the items matching the selection, the current one first (with ``multi_select``)."""
+        key = self.current_key()
+        return [] if key is None else [key]
+
+    def select_many(self, keys: list) -> None:
+        """Update the selection when several rows are chosen (with ``multi_select``)."""
+        raise NotImplementedError
+
     def filter_rows(self, df: pd.DataFrame) -> pd.DataFrame:
         """Extra filtering of the loaded rows (e.g. by a checkbox in the toolbar)."""
         return df
+
+    def add_context_actions(self, menu: QMenu, key) -> None:
+        """Add actions on the item ``key`` to the context menu of its row."""
 
     # --- behaviour ------------------------------------------------------------------
 
@@ -269,28 +309,62 @@ class TablePanel(BasePanel):
         if self.search_reloads:
             self._search_timer.start()
             return
+        # Rows hidden by the filter are deselected, without changing the selection
+        self._updating = True
         self.proxy.setFilterFixedString(text)
+        self._updating = False
         self._update_count()
         self.show_current()
 
     def show_current(self) -> None:
-        """Make the row of the selected item current, without selecting it again."""
-        row = self.model.row_of(self.current_key()) if self.model.rowCount() else -1
-        index = self.proxy.mapFromSource(self.model.index(row, 0)) if row >= 0 else QModelIndex()
+        """Make the rows of the selected items selected (the first one current), without selecting them again."""
+        keys = self.current_keys() if self.model.rowCount() else []
+        rows = [row for row in map(self.model.row_of, keys) if row >= 0]
+        indexes = [i for i in (self.proxy.mapFromSource(self.model.index(row, 0)) for row in rows) if i.isValid()]
         self._updating = True
         selection = self.table.selectionModel()
-        if index.isValid():
-            selection.setCurrentIndex(
-                index,
-                QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows,
-            )
-            self.table.scrollTo(index, QAbstractItemView.ScrollHint.EnsureVisible)
+        if indexes:
+            items = QItemSelection()
+            for index in indexes:
+                items.select(index, index)
+            flags = QItemSelectionModel.SelectionFlag
+            selection.select(items, flags.ClearAndSelect | flags.Rows)
+            selection.setCurrentIndex(indexes[0], flags.NoUpdate)
+            self.table.scrollTo(indexes[0], QAbstractItemView.ScrollHint.EnsureVisible)
         else:
             selection.clearSelection()
         self._updating = False
 
-    def _on_current_row_changed(self, current: QModelIndex, previous: QModelIndex) -> None:
-        """Row chosen by the user (click or arrow keys)."""
-        if self._updating or not current.isValid():
+    def _on_rows_selected(self, *_) -> None:
+        """Rows chosen by the user (click, ctrl/shift click or arrow keys)."""
+        if self._updating:
             return
-        self.select(self.model.key(self.proxy.mapToSource(current).row()))
+        rows = self.table.selectionModel().selectedRows()
+        keys = [self.model.key(self.proxy.mapToSource(index).row()) for index in rows]
+        if len(keys) == 1:
+            self.select(keys[0])
+        elif len(keys) > 1:
+            self.select_many(keys)
+
+    # --- context menu ---------------------------------------------------------------
+
+    def _show_context_menu(self, pos) -> None:
+        index = self.table.indexAt(pos)
+        if not index.isValid():
+            return
+        row = self.proxy.mapToSource(index).row()
+        column = self.proxy.mapToSource(index).column()
+        menu = QMenu(self)
+        copy = menu.addAction("Copy", lambda: self._copy(self.model.index(row, column).data()))
+        copy.setShortcut(QKeySequence.StandardKey.Copy)
+        menu.addAction("Copy row", lambda: self._copy(self._row_text(row)))
+        self.add_context_actions(menu, self.model.key(row))
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _row_text(self, row: int) -> str:
+        """The displayed values of a row, separated by tabs (pasted in cells of a spreadsheet)."""
+        return "\t".join(self.model.index(row, i).data() or "" for i in range(self.model.columnCount()))
+
+    @staticmethod
+    def _copy(text: str | None) -> None:
+        QGuiApplication.clipboard().setText(text or "")

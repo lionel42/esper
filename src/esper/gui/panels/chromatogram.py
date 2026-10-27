@@ -50,6 +50,11 @@ def compound_label(name, compound_idx) -> str:
     return name if isinstance(name, str) else f"#{compound_idx}"
 
 
+def combined_label(compound_idxs: tuple[int, ...]) -> str:
+    """The other compounds selected with the main one, e.g. ' + #12, #15'."""
+    return " + " + ", ".join(f"#{i}" for i in compound_idxs[1:]) if len(compound_idxs) > 1 else ""
+
+
 def mass_label(mass: int | None) -> str:
     return "TIC" if mass is TIC else f"m/z {mass}"
 
@@ -66,7 +71,7 @@ class Curve:
 class ChromatogramPanel(BasePanel):
     """Chromatogram of the selected measurement and mass, with the peaks found at that mass.
 
-    Other masses can be overlaid from the right click menu (Masses).
+    The peaks of the selected compounds (several can be) are highlighted. Other masses can be overlaid from the right click menu (Masses).
     """
 
     title = "Chromatogram"
@@ -146,7 +151,7 @@ class ChromatogramPanel(BasePanel):
         checked = {k for k, c in self.overlay_checks.items() if c.isChecked()}
         compound_masses = []
         if sel.compound_idx is not None:
-            peaks = self.data.compound_peaks(sel.measurement_id, sel.compound_idx)
+            peaks = self.data.compound_peaks(sel.measurement_id, sel.compound_idxs)
             peaks = peaks.sort_values("prominence", ascending=False)
             compound_masses = [int(m) for m in peaks["mass"].drop_duplicates()]
 
@@ -280,7 +285,7 @@ class ChromatogramPanel(BasePanel):
         if sel.compound_idx is not None:
             c = self.data.compounds(sel.measurement_id).loc[sel.compound_idx]
             lines += [
-                ("cmp", f"{compound_label(c.main_name, sel.compound_idx)} (#{sel.compound_idx})"),
+                ("cmp", f"{compound_label(c.main_name, sel.compound_idx)} (#{sel.compound_idx}){combined_label(sel.compound_idxs)}"),
                 ("rt", f"{c.rt_mean_s:.1f} ± {c.rt_std_s:.2f} s"),
                 ("RI", f"{c.retention_index:.1f}"),
                 ("spectrum", f"{c.best_spectrum}"),
@@ -359,7 +364,7 @@ class ChromatogramPanel(BasePanel):
         self._add(apex)
 
         for i, (_, p) in enumerate(peaks.iterrows()):
-            selected = p.compound_idx == sel.compound_idx
+            selected = p.compound_idx in sel.compound_idxs
             area = peak_area(t, y, start[i], stop[i])
             text = (
                 f"{p.rt_s:.1f}<br>{html.escape(compound_label(names.get(p.compound_idx), p.compound_idx))}"
@@ -396,12 +401,12 @@ class ChromatogramPanel(BasePanel):
             if near.any():
                 top = float(y[near].max())
 
-        # Zoom on the selected compound's peak at this mass, if any
+        # Zoom on the selected compounds' peaks at this mass, if any
         if sel.compound_idx is not None and sel.mass is not TIC:
-            peaks = self.data.compound_peaks(sel.measurement_id, sel.compound_idx)
+            peaks = self.data.compound_peaks(sel.measurement_id, sel.compound_idxs)
             peaks = peaks[peaks["mass"] == sel.mass]
             if not peaks.empty:
-                apex = float(np.interp(peaks["rt_s"].iloc[0], t, y))
+                apex = float(np.interp(peaks["rt_s"], t, y).max())
                 top = bottom + Y_ZOOM * (apex - bottom)
 
         span = max(top - bottom, 1.0)

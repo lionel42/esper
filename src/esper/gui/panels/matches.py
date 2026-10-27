@@ -20,12 +20,12 @@ class BestMatchesPanel(TablePanel):
     Uses the enabled libraries and the matching settings; only computed while
     the panel is visible. The search box searches the spectra of all the
     libraries, also the disabled ones ('library/name'), scored against the compound. Choosing a row
-    compares its spectrum with the compound.
+    compares its spectrum with the compound. Several compounds selected are matched combined.
     """
 
     title = "Best matches"
-    watches = {"measurement_id", "compound_idx"}
-    follows = {"reference"}
+    watches = {"measurement_id", "compound_idx", "compound_idxs"}
+    follows = {"reference", "identification"}
     default_sort = ("score", Qt.SortOrder.DescendingOrder)
     search_reloads = True
 
@@ -61,7 +61,7 @@ class BestMatchesPanel(TablePanel):
         if self._loading:
             return empty
         settings = self.settings.settings
-        spectrum = self.data.compound_spectrum(sel.measurement_id, sel.compound_idx, settings.spectrum_intensity)
+        spectrum = self.data.compound_spectrum(sel.measurement_id, sel.compound_idxs, settings.spectrum_intensity)
         matches = self.settings.libraries.best_matches(
             spectrum, None if search else settings.n_best_matches, search
         )
