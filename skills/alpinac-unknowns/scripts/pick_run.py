@@ -7,6 +7,7 @@ unit-mass parquet and is not yet listed in runs.csv (findings log). With
 --date, only runs of that day are considered. Runs still being processed
 (no pipeline.nc yet) are skipped. Exits with status 1 if there is none.
 """
+
 import argparse
 import datetime as dt
 import os
@@ -20,11 +21,17 @@ ap.add_argument("--date", default=None)
 ap.add_argument("--type", default="air")
 args = ap.parse_args()
 
-state = Path(os.environ.get("ALPINAC_UNKNOWNS_DIR", Path.home() / ".local/share/alpinac/unknowns"))
+state = Path(
+    os.environ.get(
+        "ALPINAC_UNKNOWNS_DIR", Path.home() / ".local/share/alpinac/unknowns"
+    )
+)
 runs_csv = state / "runs.csv"
 done = set()
 if runs_csv.exists():
-    done = {line.split(",", 1)[0] for line in runs_csv.read_text().splitlines()[1:] if line}
+    done = {
+        line.split(",", 1)[0] for line in runs_csv.read_text().splitlines()[1:] if line
+    }
 
 day = dt.date.today().strftime("%y%m%d") if args.date == "today" else args.date
 if day:
@@ -35,7 +42,9 @@ else:
     years = [y, y - 1]
 
 for year in years:
-    for d in sorted((C.TOF_ROOT / str(year)).glob(f"*.{args.type}.*.alpinac"), reverse=True):
+    for d in sorted(
+        (C.TOF_ROOT / str(year)).glob(f"*.{args.type}.*.alpinac"), reverse=True
+    ):
         name = d.name.removesuffix(".alpinac")
         if day and not name.startswith(day):
             continue

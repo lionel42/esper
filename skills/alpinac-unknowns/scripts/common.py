@@ -3,6 +3,7 @@
 A run directory is `<...>/<file>.alpinac/` containing `pipeline.nc` and
 `<file>.unit_mass_chromatos.parquet`.
 """
+
 import os
 import re
 import sys
@@ -67,9 +68,17 @@ def is_hydrocarbon(formula):
 @lru_cache(None)
 def load_refs():
     sub = pd.read_excel(SUBSTANCES, sheet_name="all")
-    keep = ["Compound name (Gcwerks)", "Alias 1", "Formula ", "Comment", RT_COL] + RT_EXTRA
+    keep = [
+        "Compound name (Gcwerks)",
+        "Alias 1",
+        "Formula ",
+        "Comment",
+        RT_COL,
+    ] + RT_EXTRA
     ref = sub[keep].copy()
-    ref.columns = ["name", "alias", "formula", "comment", "rt"] + [f"rt_{i}" for i in range(len(RT_EXTRA))]
+    ref.columns = ["name", "alias", "formula", "comment", "rt"] + [
+        f"rt_{i}" for i in range(len(RT_EXTRA))
+    ]
     for k in ["rt"] + [f"rt_{i}" for i in range(len(RT_EXTRA))]:
         ref[k] = pd.to_numeric(ref[k], errors="coerce")
     ref = ref.dropna(subset=["name"])
@@ -84,6 +93,7 @@ def ri_refs_path():
     if os.environ.get("ALPINAC_RI_REFS"):
         return Path(os.environ["ALPINAC_RI_REFS"])
     import alpinac.mode_extraction
+
     return Path(alpinac.mode_extraction.__file__).parent / "rt_refs_v2.csv"
 
 
@@ -98,6 +108,7 @@ def load_ref_ri():
     Compounds with no sheet RT (0 / NaN) get ri = NaN.
     Returns (DataFrame indexed by compound with rt, ri, formula, hc; aliases dict)."""
     from alpinac.mode_extraction.read_from_excel import load_excel_compounds
+
     df, aliases = load_excel_compounds(SUBSTANCES, ri_refs_path())
     df.loc[~(df.rt > 0), "ri"] = np.nan
     df["hc"] = df.formula.map(is_hydrocarbon)
@@ -119,13 +130,25 @@ def fit_rt(c, ref, span=40.0, min_anchors=3):
     for i, r in good.iterrows():
         m = ref[ref.name == r.compound_name]
         if len(m):
-            rows.append(dict(name=r.compound_name, cmp=i, hc=bool(m.hc.iloc[0]),
-                             ref_rt=m.rt.iloc[0], rt=r.peak_rt_mean, d=r.peak_rt_mean - m.rt.iloc[0]))
+            rows.append(
+                dict(
+                    name=r.compound_name,
+                    cmp=i,
+                    hc=bool(m.hc.iloc[0]),
+                    ref_rt=m.rt.iloc[0],
+                    rt=r.peak_rt_mean,
+                    d=r.peak_rt_mean - m.rt.iloc[0],
+                )
+            )
     anch = pd.DataFrame(rows)
     # drop gross outliers (wrong label or wrong sheet value): > 10 s from class neighbours
     keep = []
     for _, a in anch.iterrows():
-        nb = anch[(anch.hc == a.hc) & (anch["name"] != a["name"]) & ((anch.ref_rt - a.ref_rt).abs() < 80)]
+        nb = anch[
+            (anch.hc == a.hc)
+            & (anch["name"] != a["name"])
+            & ((anch.ref_rt - a.ref_rt).abs() < 80)
+        ]
         keep.append(len(nb) == 0 or abs(a.d - nb.d.median()) < 10)
     anch["used"] = keep
     ref = ref.copy()
@@ -149,7 +172,10 @@ def _read_jdx(f):
     if len(parts) < 2:
         return None
     s = defaultdict(float)
-    for x, y in re.findall(r"([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*,\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)", parts[1].split("##END")[0]):
+    for x, y in re.findall(
+        r"([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*,\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)",
+        parts[1].split("##END")[0],
+    ):
         s[int(round(float(x)))] += float(y)
     return dict(s)
 
@@ -167,7 +193,7 @@ def load_spectra():
     """{name: {source: {mz: intensity}}}"""
     spectra = {}
     for f in (PEAKSDB / "nist_db").glob("*.jdx"):
-        if (s := _read_jdx(f)):
+        if s := _read_jdx(f):
             spectra.setdefault(f.stem, {})["nist"] = s
         else:
             print(f"warning: no peaks read from {f}", file=sys.stderr)
@@ -181,7 +207,7 @@ def load_spectra():
             spectra.setdefault(f.stem, {})["mygu"] = s
     for sub in ["nist_CH", "nist_CHON", "nist_CF", "nist_CHF"]:
         for f in (PEAKSDB / sub).glob("*.jdx"):
-            if (s := _read_jdx(f)):
+            if s := _read_jdx(f):
                 spectra.setdefault(f.stem.split("-", 1)[-1], {})[sub] = s
             else:
                 print(f"warning: no peaks read from {f}", file=sys.stderr)
@@ -212,7 +238,12 @@ def libsearch(spec, n=6, **kw):
 
 def ref_spectra(names):
     S = load_spectra()
-    return {f"{n}[{k}]": s for n in names if isinstance(n, str) and n in S for k, s in S[n].items()}
+    return {
+        f"{n}[{k}]": s
+        for n in names
+        if isinstance(n, str) and n in S
+        for k, s in S[n].items()
+    }
 
 
 def fmt_spec(spec, n=8):

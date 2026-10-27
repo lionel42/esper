@@ -29,7 +29,9 @@ class IdentificationDialog(QDialog):
     ``reset`` is True to go back to alpinac's identification.
     """
 
-    def __init__(self, data: EsperData, measurement_id: int, compound_idx: int, parent=None) -> None:
+    def __init__(
+        self, data: EsperData, measurement_id: int, compound_idx: int, parent=None
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"Identification of compound #{compound_idx}")
         self.setMinimumWidth(460)
@@ -37,10 +39,16 @@ class IdentificationDialog(QDialog):
         self.reset = False
 
         compound = data.compounds(measurement_id).loc[compound_idx]
-        alpinac = compound["alpinac_name"] if isinstance(compound["alpinac_name"], str) else None
+        alpinac = (
+            compound["alpinac_name"]
+            if isinstance(compound["alpinac_name"], str)
+            else None
+        )
         alpinac_target = data.target_of(alpinac)
         edited = isinstance(compound["identified_at"], str)
-        current = compound["main_name"] if isinstance(compound["main_name"], str) else None
+        current = (
+            compound["main_name"] if isinstance(compound["main_name"], str) else None
+        )
 
         self.combo = QComboBox(self)
         self.combo.setEditable(True)
@@ -55,13 +63,21 @@ class IdentificationDialog(QDialog):
             name = data.main_name(candidate["candidate_name"])
             if name is not None:
                 score = _format(candidate["score"], "{:.3f}")
-                self.combo.addItem(f"{name}  (candidate {candidate['rank']}, score {score})", name)
+                self.combo.addItem(
+                    f"{name}  (candidate {candidate['rank']}, score {score})", name
+                )
         if self.combo.count():
             self.combo.insertSeparator(self.combo.count())
         targets = data.targets.index.tolist()
-        expected = data.expected_rts(measurement_id, data.targets["ri"].to_numpy(dtype=float)) if targets else []
+        expected = (
+            data.expected_rts(measurement_id, data.targets["ri"].to_numpy(dtype=float))
+            if targets
+            else []
+        )
         for target, rt in sorted(zip(targets, expected), key=lambda t: t[0].lower()):
-            self.combo.addItem(f"{target}  (expected rt {_format(rt, '{:.1f}')} s)", target)
+            self.combo.addItem(
+                f"{target}  (expected rt {_format(rt, '{:.1f}')} s)", target
+            )
         index = self.combo.findData(current) if current is not None else -1
         self.combo.setCurrentIndex(index)
         if index < 0:
@@ -72,14 +88,24 @@ class IdentificationDialog(QDialog):
         group = QButtonGroup(self)
         group.addButton(self.identified)
         group.addButton(self.not_identified)
-        (self.identified if current is not None else self.not_identified).setChecked(True)
+        (self.identified if current is not None else self.not_identified).setChecked(
+            True
+        )
         self.identified.toggled.connect(self.combo.setEnabled)
         self.combo.setEnabled(self.identified.isChecked())
-        self.combo.lineEdit().textEdited.connect(lambda _: self.identified.setChecked(True))
+        self.combo.lineEdit().textEdited.connect(
+            lambda _: self.identified.setChecked(True)
+        )
 
         info = QFormLayout()
-        info.addRow("Retention time:", QLabel(f"{_format(compound['rt_mean_s'], '{:.1f}')} s", self))
-        info.addRow("Retention index:", QLabel(_format(compound["retention_index"], "{:.1f}"), self))
+        info.addRow(
+            "Retention time:",
+            QLabel(f"{_format(compound['rt_mean_s'], '{:.1f}')} s", self),
+        )
+        info.addRow(
+            "Retention index:",
+            QLabel(_format(compound["retention_index"], "{:.1f}"), self),
+        )
         alpinac_text = alpinac or "none"
         if alpinac_target is not None and alpinac_target != alpinac:
             alpinac_text += f" (target {alpinac_target})"
@@ -87,10 +113,16 @@ class IdentificationDialog(QDialog):
             alpinac_text += ", not a valid candidate"
         info.addRow("alpinac:", QLabel(alpinac_text, self))
         if edited:
-            info.addRow("Edited:", QLabel(compound["identified_at"].replace("T", " "), self))
+            info.addRow(
+                "Edited:", QLabel(compound["identified_at"].replace("T", " "), self)
+            )
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        reset = buttons.addButton("Reset to alpinac", QDialogButtonBox.ButtonRole.ResetRole)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        reset = buttons.addButton(
+            "Reset to alpinac", QDialogButtonBox.ButtonRole.ResetRole
+        )
         reset.setToolTip("Forget the identification edited by hand")
         reset.setEnabled(edited)
         reset.clicked.connect(self._on_reset)

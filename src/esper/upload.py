@@ -16,8 +16,8 @@ from esper.alpinac import (
     ALPINAC_SUFFIX,
     DATED_PIPELINE_GLOB,
     PIPELINE_FILENAME,
-    find_pipeline,
     AlpinacResult,
+    find_pipeline,
     is_complete,
     parse_measurement_name,
     read_alpinac_folder,
@@ -79,7 +79,9 @@ def _insert(con: sqlite3.Connection, table: str, df: pd.DataFrame) -> None:
     )
 
 
-def store_result(con: sqlite3.Connection, result: AlpinacResult, chromatogram_file: str | None) -> None:
+def store_result(
+    con: sqlite3.Connection, result: AlpinacResult, chromatogram_file: str | None
+) -> None:
     """Replace the measurement in the database (single transaction)."""
     stat = result.pipeline_file.stat()
     with con:
@@ -111,7 +113,13 @@ def store_result(con: sqlite3.Connection, result: AlpinacResult, chromatogram_fi
 
         if result.mass_cal is not None:
             mc = result.mass_cal
-            _insert(con, "mass_cal", pd.DataFrame([{"measurement_id": mid, "ionization": mc.ionization, **mc.params}]))
+            _insert(
+                con,
+                "mass_cal",
+                pd.DataFrame(
+                    [{"measurement_id": mid, "ionization": mc.ionization, **mc.params}]
+                ),
+            )
             _insert(con, "mass_cal_rt", mc.rt.assign(measurement_id=mid))
             _insert(con, "mass_cal_mass", mc.masses.assign(measurement_id=mid))
 
@@ -128,7 +136,9 @@ def upload(source: Path, data_dir: Path, force: bool = False) -> UploadSummary:
         for folder in find_alpinac_folders(source):
             name = folder.name.removesuffix(ALPINAC_SUFFIX)
             if not is_complete(folder):
-                logger.warning(f"{name}: no {PIPELINE_FILENAME} or {DATED_PIPELINE_GLOB}, skipped")
+                logger.warning(
+                    f"{name}: no {PIPELINE_FILENAME} or {DATED_PIPELINE_GLOB}, skipped"
+                )
                 summary.skipped_incomplete.append(name)
                 continue
             if not force and _is_unchanged(con, name, find_pipeline(folder)):
@@ -145,7 +155,9 @@ def upload(source: Path, data_dir: Path, force: bool = False) -> UploadSummary:
                 logger.exception(f"{name}: import failed")
                 summary.failed.append((name, repr(e)))
                 continue
-            logger.info(f"{name}: {len(result.peaks)} peaks, {len(result.compounds)} compounds")
+            logger.info(
+                f"{name}: {len(result.peaks)} peaks, {len(result.compounds)} compounds"
+            )
             summary.imported.append(name)
     finally:
         con.close()

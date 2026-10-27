@@ -39,8 +39,13 @@ def selection(tmp_path):
                 " VALUES (?, ?, ?, 85, ?, 1, 1)",
                 (mid, idx, idx, rt),
             )
-    con.executemany("INSERT INTO target (name, ri) VALUES (?, NULL)", [("CFC-12",), ("HFC-23",)])
-    con.executemany("INSERT INTO target_ion (name, rank, mass) VALUES (?, 0, ?)", [("CFC-12", 85), ("HFC-23", 69)])
+    con.executemany(
+        "INSERT INTO target (name, ri) VALUES (?, NULL)", [("CFC-12",), ("HFC-23",)]
+    )
+    con.executemany(
+        "INSERT INTO target_ion (name, rank, mass) VALUES (?, 0, ?)",
+        [("CFC-12", 85), ("HFC-23", 69)],
+    )
     con.execute("INSERT INTO target_alias (alias, name) VALUES ('CFC12', 'CFC-12')")
     con.commit()
     con.close()
@@ -52,24 +57,40 @@ def selection(tmp_path):
 def test_compound_with_target(selection):
     selection.select_compound(1, 0)
     # The alias is resolved
-    assert (selection.compound_idx, selection.candidate, selection.target) == (0, "CFC-12", "CFC-12")
+    assert (selection.compound_idx, selection.candidate, selection.target) == (
+        0,
+        "CFC-12",
+        "CFC-12",
+    )
     assert selection.label == "CFC-12"
 
 
 def test_compound_without_target(selection):
     selection.select_compound(1, 1)
-    assert (selection.candidate, selection.target, selection.label) == ("Unknown X", None, "Unknown X")
+    assert (selection.candidate, selection.target, selection.label) == (
+        "Unknown X",
+        None,
+        "Unknown X",
+    )
 
 
 def test_compound_without_candidate(selection):
     selection.select_compound(1, 2)
-    assert (selection.compound_idx, selection.candidate, selection.label) == (2, None, None)
+    assert (selection.compound_idx, selection.candidate, selection.label) == (
+        2,
+        None,
+        None,
+    )
 
 
 def test_target_not_found_is_not_a_candidate(selection):
     selection.select_measurement(1)
     selection.select_target("HFC-23")
-    assert (selection.compound_idx, selection.candidate, selection.target) == (None, None, "HFC-23")
+    assert (selection.compound_idx, selection.candidate, selection.target) == (
+        None,
+        None,
+        "HFC-23",
+    )
     assert selection.label == "HFC-23"
     assert selection.mass == 69
 
@@ -79,7 +100,11 @@ def test_target_followed_through_its_aliases(selection):
     selection.select_target("CFC-12")
     assert (selection.compound_idx, selection.candidate) == (0, "CFC-12")
     selection.select_measurement(2)
-    assert (selection.compound_idx, selection.candidate, selection.target) == (0, "CFC-12", "CFC-12")
+    assert (selection.compound_idx, selection.candidate, selection.target) == (
+        0,
+        "CFC-12",
+        "CFC-12",
+    )
 
 
 def test_candidate_followed_across_measurements(selection):
@@ -96,9 +121,21 @@ def test_results_of_all_names_of_a_target(selection):
 
 def test_aliases_are_not_shown(selection):
     data = selection.data
-    assert data.candidate_names(valid_only=False).to_dict() == {"CFC-12": 2, "Unknown X": 1}
-    assert list(data.compounds(1)["main_name"].fillna("-")) == ["CFC-12", "Unknown X", "-"]
-    assert sorted(data.search([85], "rt", 0, 1000)["main_name"].fillna("-")) == ["-", "CFC-12", "CFC-12", "Unknown X"]
+    assert data.candidate_names(valid_only=False).to_dict() == {
+        "CFC-12": 2,
+        "Unknown X": 1,
+    }
+    assert list(data.compounds(1)["main_name"].fillna("-")) == [
+        "CFC-12",
+        "Unknown X",
+        "-",
+    ]
+    assert sorted(data.search([85], "rt", 0, 1000)["main_name"].fillna("-")) == [
+        "-",
+        "CFC-12",
+        "CFC-12",
+        "Unknown X",
+    ]
 
 
 def test_compound_identified_as_another_target(selection):
@@ -111,7 +148,10 @@ def test_compound_identified_as_another_target(selection):
     assert fields == [{"candidate", "target", "identification"}]
     assert (selection.candidate, selection.target) == ("HFC-23", "HFC-23")
     compound = data.compounds(1).loc[1]
-    assert (compound["compound_name"], compound["alpinac_name"]) == ("HFC-23", "Unknown X")
+    assert (compound["compound_name"], compound["alpinac_name"]) == (
+        "HFC-23",
+        "Unknown X",
+    )
     assert compound["identified_at"] is not None
     assert data.targets_found(1) == {"CFC-12", "HFC-23"}
     assert list(data.results("HFC-23", valid_only=True)["compound_idx"]) == [1]
@@ -132,7 +172,9 @@ def test_identification_reset_to_alpinac(selection):
     data.set_identification(1, 1, "HFC-23")
     data.reset_identification(1, 1)
     compound = data.compounds(1).loc[1]
-    assert compound["compound_name"] == "Unknown X" and compound["identified_at"] is None
+    assert (
+        compound["compound_name"] == "Unknown X" and compound["identified_at"] is None
+    )
 
 
 def test_identification_lost_when_measurement_imported_again(selection):
@@ -141,7 +183,9 @@ def test_identification_lost_when_measurement_imported_again(selection):
     con = db.connect(data.data_dir)
     con.execute("DELETE FROM measurement WHERE measurement_id = 1")
     con.commit()
-    assert con.execute("SELECT COUNT(*) FROM compound_identification").fetchone()[0] == 0
+    assert (
+        con.execute("SELECT COUNT(*) FROM compound_identification").fetchone()[0] == 0
+    )
     con.close()
 
 
@@ -168,7 +212,10 @@ def test_compounds_selected_together(selection):
     assert fields == [{"compound_idxs"}]
     assert (selection.compound_idx, selection.compound_idxs) == (0, (0, 2))
     assert selection.reference == ("nist", "CFC-12")
-    assert sorted(selection.data.compound_peaks(1, selection.compound_idxs).index) == [0, 2]
+    assert sorted(selection.data.compound_peaks(1, selection.compound_idxs).index) == [
+        0,
+        2,
+    ]
     selection.select_compound(1, 1)
     assert selection.compound_idxs == (1,)
     selection.select_target("HFC-23")
@@ -181,7 +228,10 @@ def test_compounds_merged(selection):
     assert data.merge_compounds(1, [2, 1]) == 1
     compounds = data.compounds(1)
     assert list(compounds.index) == [0, 1]
-    assert (compounds.loc[1, "compound_name"], compounds.loc[1, "n_peaks"]) == ("HFC-23", 2)
+    assert (compounds.loc[1, "compound_name"], compounds.loc[1, "n_peaks"]) == (
+        "HFC-23",
+        2,
+    )
     assert compounds.loc[1, "rt_mean_s"] == 450.0
     assert list(data.compound_peaks(1, 1).index) == [1, 2]
 
@@ -190,9 +240,11 @@ def test_identification_keeps_its_scores(selection):
     data = selection.data
     data.set_identification(1, 1, "HFC-23", "nist_HFC-23", 0.8, 0.72)
     compound = data.compounds(1).loc[1]
-    assert (compound["best_spectrum"], compound["best_score"], compound["best_score_combined"]) == (
-        "nist_HFC-23", 0.8, 0.72
-    )
+    assert (
+        compound["best_spectrum"],
+        compound["best_score"],
+        compound["best_score_combined"],
+    ) == ("nist_HFC-23", 0.8, 0.72)
     result = data.results("HFC-23", valid_only=True).iloc[0]
     assert (result["best_score"], result["best_score_combined"]) == (0.8, 0.72)
     # Not identified: no scores, not alpinac's
@@ -206,7 +258,10 @@ def test_identification_as_an_alpinac_candidate(selection):
     con.executemany(
         "INSERT INTO compound_candidate (measurement_id, compound_idx, rank, candidate_name, spectrum_ref, score,"
         " score_combined, is_best) VALUES (1, 1, ?, ?, ?, ?, ?, ?)",
-        [(1, "Unknown X", "nist_Unknown X", 0.9, 0.81, 1), (2, "CFC12", "mygu_CFC12", 0.7, 0.63, 0)],
+        [
+            (1, "Unknown X", "nist_Unknown X", 0.9, 0.81, 1),
+            (2, "CFC12", "mygu_CFC12", 0.7, 0.63, 0),
+        ],
     )
     con.commit()
     con.close()
@@ -239,7 +294,8 @@ def test_identification_table_without_scores(selection):
 
 
 @pytest.mark.parametrize(
-    "score, ri_diff, combined", [(0.8, 0.0, 0.8), (0.8, -25.0, 0.6), (0.8, 150.0, 0.0), (0.8, None, 0.72)]
+    "score, ri_diff, combined",
+    [(0.8, 0.0, 0.8), (0.8, -25.0, 0.6), (0.8, 150.0, 0.0), (0.8, None, 0.72)],
 )
 def test_combined_score_as_alpinac(score, ri_diff, combined):
     assert combined_score(score, ri_diff) == pytest.approx(combined)
@@ -250,6 +306,9 @@ def test_search_with_identification(selection):
     data.set_identification(1, 1, "HFC-23")
     data.set_identification(1, 0, None)
     df = data.search([85], "rt", 0, 1000).set_index(["measurement_id", "compound_idx"])
-    assert (df.loc[(1, 1), "main_name"], df.loc[(1, 1), "valid_candidate"]) == ("HFC-23", 1)
+    assert (df.loc[(1, 1), "main_name"], df.loc[(1, 1), "valid_candidate"]) == (
+        "HFC-23",
+        1,
+    )
     assert (df.loc[(1, 0), "main_name"], df.loc[(1, 0), "valid_candidate"]) == (None, 0)
     assert df.loc[(2, 0), "main_name"] == "CFC-12"

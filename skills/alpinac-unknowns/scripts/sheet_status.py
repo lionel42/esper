@@ -10,12 +10,12 @@ Used to decide the category of a finding (see SKILL.md step 4):
   in sheet, no RT or no spectrum -> KNOWN, pipeline cannot name it (library/sheet gap)
   in sheet with RT and spectrum  -> KNOWN, pipeline mislabelled or hid it
 """
+
 import re
 import sys
 
-import pandas as pd
-
 import common as C
+import pandas as pd
 
 
 def norm(s):
@@ -41,16 +41,26 @@ if sys.argv[1] == "--near":
         print(f"--- sheet entries within +-10 RI of {x:.0f} (dRI = sample - sheet)")
         for name, r in d.sort_values("dRI", key=abs).iterrows():
             # a spectrum stored under an alias counts too
-            spec = "spec" if any(norm(n) in Snorm for n in [name] + alias_of.get(name, [])) else "nospec"
-            print(f"   {name:28s} RI {r.ri:6.1f}  dRI {r.dRI:+5.1f}  {str(r.formula):14s} {spec}")
+            spec = (
+                "spec"
+                if any(norm(n) in Snorm for n in [name] + alias_of.get(name, []))
+                else "nospec"
+            )
+            print(
+                f"   {name:28s} RI {r.ri:6.1f}  dRI {r.dRI:+5.1f}  {str(r.formula):14s} {spec}"
+            )
     sys.exit()
 
 for q in [k.strip() for k in sys.argv[1].split(";") if k.strip()]:
     nq = norm(q)
     hits = []
     for _, r in sub.iterrows():
-        for how, col in [("name", "Compound name (Gcwerks)"), ("alias", "Alias 1"),
-                         ("alias", "Alias 2"), ("chemical name", "Chemical name")]:
+        for how, col in [
+            ("name", "Compound name (Gcwerks)"),
+            ("alias", "Alias 1"),
+            ("alias", "Alias 2"),
+            ("chemical name", "Chemical name"),
+        ]:
             v = r.get(col)
             if isinstance(v, str) and norm(v) == nq:
                 hits.append((how, r))
@@ -63,9 +73,15 @@ for q in [k.strip() for k in sys.argv[1].split(";") if k.strip()]:
         name = str(r["Compound name (Gcwerks)"]).strip()
         rt = pd.to_numeric(r[C.RT_COL], errors="coerce")
         r_ri = ri["ri"].get(name, float("nan")) if name in ri.index else float("nan")
-        names = [name] + [str(r[a]) for a in ("Alias 1", "Alias 2", "Chemical name") if isinstance(r.get(a), str)]
+        names = [name] + [
+            str(r[a])
+            for a in ("Alias 1", "Alias 2", "Chemical name")
+            if isinstance(r.get(a), str)
+        ]
         srcs = sorted({s for n in names if norm(n) in Snorm for s in S[Snorm[norm(n)]]})
         has_rt = rt > 0
-        print(f"{q:28s} in sheet as '{name}' (by {how})  RT {rt if has_rt else 'none'}  "
-              f"RI {r_ri:.0f}  formula {r['Formula ']}  spectrum: {srcs or 'none'}"
-              f"  comment: {str(r['Comment'])[:60] if isinstance(r['Comment'], str) else ''}")
+        print(
+            f"{q:28s} in sheet as '{name}' (by {how})  RT {rt if has_rt else 'none'}  "
+            f"RI {r_ri:.0f}  formula {r['Formula ']}  spectrum: {srcs or 'none'}"
+            f"  comment: {str(r['Comment'])[:60] if isinstance(r['Comment'], str) else ''}"
+        )

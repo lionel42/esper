@@ -19,7 +19,16 @@ def _cross() -> QPainterPath:
 
 CROSS = _cross()
 
-COLORS = ["#1f9e1f", "#ff9900", "#9b30b0", "#202020", "#1030e0", "#a00000", "#e070d0", "#008080"]
+COLORS = [
+    "#1f9e1f",
+    "#ff9900",
+    "#9b30b0",
+    "#202020",
+    "#1030e0",
+    "#a00000",
+    "#e070d0",
+    "#008080",
+]
 
 # Overlaid chromatograms, the main mass being black: a few (the qualifiers) get these colors,
 # more get colors sampled from magma, without its ends (near black: the main mass; near
@@ -40,7 +49,12 @@ def overlay_colors(n: int) -> list[QColor | str]:
 SYMBOLS = [CROSS, "o", "s", "t", "d", "x", "star", "h"]
 
 # Table cell backgrounds: good -> bad
-QUALITY_COLORS = ["#c8e6c9", "#e6ee9c", "#ffcc80", "#ef9a9a"]  # green, yellow-green, orange, red
+QUALITY_COLORS = [
+    "#c8e6c9",
+    "#e6ee9c",
+    "#ffcc80",
+    "#ef9a9a",
+]  # green, yellow-green, orange, red
 # Lower limits of a spectral score (0-1) for green, yellow-green, orange; below: red
 SCORE_THRESHOLDS = (0.95, 0.85, 0.70)
 # Upper limits of an absolute retention index difference for green, yellow-green, orange; above: red

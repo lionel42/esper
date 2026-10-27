@@ -40,7 +40,12 @@ class ResultsPlotPanel(BasePanel):
 
     def __init__(self, data: EsperData, selection: Selection, parent=None) -> None:
         super().__init__(data, selection, parent)
-        self.options = {"runtype": ALL, "x": X_OPTIONS[0], "y": next(iter(Y_OPTIONS)), "valid_only": True}
+        self.options = {
+            "runtype": ALL,
+            "x": X_OPTIONS[0],
+            "y": next(iter(Y_OPTIONS)),
+            "valid_only": True,
+        }
         self.df: pd.DataFrame | None = None
         self.plotted: pd.DataFrame | None = None
         self._loaded_key = None
@@ -70,7 +75,11 @@ class ResultsPlotPanel(BasePanel):
         key = (name, self.options["valid_only"])
         if key != self._loaded_key:
             self._loaded_key = key
-            self.df = None if name is None else self.data.results(name, self.options["valid_only"])
+            self.df = (
+                None
+                if name is None
+                else self.data.results(name, self.options["valid_only"])
+            )
         self._plot()
 
     def _x_values(self, df: pd.DataFrame) -> np.ndarray:
@@ -107,10 +116,23 @@ class ResultsPlotPanel(BasePanel):
                 continue
             color = COLORS[i % len(COLORS)]
             item = pg.ScatterPlotItem(
-                sub["x"].to_numpy(), sub["y"].to_numpy(),
-                data=list(zip(sub["measurement_id"], sub["compound_idx"], sub["name"], sub["rt_mean_s"])),
-                symbol=CROSS, size=14, pen=pg.mkPen(color, width=2), brush=None,
-                hoverable=True, hoverPen=pg.mkPen("c", width=3), hoverSize=20,
+                sub["x"].to_numpy(),
+                sub["y"].to_numpy(),
+                data=list(
+                    zip(
+                        sub["measurement_id"],
+                        sub["compound_idx"],
+                        sub["name"],
+                        sub["rt_mean_s"],
+                    )
+                ),
+                symbol=CROSS,
+                size=14,
+                pen=pg.mkPen(color, width=2),
+                brush=None,
+                hoverable=True,
+                hoverPen=pg.mkPen("c", width=3),
+                hoverSize=20,
                 tip=lambda x, y, data: f"{data[2]}\nrt {data[3]:.1f} s\n{y:.4g}",
                 name=stype,
             )
@@ -125,7 +147,10 @@ class ResultsPlotPanel(BasePanel):
         if df is None or df.empty:
             self.highlight.clear()
             return
-        row = df[(df["measurement_id"] == sel.measurement_id) & (df["compound_idx"] == sel.compound_idx)]
+        row = df[
+            (df["measurement_id"] == sel.measurement_id)
+            & (df["compound_idx"] == sel.compound_idx)
+        ]
         if row.empty:
             self.highlight.clear()
         else:

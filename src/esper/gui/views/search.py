@@ -6,10 +6,24 @@ import re
 
 import numpy as np
 from PySide6.QtGui import QDoubleValidator
-from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+)
 
 from esper.gui.data import EsperData
-from esper.gui.panels.search_plot import ALL, WINDOWS, X_OPTIONS, Y_OPTIONS, SearchPlotPanel, SearchQuery
+from esper.gui.panels.search_plot import (
+    ALL,
+    WINDOWS,
+    X_OPTIONS,
+    Y_OPTIONS,
+    SearchPlotPanel,
+    SearchQuery,
+)
 from esper.gui.selection import Selection
 from esper.gui.views.base import BaseView
 from esper.gui.widgets import StepCombo
@@ -80,7 +94,9 @@ class SearchView(BaseView):
         self.y_combo = QComboBox()
         self.y_combo.addItems(list(Y_OPTIONS))
         self.all_masses = QCheckBox("only runs with all masses")
-        self.all_masses.setToolTip("Hide the runs where one of the masses has no peak in the window")
+        self.all_masses.setToolTip(
+            "Hide the runs where one of the masses has no peak in the window"
+        )
         self.valid_only = QCheckBox("valid compounds only")
 
         display_row = QHBoxLayout()
@@ -105,11 +121,17 @@ class SearchView(BaseView):
         self._window = self.window_combo.currentText()
         self.window_combo.currentTextChanged.connect(self._convert_window)
         from_selection.clicked.connect(self.fill_from_selection)
-        self.runtype_box.selected.connect(lambda runtype: self.results.set_options(runtype=runtype))
+        self.runtype_box.selected.connect(
+            lambda runtype: self.results.set_options(runtype=runtype)
+        )
         self.x_combo.currentTextChanged.connect(lambda x: self.results.set_options(x=x))
         self.y_combo.currentTextChanged.connect(lambda y: self.results.set_options(y=y))
-        self.all_masses.toggled.connect(lambda checked: self.results.set_options(all_masses=checked))
-        self.valid_only.toggled.connect(lambda checked: self.results.set_options(valid_only=checked))
+        self.all_masses.toggled.connect(
+            lambda checked: self.results.set_options(all_masses=checked)
+        )
+        self.valid_only.toggled.connect(
+            lambda checked: self.results.set_options(valid_only=checked)
+        )
         self.results.summary_changed.connect(self.status.setText)
         # Compound the search was last filled from; refilled when the view is shown with another one
         self._filled_from: tuple[int, int] | None = None
@@ -117,7 +139,9 @@ class SearchView(BaseView):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if self.runtype_box.combo.count() == 0:
-            self.runtype_box.set_items([(ALL, ALL)] + [(t, t) for t in self.data.sample_types()], ALL)
+            self.runtype_box.set_items(
+                [(ALL, ALL)] + [(t, t) for t in self.data.sample_types()], ALL
+            )
         sel = self.selection
         if sel.measurement_id is not None and sel.compound_idx is not None:
             if self._filled_from != (sel.measurement_id, sel.compound_idx):
@@ -145,7 +169,9 @@ class SearchView(BaseView):
         if not (np.isfinite(lo) and np.isfinite(hi)):
             self.lo_edit.clear()
             self.hi_edit.clear()
-            self.status.setText("The selected measurement has no retention index anchors")
+            self.status.setText(
+                "The selected measurement has no retention index anchors"
+            )
             return
         self.lo_edit.setText(f"{lo:.1f}")
         self.hi_edit.setText(f"{hi:.1f}")
@@ -158,7 +184,9 @@ class SearchView(BaseView):
             return
         window, _ = WINDOWS[self.window_combo.currentText()]
         compound = self.data.compounds(sel.measurement_id).loc[sel.compound_idx]
-        centre = compound["rt_mean_s"] if window == "rt" else compound["retention_index"]
+        centre = (
+            compound["rt_mean_s"] if window == "rt" else compound["retention_index"]
+        )
         if not np.isfinite(centre):
             self.status.setText("The selected compound has no retention index")
             return
@@ -168,8 +196,12 @@ class SearchView(BaseView):
         self.hi_edit.setText(f"{centre + half:.1f}")
 
         peaks = self.data.compound_peaks(sel.measurement_id, sel.compound_idx)
-        masses = peaks.sort_values("prominence", ascending=False)["mass"].drop_duplicates()
-        self.masses_edit.setText(", ".join(str(m) for m in masses.head(SELECTION_N_MASSES)))
+        masses = peaks.sort_values("prominence", ascending=False)[
+            "mass"
+        ].drop_duplicates()
+        self.masses_edit.setText(
+            ", ".join(str(m) for m in masses.head(SELECTION_N_MASSES))
+        )
         self.search()
 
     def search(self) -> None:
@@ -182,4 +214,6 @@ class SearchView(BaseView):
         if not masses:
             self.status.setText("Give at least one mass")
             return
-        self.results.set_query(SearchQuery(tuple(masses), self.window_combo.currentText(), lo, hi))
+        self.results.set_query(
+            SearchQuery(tuple(masses), self.window_combo.currentText(), lo, hi)
+        )

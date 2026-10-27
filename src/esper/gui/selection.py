@@ -40,7 +40,9 @@ class Selection(QObject):
         self.data = data
         self.measurement_id: int | None = None
         self.compound_idx: int | None = None
-        self.compound_idxs: tuple[int, ...] = ()  # compound_idx and the others selected with it
+        self.compound_idxs: tuple[
+            int, ...
+        ] = ()  # compound_idx and the others selected with it
         self.candidate: str | None = None
         self.mass: int | None = None  # None: TIC
         self.rt: float | None = None
@@ -112,10 +114,14 @@ class Selection(QObject):
         """Go to the compound of the target, or to where it is expected."""
         values = {"target": target}
         if self.measurement_id is not None:
-            values.update(self._target_values(self.measurement_id, target, keep_mass=False))
+            values.update(
+                self._target_values(self.measurement_id, target, keep_mass=False)
+            )
         self._set(**values)
 
-    def select_peak(self, measurement_id: int, compound_idx: int, mass: int, rt: float) -> None:
+    def select_peak(
+        self, measurement_id: int, compound_idx: int, mass: int, rt: float
+    ) -> None:
         """Select the compound of a peak, showing the mass and rt of that peak."""
         candidate = self.data.candidate_of(measurement_id, compound_idx)
         self._set(
@@ -130,7 +136,10 @@ class Selection(QObject):
     def select_measurement(self, measurement_id: int) -> None:
         """Change measurement, following the same compound (or target) and keeping the mass."""
         if self.target is not None:
-            self._set(measurement_id=measurement_id, **self._target_values(measurement_id, self.target, keep_mass=True))
+            self._set(
+                measurement_id=measurement_id,
+                **self._target_values(measurement_id, self.target, keep_mass=True),
+            )
             return
         values = {"measurement_id": measurement_id, "compound_idx": None}
         compound_idx = self.data.find_compound(measurement_id, self.candidate, self.rt)
@@ -143,7 +152,11 @@ class Selection(QObject):
 
     def select_candidate(self, candidate: str | None) -> None:
         """Follow the compounds with that candidate name (and its target, if any)."""
-        values = {"candidate": candidate, "compound_idx": None, "target": self.data.target_of(candidate)}
+        values = {
+            "candidate": candidate,
+            "compound_idx": None,
+            "target": self.data.target_of(candidate),
+        }
         if self.measurement_id is not None:
             compound_idx = self.data.find_compound(self.measurement_id, candidate)
             if compound_idx is not None:

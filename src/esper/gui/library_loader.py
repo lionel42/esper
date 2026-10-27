@@ -23,7 +23,12 @@ class _LoadThread(QThread):
     def run(self) -> None:
         for name in self.libraries:
             try:
-                self.collection.load(name, lambda done, total, name=name: self.progress.emit(name, done, total))
+                self.collection.load(
+                    name,
+                    lambda done, total, name=name: self.progress.emit(
+                        name, done, total
+                    ),
+                )
             except Exception:
                 logger.exception(f"Could not read library {name}")
 

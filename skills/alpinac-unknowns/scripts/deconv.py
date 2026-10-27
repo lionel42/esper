@@ -3,15 +3,16 @@
 usage: python deconv.py RUN_DIR RT [RT ...]
 Writes deconv_<rt>.png in the current directory.
 """
+
 import sys
 
 import matplotlib
+
 matplotlib.use("Agg")
+import common as C
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
-import common as C
 
 run = sys.argv[1]
 chrom = C.load_chrom(run)
@@ -62,7 +63,9 @@ for rt in map(float, sys.argv[2:]):
         if d.h.max() < 0.03 * df.h.max() and len(d) < 3:
             continue
         spec = dict(zip(d.mz, d.h))
-        print(f"  group apex {d.apex.median():.2f}  fwhm {d.fwhm.median():.2f}s  n={len(d)}  max h={d.h.max():.0f}")
+        print(
+            f"  group apex {d.apex.median():.2f}  fwhm {d.fwhm.median():.2f}s  n={len(d)}  max h={d.h.max():.0f}"
+        )
         print(f"     {C.fmt_spec(spec, 20)}")
         print("     lib:", " | ".join(f"{n} {c:.2f}" for c, n in C.libsearch(spec)))
     fig, ax = plt.subplots(figsize=(10, 5))

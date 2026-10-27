@@ -26,7 +26,11 @@ TIC = None  # mass value standing for the total ion chromatogram
 # Temporary view of the compounds with their identification edited by hand, if any
 COMPOUND_VIEW = "compound_named"
 # Columns of the best candidate kept with an identification edited by hand (added to the table later)
-IDENTIFICATION_SCORES = {"spectrum_ref": "TEXT", "score": "REAL", "score_combined": "REAL"}
+IDENTIFICATION_SCORES = {
+    "spectrum_ref": "TEXT",
+    "score": "REAL",
+    "score_combined": "REAL",
+}
 # The best candidate of a compound: the one identified by hand, else alpinac's (cc: compound_candidate)
 BEST_CANDIDATE = {
     "best_spectrum": "spectrum_ref",
@@ -74,20 +78,37 @@ class EsperData:
         """
         self.con.execute(f"DROP VIEW IF EXISTS temp.{COMPOUND_VIEW}")
         alpinac = "c.compound_name AS alpinac_name, c.valid_candidate AS alpinac_valid"
-        not_edited = ", ".join(["NULL AS identified_at"] + [f"NULL AS identified_{col}" for col in IDENTIFICATION_SCORES])
+        not_edited = ", ".join(
+            ["NULL AS identified_at"]
+            + [f"NULL AS identified_{col}" for col in IDENTIFICATION_SCORES]
+        )
         if not self._has_table("compound_identification"):
             # Database from before the identifications could be edited
             sql = f"SELECT c.*, {alpinac}, {not_edited} FROM compound c"
         else:
             # Table from before the scores were kept with the identification: none is
-            kept = {row[1] for row in self.con.execute("PRAGMA table_info(compound_identification)")}
+            kept = {
+                row[1]
+                for row in self.con.execute(
+                    "PRAGMA table_info(compound_identification)"
+                )
+            }
             scores = ", ".join(
-                f"{'ci.' + col if col in kept else 'NULL'} AS identified_{col}" for col in IDENTIFICATION_SCORES
+                f"{'ci.' + col if col in kept else 'NULL'} AS identified_{col}"
+                for col in IDENTIFICATION_SCORES
             )
-            edited = {"compound_name": "ci.name", "valid_candidate": "ci.name IS NOT NULL"}
+            edited = {
+                "compound_name": "ci.name",
+                "valid_candidate": "ci.name IS NOT NULL",
+            }
             # All the columns of the compound table, whatever the schema version
-            columns = [row[1] for row in self.con.execute("PRAGMA table_info(compound)")]
-            select = ", ".join(f'{edited[col]} AS "{col}"' if col in edited else f'c."{col}"' for col in columns)
+            columns = [
+                row[1] for row in self.con.execute("PRAGMA table_info(compound)")
+            ]
+            select = ", ".join(
+                f'{edited[col]} AS "{col}"' if col in edited else f'c."{col}"'
+                for col in columns
+            )
             # Two parts, so that a search by name in the compounds not edited uses the index on compound_name
             sql = f"""
                 SELECT c.*, {alpinac}, {not_edited}
@@ -115,10 +136,15 @@ class EsperData:
             # Database from before the identifications could be edited: creates the missing tables
             con.executescript(db.SCHEMA)
             # and columns
-            kept = {row[1] for row in con.execute("PRAGMA table_info(compound_identification)")}
+            kept = {
+                row[1]
+                for row in con.execute("PRAGMA table_info(compound_identification)")
+            }
             for col, kind in IDENTIFICATION_SCORES.items():
                 if col not in kept:
-                    con.execute(f"ALTER TABLE compound_identification ADD COLUMN {col} {kind}")
+                    con.execute(
+                        f"ALTER TABLE compound_identification ADD COLUMN {col} {kind}"
+                    )
             for sql, params in statements:
                 con.execute(sql, params)
             con.commit()
@@ -126,7 +152,12 @@ class EsperData:
             con.close()
         self._create_compound_view()
         for cached in (
-            self.compounds, self.peaks, self._candidates, self.compound_spectrum, self.ri_anchors, self.targets_found
+            self.compounds,
+            self.peaks,
+            self._candidates,
+            self.compound_spectrum,
+            self.ri_anchors,
+            self.targets_found,
         ):
             cached.cache_clear()
 
@@ -144,23 +175,31 @@ class EsperData:
         ``spectrum_ref``, ``score`` and ``score_combined`` describe the library spectrum
         of the name matching the compound best, as for alpinac's candidates (None: none).
         """
-        self._write((
-            "INSERT OR REPLACE INTO compound_identification"
-            " (measurement_id, compound_idx, name, edited_at, spectrum_ref, score, score_combined)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        self._write(
             (
-                int(measurement_id), int(compound_idx), name, _now(), spectrum_ref,
-                None if score is None else float(score),
-                None if score_combined is None else float(score_combined),
-            ),
-        ))
+                "INSERT OR REPLACE INTO compound_identification"
+                " (measurement_id, compound_idx, name, edited_at, spectrum_ref, score, score_combined)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    int(measurement_id),
+                    int(compound_idx),
+                    name,
+                    _now(),
+                    spectrum_ref,
+                    None if score is None else float(score),
+                    None if score_combined is None else float(score_combined),
+                ),
+            )
+        )
 
     def reset_identification(self, measurement_id: int, compound_idx: int) -> None:
         """Back to alpinac's identification of the compound."""
-        self._write((
-            "DELETE FROM compound_identification WHERE measurement_id = ? AND compound_idx = ?",
-            (int(measurement_id), int(compound_idx)),
-        ))
+        self._write(
+            (
+                "DELETE FROM compound_identification WHERE measurement_id = ? AND compound_idx = ?",
+                (int(measurement_id), int(compound_idx)),
+            )
+        )
 
     def merge_compounds(self, measurement_id: int, compound_idxs) -> int:
         """Merge compounds of a measurement into the one with the lowest index, for good.
@@ -186,8 +225,13 @@ class EsperData:
                 " retention_index = COALESCE(?, retention_index)"
                 " WHERE measurement_id = ? AND compound_idx = ?",
                 (
-                    len(peaks), float(peaks["prominence"].sum()), float(rt.mean()), float(rt.std()),
-                    ri if np.isfinite(ri) else None, mid, main,
+                    len(peaks),
+                    float(peaks["prominence"].sum()),
+                    float(rt.mean()),
+                    float(rt.std()),
+                    ri if np.isfinite(ri) else None,
+                    mid,
+                    main,
                 ),
             ),
             (
@@ -284,14 +328,18 @@ class EsperData:
             index_col="peak_idx",
         )
 
-    def compound_peaks(self, measurement_id: int, compound_idx: int | tuple[int, ...]) -> pd.DataFrame:
+    def compound_peaks(
+        self, measurement_id: int, compound_idx: int | tuple[int, ...]
+    ) -> pd.DataFrame:
         """The peaks of a compound, or of several compounds together."""
         peaks = self.peaks(measurement_id)
         idxs = compound_idx if isinstance(compound_idx, tuple) else (compound_idx,)
         return peaks[peaks["compound_idx"].isin(idxs)]
 
     @lru_cache(maxsize=64)
-    def compound_spectrum(self, measurement_id: int, compound_idx: int | tuple[int, ...], intensity: str) -> Spectrum:
+    def compound_spectrum(
+        self, measurement_id: int, compound_idx: int | tuple[int, ...], intensity: str
+    ) -> Spectrum:
         """Spectrum of a compound (or of several together): unit masses and 'prominence', 'height' or 'area' of its peaks.
 
         Peaks on the same unit mass are summed. The area is integrated in the
@@ -337,7 +385,9 @@ class EsperData:
             return None
         return int(peaks.loc[peaks["prominence"].idxmax(), "mass"])
 
-    def find_compound(self, measurement_id: int, name: str | None, near_rt: float | None = None) -> int | None:
+    def find_compound(
+        self, measurement_id: int, name: str | None, near_rt: float | None = None
+    ) -> int | None:
         """Compound of the measurement with that main name (its candidate or one of its aliases).
 
         Valid candidates are preferred, then the one closest to ``near_rt``,
@@ -368,23 +418,32 @@ class EsperData:
     @cached_property
     def targets(self) -> pd.DataFrame:
         """Target compounds, indexed by name, with their expected unit masses (``masses``)."""
-        targets = self._query_or_empty("SELECT * FROM target", ["name", "rt_ref_s", "ri"]).set_index("name")
+        targets = self._query_or_empty(
+            "SELECT * FROM target", ["name", "rt_ref_s", "ri"]
+        ).set_index("name")
         ions = self.target_ions_all
-        masses = ions.groupby("name")["mass"].agg(lambda m: list(dict.fromkeys(int(x) for x in m)))
+        masses = ions.groupby("name")["mass"].agg(
+            lambda m: list(dict.fromkeys(int(x) for x in m))
+        )
         targets["masses"] = masses.reindex(targets.index)
-        targets["masses"] = targets["masses"].apply(lambda m: m if isinstance(m, list) else [])
+        targets["masses"] = targets["masses"].apply(
+            lambda m: m if isinstance(m, list) else []
+        )
         return targets
 
     @cached_property
     def target_ions_all(self) -> pd.DataFrame:
         return self._query_or_empty(
-            "SELECT * FROM target_ion ORDER BY name, rank", ["name", "rank", "ion", "exact_mass", "mass"]
+            "SELECT * FROM target_ion ORDER BY name, rank",
+            ["name", "rank", "ion", "exact_mass", "mass"],
         )
 
     @cached_property
     def _target_by_name(self) -> dict[str, str]:
         """Target name or alias -> target name."""
-        aliases = self._query_or_empty("SELECT alias, name FROM target_alias", ["alias", "name"])
+        aliases = self._query_or_empty(
+            "SELECT alias, name FROM target_alias", ["alias", "name"]
+        )
         mapping = dict(zip(aliases["alias"], aliases["name"]))
         mapping.update({name: name for name in self.targets.index})
         return mapping
@@ -420,9 +479,13 @@ class EsperData:
         refs = compounds[compounds["is_ref_ri"] == 1].dropna(subset=["retention_index"])
         refs = refs.sort_values("rt_mean_s")
         # Keep a strictly increasing retention index
-        keep = refs["retention_index"] > refs["retention_index"].cummax().shift(fill_value=-np.inf)
+        keep = refs["retention_index"] > refs["retention_index"].cummax().shift(
+            fill_value=-np.inf
+        )
         refs = refs[keep]
-        return refs["retention_index"].to_numpy(dtype=float), refs["rt_mean_s"].to_numpy(dtype=float)
+        return refs["retention_index"].to_numpy(dtype=float), refs[
+            "rt_mean_s"
+        ].to_numpy(dtype=float)
 
     def expected_rts(self, measurement_id: int, ri) -> np.ndarray:
         """rt expected in a measurement for retention indexes (NaN if not possible)."""
@@ -444,12 +507,16 @@ class EsperData:
         """rt where the target should elute in the measurement, from its retention index."""
         if target not in self.targets.index:
             return None
-        rt = float(self.expected_rts(measurement_id, [self.targets.at[target, "ri"]])[0])
+        rt = float(
+            self.expected_rts(measurement_id, [self.targets.at[target, "ri"]])[0]
+        )
         return rt if np.isfinite(rt) else None
 
     def find_target(self, measurement_id: int, target: str) -> int | None:
         """Compound of the measurement identified as the target (or one of its aliases)."""
-        return self.find_compound(measurement_id, target, self.expected_rt(measurement_id, target))
+        return self.find_compound(
+            measurement_id, target, self.expected_rt(measurement_id, target)
+        )
 
     @lru_cache(maxsize=32)
     def targets_found(self, measurement_id: int) -> frozenset[str]:
@@ -486,12 +553,18 @@ class EsperData:
             """,
             tuple(candidates),
         )
-        meas = self.measurements[["name", "acq_datetime", "sample_type", "sample_number"]]
+        meas = self.measurements[
+            ["name", "acq_datetime", "sample_type", "sample_number"]
+        ]
         df = df.join(meas, on="measurement_id")
-        df["measurement_pos"] = self.measurements.index.get_indexer(df["measurement_id"])
+        df["measurement_pos"] = self.measurements.index.get_indexer(
+            df["measurement_id"]
+        )
         return df
 
-    def search(self, masses: list[int], window: str, lo: float, hi: float) -> pd.DataFrame:
+    def search(
+        self, masses: list[int], window: str, lo: float, hi: float
+    ) -> pd.DataFrame:
         """Peaks of the given masses within an rt [s] or retention index window.
 
         The retention index of a peak is the one of its compound.
@@ -522,9 +595,13 @@ class EsperData:
             df.loc[hit, "compound_name"] = names.to_numpy()
             df.loc[hit, "valid_candidate"] = names.notna().astype(int).to_numpy()
         df["main_name"] = df["compound_name"].map(self.main_name)
-        meas = self.measurements[["name", "acq_datetime", "sample_type", "sample_number"]]
+        meas = self.measurements[
+            ["name", "acq_datetime", "sample_type", "sample_number"]
+        ]
         df = df.join(meas, on="measurement_id")
-        df["measurement_pos"] = self.measurements.index.get_indexer(df["measurement_id"])
+        df["measurement_pos"] = self.measurements.index.get_indexer(
+            df["measurement_id"]
+        )
         return df
 
     def _chromatogram_path(self, measurement_id: int) -> Path | None:
@@ -561,7 +638,9 @@ class EsperData:
         if column not in self.chromatogram_columns(measurement_id):
             return None
 
-        series = pd.read_parquet(self._chromatogram_path(measurement_id), columns=[column])[column]
+        series = pd.read_parquet(
+            self._chromatogram_path(measurement_id), columns=[column]
+        )[column]
         self._chromatograms[key] = series
         if len(self._chromatograms) > self._chromatogram_cache_size:
             self._chromatograms.popitem(last=False)

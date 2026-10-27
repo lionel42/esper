@@ -46,13 +46,21 @@ class ResultsView(BaseView):
 
         self.results = self.add_panel(ResultsPlotPanel(data, selection), stretch=2)
         self.chromatogram = self.add_panel(
-            ChromatogramPanel(data, selection, show_info=False), stretch=1, optional=True
+            ChromatogramPanel(data, selection, show_info=False),
+            stretch=1,
+            optional=True,
         )
-        self.spectrum = self.add_panel(SpectrumPanel(data, selection, chromatogram=self.chromatogram), stretch=1, optional=True)
+        self.spectrum = self.add_panel(
+            SpectrumPanel(data, selection, chromatogram=self.chromatogram),
+            stretch=1,
+            optional=True,
+        )
 
         self.cmp_box.selected.connect(self.selection.select_candidate)
         self.cmp_box.text_entered.connect(self._on_cmp_text)
-        self.runtype_box.selected.connect(lambda runtype: self.results.set_options(runtype=runtype))
+        self.runtype_box.selected.connect(
+            lambda runtype: self.results.set_options(runtype=runtype)
+        )
         self.x_combo.currentTextChanged.connect(lambda x: self.results.set_options(x=x))
         self.y_combo.currentTextChanged.connect(lambda y: self.results.set_options(y=y))
         self.valid_only.toggled.connect(self._on_valid_only)
@@ -75,7 +83,9 @@ class ResultsView(BaseView):
     def _load_names(self) -> None:
         """Candidate names for the Cmp box; selects the most frequent one if nothing is selected."""
         self._names_loaded = True
-        self.runtype_box.set_items([(ALL, ALL)] + [(t, t) for t in self.data.sample_types()], ALL)
+        self.runtype_box.set_items(
+            [(ALL, ALL)] + [(t, t) for t in self.data.sample_types()], ALL
+        )
         counts = self.data.candidate_names(self.valid_only.isChecked())
         self.cmp_box.set_items([(name, name) for name in counts.index])
         if self.selection.label is None and not counts.empty:

@@ -14,7 +14,9 @@ def integration_bounds(peaks, t: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     ``start_s``/``stop_s`` are the half maximum crossings, the peak is extended
     to ``N_HWHM`` half widths on each side but not beyond its prominence bases.
     """
-    rt, start_hm, stop_hm = (peaks[c].to_numpy(dtype=float) for c in ("rt_s", "start_s", "stop_s"))
+    rt, start_hm, stop_hm = (
+        peaks[c].to_numpy(dtype=float) for c in ("rt_s", "start_s", "stop_s")
+    )
     last = len(t) - 1
     left_base = t[np.clip(peaks["left_base_scan"].to_numpy(), 0, last)]
     right_base = t[np.clip(peaks["right_base_scan"].to_numpy(), 0, last)]

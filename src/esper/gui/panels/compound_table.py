@@ -41,12 +41,31 @@ class CompoundTablePanel(TablePanel):
         Column("rt_mean_s", "rt", "{:.1f}", "Mean retention time of the peaks [s]"),
         Column("retention_index", "RI", "{:.1f}", "Retention index"),
         Column("name", "name"),
-        Column("best_score", "score", "{:.3f}", "Score of the best library match", score_color),
-        Column("best_score_combined", "comb.", "{:.3f}", "Score combined with the RI difference", score_color),
-        Column("valid", "valid", tooltip="Valid candidate (✎: identification edited by hand)", color=valid_color),
+        Column(
+            "best_score",
+            "score",
+            "{:.3f}",
+            "Score of the best library match",
+            score_color,
+        ),
+        Column(
+            "best_score_combined",
+            "comb.",
+            "{:.3f}",
+            "Score combined with the RI difference",
+            score_color,
+        ),
+        Column(
+            "valid",
+            "valid",
+            tooltip="Valid candidate (✎: identification edited by hand)",
+            color=valid_color,
+        ),
         Column("n_peaks", "peaks", "{:d}", "Number of peaks (masses) of the compound"),
         Column("main_ion", "ion", "{:d}", "Most prominent mass"),
-        Column("best_spectrum", "spectrum", tooltip="Library spectrum of the best match"),
+        Column(
+            "best_spectrum", "spectrum", tooltip="Library spectrum of the best match"
+        ),
     ]
 
     def __init__(self, data: EsperData, selection: Selection, parent=None) -> None:
@@ -62,7 +81,9 @@ class CompoundTablePanel(TablePanel):
         compounds = self.data.compounds(mid)
         peaks = self.data.peaks(mid)
         grouped = peaks.groupby("compound_idx")
-        main_ion = peaks.loc[grouped["prominence"].idxmax()].set_index("compound_idx")["mass"]
+        main_ion = peaks.loc[grouped["prominence"].idxmax()].set_index("compound_idx")[
+            "mass"
+        ]
 
         df = compounds.copy()
         df["compound_idx"] = df.index
@@ -71,7 +92,11 @@ class CompoundTablePanel(TablePanel):
         df["main_ion"] = main_ion.reindex(df.index).astype("Int64")
         # Pencil: identification edited by hand (identified_at is None if by alpinac)
         df["valid"] = [
-            " ".join(mark for mark, on in (("✓", valid), ("✎", isinstance(edited, str))) if on)
+            " ".join(
+                mark
+                for mark, on in (("✓", valid), ("✎", isinstance(edited, str)))
+                if on
+            )
             for valid, edited in zip(df["valid_candidate"], df["identified_at"])
         ]
         return df
@@ -86,9 +111,17 @@ class CompoundTablePanel(TablePanel):
         idxs = self.selection.compound_idxs
         if len(idxs) > 1 and compound_idx in idxs:
             others = ", ".join(f"#{i}" for i in idxs[1:])
-            menu.addAction(f"Merge {others} into #{idxs[0]}…", lambda: self._merge(mid, idxs))
-        menu.addAction("Edit identification…", lambda: self._edit_identification(mid, compound_idx))
-        alpinac = compound["alpinac_name"] if isinstance(compound["alpinac_name"], str) else "none"
+            menu.addAction(
+                f"Merge {others} into #{idxs[0]}…", lambda: self._merge(mid, idxs)
+            )
+        menu.addAction(
+            "Edit identification…", lambda: self._edit_identification(mid, compound_idx)
+        )
+        alpinac = (
+            compound["alpinac_name"]
+            if isinstance(compound["alpinac_name"], str)
+            else "none"
+        )
         # '&&': a single '&' would be a shortcut mnemonic
         reset = menu.addAction(
             f"Reset to alpinac ({alpinac.replace('&', '&&')})",
@@ -107,10 +140,18 @@ class CompoundTablePanel(TablePanel):
             if dialog.name is not None:
                 QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
                 try:
-                    candidate = identification_candidate(self.data, measurement_id, compound_idx, dialog.name)
+                    candidate = identification_candidate(
+                        self.data, measurement_id, compound_idx, dialog.name
+                    )
                 finally:
                     QApplication.restoreOverrideCursor()
-            self._write(self.data.set_identification, measurement_id, compound_idx, dialog.name, *candidate)
+            self._write(
+                self.data.set_identification,
+                measurement_id,
+                compound_idx,
+                dialog.name,
+                *candidate,
+            )
 
     def _merge(self, measurement_id: int, compound_idxs: tuple[int, ...]) -> None:
         main, *others = compound_idxs

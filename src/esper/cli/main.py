@@ -57,7 +57,11 @@ def _install(args: argparse.Namespace) -> int:
     system = args.system
     if system and not is_root() and args.prefix is None:
         print("Installing for all users needs root, run it with sudo:", file=sys.stderr)
-        print(f"  sudo {sys.argv[0]} install --system" + (f' --data-dir "{args.data_dir}"' if args.data_dir else ""), file=sys.stderr)
+        print(
+            f"  sudo {sys.argv[0]} install --system"
+            + (f' --data-dir "{args.data_dir}"' if args.data_dir else ""),
+            file=sys.stderr,
+        )
         return 1
     if args.uninstall:
         for path in uninstall(system, args.prefix):
@@ -75,28 +79,64 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_gui = sub.add_parser("gui", help="Open the GUI")
-    p_gui.add_argument("data_dir", type=Path, nargs="?", help="esper data directory (default: $ESPER_DATA_DIR)")
+    p_gui.add_argument(
+        "data_dir",
+        type=Path,
+        nargs="?",
+        help="esper data directory (default: $ESPER_DATA_DIR)",
+    )
     p_gui.set_defaults(func=_gui)
 
-    p_upload = sub.add_parser("upload", help="Import .alpinac folders into an esper data directory")
-    p_upload.add_argument("source", type=Path, help="a .alpinac folder or a directory containing some")
-    p_upload.add_argument("data_dir", type=Path, help="esper data directory (created if needed)")
-    p_upload.add_argument("-f", "--force", action="store_true", help="reimport unchanged measurements")
+    p_upload = sub.add_parser(
+        "upload", help="Import .alpinac folders into an esper data directory"
+    )
+    p_upload.add_argument(
+        "source", type=Path, help="a .alpinac folder or a directory containing some"
+    )
+    p_upload.add_argument(
+        "data_dir", type=Path, help="esper data directory (created if needed)"
+    )
+    p_upload.add_argument(
+        "-f", "--force", action="store_true", help="reimport unchanged measurements"
+    )
     p_upload.set_defaults(func=_upload)
 
-    p_targets = sub.add_parser("targets", help="Import the target compounds (replaces the current ones)")
-    p_targets.add_argument("source", type=Path, help="target list, e.g. substances.xlsx")
+    p_targets = sub.add_parser(
+        "targets", help="Import the target compounds (replaces the current ones)"
+    )
+    p_targets.add_argument(
+        "source", type=Path, help="target list, e.g. substances.xlsx"
+    )
     p_targets.add_argument("data_dir", type=Path, help="esper data directory")
-    p_targets.add_argument("--ri-references", type=Path, help="retention index references (default: alpinac's)")
+    p_targets.add_argument(
+        "--ri-references",
+        type=Path,
+        help="retention index references (default: alpinac's)",
+    )
     p_targets.set_defaults(func=_targets)
 
     p_install = sub.add_parser(
-        "install", help="Add esper to the application menu (and the 'esper' command to the PATH)"
+        "install",
+        help="Add esper to the application menu (and the 'esper' command to the PATH)",
     )
-    p_install.add_argument("--system", action="store_true", help="for all users, in /usr/local (needs sudo)")
-    p_install.add_argument("--data-dir", type=Path, help="data directory opened by the menu entry (default: $ESPER_DATA_DIR)")
-    p_install.add_argument("--desktop-shortcut", action="store_true", help="also put a shortcut on your desktop")
-    p_install.add_argument("--uninstall", action="store_true", help="remove what install added")
+    p_install.add_argument(
+        "--system",
+        action="store_true",
+        help="for all users, in /usr/local (needs sudo)",
+    )
+    p_install.add_argument(
+        "--data-dir",
+        type=Path,
+        help="data directory opened by the menu entry (default: $ESPER_DATA_DIR)",
+    )
+    p_install.add_argument(
+        "--desktop-shortcut",
+        action="store_true",
+        help="also put a shortcut on your desktop",
+    )
+    p_install.add_argument(
+        "--uninstall", action="store_true", help="remove what install added"
+    )
     p_install.add_argument("--prefix", type=Path, help=argparse.SUPPRESS)
     p_install.set_defaults(func=_install)
 

@@ -23,7 +23,9 @@ class StepCombo(QWidget):
     selected = Signal(object)
     text_entered = Signal(str)
 
-    def __init__(self, label: str, editable: bool = True, min_width: int = 120, parent=None) -> None:
+    def __init__(
+        self, label: str, editable: bool = True, min_width: int = 120, parent=None
+    ) -> None:
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -33,7 +35,9 @@ class StepCombo(QWidget):
         self.combo.setEditable(editable)
         self.combo.setMinimumWidth(min_width)
         self.combo.setMaxVisibleItems(30)
-        self.combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
         if editable:
             self.combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
             completer = self.combo.completer()

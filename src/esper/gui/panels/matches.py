@@ -31,14 +31,30 @@ class BestMatchesPanel(TablePanel):
 
     columns = [
         Column("name", "name"),
-        Column("compound", "compound", tooltip="Target that this spectrum name is an alias of"),
+        Column(
+            "compound",
+            "compound",
+            tooltip="Target that this spectrum name is an alias of",
+        ),
         Column("library", "library"),
         Column(
-            "score", "score", "{:.3f}", "Cosine score with the compound (settings: intensity, processing)", score_color
+            "score",
+            "score",
+            "{:.3f}",
+            "Cosine score with the compound (settings: intensity, processing)",
+            score_color,
         ),
         Column("matched", "matched", "{:d}", "Number of masses in common"),
-        Column("ri", "RI", "{:.1f}", "Retention index of the target with this name, if any"),
-        Column("ri_diff", "RI diff", "{:+.1f}", "Retention index of the compound minus the target's", ri_diff_color),
+        Column(
+            "ri", "RI", "{:.1f}", "Retention index of the target with this name, if any"
+        ),
+        Column(
+            "ri_diff",
+            "RI diff",
+            "{:+.1f}",
+            "Retention index of the compound minus the target's",
+            ri_diff_color,
+        ),
     ]
 
     def __init__(self, data: EsperData, selection: Selection, parent=None) -> None:
@@ -48,7 +64,9 @@ class BestMatchesPanel(TablePanel):
         self.loader = library_loader()
         self.loader.loaded.connect(self.invalidate)
         self._loading = False
-        self.filter_edit.setPlaceholderText("Search the spectra of all libraries (library/name)…")
+        self.filter_edit.setPlaceholderText(
+            "Search the spectra of all libraries (library/name)…"
+        )
 
     def load(self) -> pd.DataFrame:
         sel = self.selection
@@ -61,7 +79,9 @@ class BestMatchesPanel(TablePanel):
         if self._loading:
             return empty
         settings = self.settings.settings
-        spectrum = self.data.compound_spectrum(sel.measurement_id, sel.compound_idxs, settings.spectrum_intensity)
+        spectrum = self.data.compound_spectrum(
+            sel.measurement_id, sel.compound_idxs, settings.spectrum_intensity
+        )
         matches = self.settings.libraries.best_matches(
             spectrum, None if search else settings.n_best_matches, search
         )
@@ -71,14 +91,19 @@ class BestMatchesPanel(TablePanel):
         df["spectrum"] = df["library"] + "/" + df["name"]
         df.index = df["spectrum"]
         df["compound"] = [
-            target if (target := self.data.target_of(name)) not in (None, name) else "" for name in df["name"]
+            target if (target := self.data.target_of(name)) not in (None, name) else ""
+            for name in df["name"]
         ]
         targets = self.data.targets
         df["ri"] = [
-            targets.at[t, "ri"] if (t := self.data.target_of(name)) is not None else np.nan
+            targets.at[t, "ri"]
+            if (t := self.data.target_of(name)) is not None
+            else np.nan
             for name in df["name"]
         ]
-        compound_ri = self.data.compounds(sel.measurement_id).at[sel.compound_idx, "retention_index"]
+        compound_ri = self.data.compounds(sel.measurement_id).at[
+            sel.compound_idx, "retention_index"
+        ]
         df["ri_diff"] = compound_ri - df["ri"]
         return df
 

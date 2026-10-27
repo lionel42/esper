@@ -24,7 +24,15 @@ logger = logging.getLogger(__name__)
 
 # Columns of Targets.table (index: name)
 TARGET_COLUMNS = [
-    "rt_ref_s", "ri", "formula", "chemical_name", "cas", "cmp_class", "pubchem_cid", "inchi", "smiles",
+    "rt_ref_s",
+    "ri",
+    "formula",
+    "chemical_name",
+    "cas",
+    "cmp_class",
+    "pubchem_cid",
+    "inchi",
+    "smiles",
 ]
 # Columns of Targets.ions
 ION_COLUMNS = ["name", "rank", "ion", "exact_mass", "mass"]
@@ -40,7 +48,9 @@ class Targets:
     """
 
     table: pd.DataFrame
-    ions: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=ION_COLUMNS))
+    ions: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=ION_COLUMNS)
+    )
     aliases: dict[str, str] = field(default_factory=dict)
 
     def check(self) -> None:
@@ -48,7 +58,9 @@ class Targets:
         if missing:
             raise ValueError(f"Missing target columns: {sorted(missing)}")
         if self.table.index.duplicated().any():
-            raise ValueError(f"Duplicated targets: {self.table.index[self.table.index.duplicated()].tolist()}")
+            raise ValueError(
+                f"Duplicated targets: {self.table.index[self.table.index.duplicated()].tolist()}"
+            )
         unknown = set(self.ions["name"]) - set(self.table.index)
         if unknown:
             raise ValueError(f"Ions of unknown targets: {sorted(unknown)[:10]}")
@@ -66,7 +78,9 @@ def interp_extrapolate(x, xp, fp) -> np.ndarray:
     if len(xp) >= 2:
         low, high = x < xp[0], x > xp[-1]
         y = np.where(low, fp[0] + (x - xp[0]) * (fp[1] - fp[0]) / (xp[1] - xp[0]), y)
-        y = np.where(high, fp[-1] + (x - xp[-1]) * (fp[-1] - fp[-2]) / (xp[-1] - xp[-2]), y)
+        y = np.where(
+            high, fp[-1] + (x - xp[-1]) * (fp[-1] - fp[-2]) / (xp[-1] - xp[-2]), y
+        )
     return y
 
 
@@ -115,8 +129,14 @@ def load_excel(path: Path, ri_references: Path | None = None) -> Targets:
     rt = df["rt"].where(df["rt"] > 0)
     refs = pd.read_csv(ri_references, comment="#")
     refs = refs[refs["compound"].isin(df.index)]
-    refs = refs.assign(rt=df.loc[refs["compound"], "rt"].values).dropna(subset=["rt"]).sort_values("rt")
-    ri = pd.Series(interp_extrapolate(rt, refs["rt"], refs["ri"]), index=df.index).where(rt.notna())
+    refs = (
+        refs.assign(rt=df.loc[refs["compound"], "rt"].values)
+        .dropna(subset=["rt"])
+        .sort_values("rt")
+    )
+    ri = pd.Series(
+        interp_extrapolate(rt, refs["rt"], refs["ri"]), index=df.index
+    ).where(rt.notna())
 
     table = pd.DataFrame(
         {
@@ -144,15 +164,27 @@ def load_excel(path: Path, ri_references: Path | None = None) -> Targets:
         if not valid.any():
             continue
         if ion_column:
-            ion = [str(v).strip() if isinstance(v, str) and v.strip() else None for v in raw.loc[valid, ion_column]]
+            ion = [
+                str(v).strip() if isinstance(v, str) and v.strip() else None
+                for v in raw.loc[valid, ion_column]
+            ]
         else:
             ion = [None] * int(valid.sum())
         ions.append(
             pd.DataFrame(
-                {"name": raw.loc[valid, EXCEL_NAME_COLUMN], "rank": rank, "ion": pd.Series(ion, dtype=object, index=raw.index[valid]), "exact_mass": exact[valid]}
+                {
+                    "name": raw.loc[valid, EXCEL_NAME_COLUMN],
+                    "rank": rank,
+                    "ion": pd.Series(ion, dtype=object, index=raw.index[valid]),
+                    "exact_mass": exact[valid],
+                }
             )
         )
-    ions = pd.concat(ions, ignore_index=True) if ions else pd.DataFrame(columns=ION_COLUMNS)
+    ions = (
+        pd.concat(ions, ignore_index=True)
+        if ions
+        else pd.DataFrame(columns=ION_COLUMNS)
+    )
     ions["mass"] = ions["exact_mass"].round().astype(int)
 
     aliases = {alias: name for alias, name in aliases.items() if name in table.index}
@@ -170,7 +202,9 @@ def load_targets(source: Path, **options) -> Targets:
     source = Path(source)
     loader = LOADERS.get(source.suffix.lower())
     if loader is None:
-        raise ValueError(f"No target loader for {source.suffix!r} files (known: {sorted(LOADERS)})")
+        raise ValueError(
+            f"No target loader for {source.suffix!r} files (known: {sorted(LOADERS)})"
+        )
     targets = loader(source, **options)
     targets.check()
     return targets
@@ -185,12 +219,18 @@ def store_targets(con: sqlite3.Connection, targets: Targets, source: str) -> Non
         con.execute("DELETE FROM target")
         _insert(con, "target", table[["name"] + TARGET_COLUMNS])
         _insert(con, "target_ion", targets.ions[ION_COLUMNS])
-        _insert(con, "target_alias", pd.DataFrame(list(targets.aliases.items()), columns=["alias", "name"]))
+        _insert(
+            con,
+            "target_alias",
+            pd.DataFrame(list(targets.aliases.items()), columns=["alias", "name"]),
+        )
         for key, value in {
             "targets_source": source,
             "targets_imported_at": datetime.now().isoformat(timespec="seconds"),
         }.items():
-            con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+            con.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value)
+            )
 
 
 def _insert(con: sqlite3.Connection, table: str, df: pd.DataFrame) -> None:

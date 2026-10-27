@@ -8,13 +8,13 @@ ratio and it steps with date -> instrument (fragmentation drift). If it
 scatters between neighbouring air runs and not in std/tank -> co-eluting compound.
 Slow on the external drive (~10 min for ~300 runs): run in background.
 """
+
 import argparse
 import glob
 
+import common as C
 import numpy as np
 import pandas as pd
-
-import common as C
 
 ap = argparse.ArgumentParser()
 ap.add_argument("rt", type=float)
@@ -23,7 +23,9 @@ ap.add_argument("mzs")
 ap.add_argument("--n-air", type=int, default=160)
 ap.add_argument("--n-std", type=int, default=60)
 ap.add_argument("--years", default="2024,2025,2026")
-ap.add_argument("--search", type=float, default=20.0, help="+- s around rt to find the ref_mz apex")
+ap.add_argument(
+    "--search", type=float, default=20.0, help="+- s around rt to find the ref_mz apex"
+)
 ap.add_argument("--out", default="trend.csv")
 a = ap.parse_args()
 mzs = [int(x) for x in a.mzs.split(",")]
@@ -33,8 +35,21 @@ for y in a.years.split(","):
     runs += glob.glob(str(C.TOF_ROOT / y / "*.alpinac"))
 runs = sorted(runs)
 rng = np.random.default_rng(0)
-pick = lambda k, n: list(rng.choice([r for r in runs if k in r], min(n, sum(k in r for r in runs)), replace=False))
-sel = [r for r in runs if ".tank." in r] + pick(".air.", a.n_air) + pick(".std.", a.n_std)
+
+
+def pick(k, n):
+    return list(
+        rng.choice(
+            [r for r in runs if k in r],
+            min(n, sum(k in r for r in runs)),
+            replace=False,
+        )
+    )
+
+
+sel = (
+    [r for r in runs if ".tank." in r] + pick(".air.", a.n_air) + pick(".std.", a.n_std)
+)
 
 rows = []
 for r in sel:
@@ -60,7 +75,9 @@ for r in sel:
     rows.append(row)
 
 if not rows:
-    raise SystemExit(f"no run has a m/z {a.ref_mz} peak >= 300 within +-{a.search} s of {a.rt}: no trend evidence")
+    raise SystemExit(
+        f"no run has a m/z {a.ref_mz} peak >= 300 within +-{a.search} s of {a.rt}: no trend evidence"
+    )
 df = pd.DataFrame(rows).sort_values("run")
 df.to_csv(a.out, index=False)
 df["q"] = pd.to_datetime(df.run.str[:6], format="%y%m%d").dt.to_period("Q")
@@ -72,5 +89,7 @@ air = df[df.kind == "air"].sort_values("run")
 for m in mzs:
     k = f"r{m}"
     roll = air[k] - air[k].rolling(9, center=True, min_periods=3).median()
-    print(f"{k}: air overall sd {air[k].std():.2f}, sd around rolling median {roll.std():.2f}")
+    print(
+        f"{k}: air overall sd {air[k].std():.2f}, sd around rolling median {roll.std():.2f}"
+    )
 print(f"\nwritten {a.out}")
