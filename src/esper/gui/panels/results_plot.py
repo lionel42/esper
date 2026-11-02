@@ -11,7 +11,7 @@ from esper.gui.data import EsperData
 from esper.gui.panels.base import BasePanel
 from esper.gui.plotting import make_highlight, make_plot, set_x_axis, time_values
 from esper.gui.selection import Selection
-from esper.gui.style import COLORS, CROSS
+from esper.gui.style import CROSS, runtype_colors
 
 ALL = "all"
 
@@ -25,6 +25,18 @@ Y_OPTIONS = {
     "score": "best_score",
     "score combined": "best_score_combined",
     "n peaks": "n_peaks",
+    # Fit (esper.fitting), main ion: the fitted peak with the largest fit height
+    "fit area sum": "fit_area_sum",
+    "main ion fit area": "main_fit_area",
+    "main ion fit area rel. u": "main_fit_area_rel_u",
+    "main ion fit height": "main_fit_height",
+    "main ion fit rt": "main_fit_rt_s",
+    "main ion fit sigma": "main_fit_sigma_s",
+    "main ion fit tailing": "main_fit_tailing",
+    "main ion fit baseline": "main_fit_baseline",
+    "main ion fit S/N": "main_fit_sn",
+    "main ion mass": "main_mass",
+    "n fitted peaks": "n_fitted",
 }
 X_OPTIONS = ["Time", "Measurement", "rt"]
 
@@ -110,11 +122,13 @@ class ResultsPlotPanel(BasePanel):
         df = df[np.isfinite(df["x"]) & np.isfinite(df["y"])]
         self.plotted = df
 
-        for i, stype in enumerate(self.data.sample_types()):
+        sample_types = self.data.sample_types()
+        colors = runtype_colors(sample_types)
+        for stype in sample_types:
             sub = df[df["sample_type"] == stype]
             if sub.empty:
                 continue
-            color = COLORS[i % len(COLORS)]
+            color = colors[stype]
             item = pg.ScatterPlotItem(
                 sub["x"].to_numpy(),
                 sub["y"].to_numpy(),

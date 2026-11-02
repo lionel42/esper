@@ -81,3 +81,25 @@ def test_legacy_version_3_without_schema_info(tmp_path):
     _make_newer(tmp_path, min_reader=None, version=3)
     db.connect(tmp_path, create=True).close()
     assert _version(tmp_path) == 3
+
+
+def test_upgrade_adds_the_fit_columns(tmp_path):
+    # A database of version 2: the tables of SCHEMA, without ADDED_COLUMNS
+    with sqlite3.connect(db.db_path(tmp_path)) as con:
+        con.executescript(db.SCHEMA)
+        con.execute(
+            "INSERT INTO peak (measurement_id, peak_idx, mass, rt_s) VALUES (1, 0, 43, 100.0)"
+        )
+        con.execute("PRAGMA user_version = 2")
+    con = db.connect(tmp_path, create=True)
+    columns = db.table_columns(con, "peak")
+    assert {"source", "fit_rt_s", "fit_area"} <= set(columns)
+    assert "fit_version" in db.table_columns(con, "measurement")
+    assert con.execute("SELECT source, fit_area FROM peak").fetchone() == (
+        "extraction",
+        None,
+    )
+    con.close()
+    # again: nothing to add
+    db.connect(tmp_path, create=True).close()
+    assert _version(tmp_path) == db.SCHEMA_VERSION

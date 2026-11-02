@@ -19,16 +19,44 @@ def _cross() -> QPainterPath:
 
 CROSS = _cross()
 
+# Unrelated series (masses in the search view, run types not in RUNTYPE_COLORS): readable
+# on white and unlike the run type colors
 COLORS = [
-    "#1f9e1f",
-    "#ff9900",
-    "#9b30b0",
-    "#202020",
-    "#1030e0",
-    "#a00000",
-    "#e070d0",
-    "#008080",
+    "#009e9e",  # teal
+    "#e8505b",  # coral
+    "#8a7d00",  # olive
+    "#3d9be0",  # sky blue
+    "#8b4513",  # brown
+    "#7f7f7f",  # grey
+    "#5a3e9b",  # indigo
+    "#2f4f4f",  # dark slate
 ]
+
+# Run types (sample_type) by default, by prefix (e.g. 'test' for 'testT1'); the others get COLORS
+RUNTYPE_COLORS = {
+    "air": "#0000e6",
+    "std": "#990000",
+    "tank": "#ff9900",
+    "cal": "#008000",
+    "blank": "#9919b3",
+    "tert": "#cc66cc",
+    "labair": "#000000",
+}
+
+
+def runtype_colors(runtypes: list[str]) -> dict[str, str]:
+    """Color of each run type: from RUNTYPE_COLORS (longest matching prefix), else from COLORS."""
+    colors = {}
+    others = 0
+    for runtype in runtypes:
+        prefixes = [k for k in RUNTYPE_COLORS if runtype.startswith(k)]
+        if prefixes:
+            colors[runtype] = RUNTYPE_COLORS[max(prefixes, key=len)]
+        else:
+            colors[runtype] = COLORS[others % len(COLORS)]
+            others += 1
+    return colors
+
 
 # Overlaid chromatograms, the main mass being black: a few (the qualifiers) get these colors,
 # more get colors sampled from magma, without its ends (near black: the main mass; near

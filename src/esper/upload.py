@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import shutil
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -32,6 +32,8 @@ class UploadSummary:
     skipped_unchanged: list[str]
     skipped_incomplete: list[str]
     failed: list[tuple[str, str]]
+    # Imported, but the fit failed
+    fit_failed: list[tuple[str, str]] = field(default_factory=list)
 
 
 def find_alpinac_folders(source: Path) -> list[Path]:
@@ -67,22 +69,10 @@ def _copy_chromatograms(result: AlpinacResult, data_dir: Path) -> str | None:
     return str(target.relative_to(data_dir))
 
 
-def _insert(con: sqlite3.Connection, table: str, df: pd.DataFrame) -> None:
-    if df.empty:
-        return
-    df = df.astype(object).where(df.notna(), None)
-    columns = ", ".join(df.columns)
-    placeholders = ", ".join("?" * len(df.columns))
-    con.executemany(
-        f"INSERT INTO {table} ({columns}) VALUES ({placeholders})",
-        df.itertuples(index=False, name=None),
-    )
-
-
 def store_result(
     con: sqlite3.Connection, result: AlpinacResult, chromatogram_file: str | None
-) -> None:
-    """Replace the measurement in the database (single transaction)."""
+) -> int:
+    """Replace the measurement in the database (single transaction), returns its id."""
     stat = result.pipeline_file.stat()
     with con:
         con.execute("DELETE FROM measurement WHERE name = ?", (result.name,))
@@ -113,22 +103,35 @@ def store_result(
 
         if result.mass_cal is not None:
             mc = result.mass_cal
-            _insert(
+            db.insert(
                 con,
                 "mass_cal",
                 pd.DataFrame(
                     [{"measurement_id": mid, "ionization": mc.ionization, **mc.params}]
                 ),
             )
-            _insert(con, "mass_cal_rt", mc.rt.assign(measurement_id=mid))
-            _insert(con, "mass_cal_mass", mc.masses.assign(measurement_id=mid))
+            db.insert(con, "mass_cal_rt", mc.rt.assign(measurement_id=mid))
+            db.insert(con, "mass_cal_mass", mc.masses.assign(measurement_id=mid))
 
-        _insert(con, "compound", result.compounds.assign(measurement_id=mid))
-        _insert(con, "compound_candidate", result.candidates.assign(measurement_id=mid))
-        _insert(con, "peak", result.peaks.assign(measurement_id=mid))
+        db.insert(con, "compound", result.compounds.assign(measurement_id=mid))
+        db.insert(
+            con, "compound_candidate", result.candidates.assign(measurement_id=mid)
+        )
+        db.insert(con, "peak", result.peaks.assign(measurement_id=mid))
+    return mid
 
 
-def upload(source: Path, data_dir: Path, force: bool = False) -> UploadSummary:
+def upload(
+    source: Path,
+    data_dir: Path,
+    force: bool = False,
+    fit: bool = True,
+    workers: int | None = None,
+) -> UploadSummary:
+    """Import the .alpinac folders of ``source``, and fit their peaks (``esper.fitting``) if ``fit``.
+
+    ``workers``: processes of the fit (None: the number of CPUs).
+    """
     data_dir = Path(data_dir)
     summary = UploadSummary([], [], [], [])
     con = db.connect(data_dir, create=True)
@@ -150,7 +153,7 @@ def upload(source: Path, data_dir: Path, force: bool = False) -> UploadSummary:
                 for w in result.warnings:
                     logger.warning(f"{name}: {w}")
                 chromatogram_file = _copy_chromatograms(result, data_dir)
-                store_result(con, result, chromatogram_file)
+                mid = store_result(con, result, chromatogram_file)
             except Exception as e:
                 logger.exception(f"{name}: import failed")
                 summary.failed.append((name, repr(e)))
@@ -159,6 +162,33 @@ def upload(source: Path, data_dir: Path, force: bool = False) -> UploadSummary:
                 f"{name}: {len(result.peaks)} peaks, {len(result.compounds)} compounds"
             )
             summary.imported.append(name)
+            if fit:
+                _fit(con, name, mid, data_dir, workers, summary)
     finally:
         con.close()
     return summary
+
+
+def _fit(
+    con: sqlite3.Connection,
+    name: str,
+    mid: int,
+    data_dir: Path,
+    workers: int | None,
+    summary: UploadSummary,
+) -> None:
+    from esper.fitting import SOURCE_FIT, fit_measurement
+
+    try:
+        table = fit_measurement(con, mid, data_dir, workers)
+    except Exception as e:
+        logger.exception(f"{name}: fit failed")
+        summary.fit_failed.append((name, repr(e)))
+        return
+    if table is None:
+        logger.warning(f"{name}: no chromatograms, not fitted")
+        return
+    logger.info(
+        f"{name}: {int(table['fit_rt_s'].notna().sum())} peaks fitted,"
+        f" {int((table['source'] == SOURCE_FIT).sum())} split or added by the fit"
+    )

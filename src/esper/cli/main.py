@@ -1,4 +1,4 @@
-"""Command line interface: ``esper gui``, ``esper upload`` and ``esper targets``."""
+"""Command line interface: ``esper gui``, ``esper upload``, ``esper fit`` and ``esper targets``."""
 
 from __future__ import annotations
 
@@ -19,16 +19,57 @@ def _gui(args: argparse.Namespace) -> int:
 def _upload(args: argparse.Namespace) -> int:
     from esper.upload import upload
 
-    summary = upload(args.source, args.data_dir, force=args.force)
+    summary = upload(
+        args.source,
+        args.data_dir,
+        force=args.force,
+        fit=not args.no_fit,
+        workers=args.workers,
+    )
     print(
         f"imported: {len(summary.imported)}, "
         f"unchanged: {len(summary.skipped_unchanged)}, "
         f"incomplete: {len(summary.skipped_incomplete)}, "
-        f"failed: {len(summary.failed)}"
+        f"failed: {len(summary.failed)}, "
+        f"fit failed: {len(summary.fit_failed)}"
     )
     for name, error in summary.failed:
         print(f"  FAILED {name}: {error}", file=sys.stderr)
-    return 1 if summary.failed else 0
+    for name, error in summary.fit_failed:
+        print(f"  FIT FAILED {name}: {error}", file=sys.stderr)
+    return 1 if summary.failed or summary.fit_failed else 0
+
+
+def _fit(args: argparse.Namespace) -> int:
+    from esper import db
+    from esper.fitting import SOURCE_FIT, fit_measurement
+
+    con = db.connect(args.data_dir, create=True)
+    failed = 0
+    try:
+        todo = con.execute(
+            "SELECT measurement_id, name FROM measurement WHERE fit_version IS NULL"
+            " ORDER BY acq_datetime, name"
+        ).fetchall()
+        print(f"measurements to fit: {len(todo)}")
+        for mid, name in todo:
+            try:
+                table = fit_measurement(con, mid, args.data_dir, args.workers)
+            except Exception as e:
+                logging.exception(f"{name}: fit failed")
+                print(f"  FIT FAILED {name}: {e!r}", file=sys.stderr)
+                failed += 1
+                continue
+            if table is None:
+                print(f"  {name}: no chromatograms")
+                continue
+            print(
+                f"  {name}: {int(table['fit_rt_s'].notna().sum())} of {len(table)} peaks fitted,"
+                f" {int((table['source'] == SOURCE_FIT).sum())} split or added by the fit"
+            )
+    finally:
+        con.close()
+    return 1 if failed else 0
 
 
 def _targets(args: argparse.Namespace) -> int:
@@ -99,7 +140,23 @@ def main(argv: list[str] | None = None) -> int:
     p_upload.add_argument(
         "-f", "--force", action="store_true", help="reimport unchanged measurements"
     )
+    p_upload.add_argument(
+        "--no-fit", action="store_true", help="do not fit the peaks (see esper fit)"
+    )
+    p_upload.add_argument(
+        "-j", "--workers", type=int, help="processes of the fit (default: all CPUs)"
+    )
     p_upload.set_defaults(func=_upload)
+
+    p_fit = sub.add_parser(
+        "fit",
+        help="Fit the peaks of the measurements not fitted yet (to fit one again: upload --force)",
+    )
+    p_fit.add_argument("data_dir", type=Path, help="esper data directory")
+    p_fit.add_argument(
+        "-j", "--workers", type=int, help="processes of the fit (default: all CPUs)"
+    )
+    p_fit.set_defaults(func=_fit)
 
     p_targets = sub.add_parser(
         "targets", help="Import the target compounds (replaces the current ones)"
