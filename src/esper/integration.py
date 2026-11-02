@@ -9,7 +9,7 @@ N_HWHM = 3.0
 
 
 def integration_bounds(peaks, t: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Start and end of each peak [s].
+    """Start and end of each peak [s], NaN for the peaks without ips (see ``has_ips``).
 
     ``start_s``/``stop_s`` are the half maximum crossings, the peak is extended
     to ``N_HWHM`` half widths on each side but not beyond its prominence bases.
@@ -17,12 +17,27 @@ def integration_bounds(peaks, t: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     rt, start_hm, stop_hm = (
         peaks[c].to_numpy(dtype=float) for c in ("rt_s", "start_s", "stop_s")
     )
+    valid = has_ips(peaks)
     last = len(t) - 1
-    left_base = t[np.clip(peaks["left_base_scan"].to_numpy(), 0, last)]
-    right_base = t[np.clip(peaks["right_base_scan"].to_numpy(), 0, last)]
-    start = np.maximum(rt - N_HWHM * (rt - start_hm), left_base)
-    stop = np.minimum(rt + N_HWHM * (stop_hm - rt), right_base)
+
+    def base(column):
+        scans = np.nan_to_num(peaks[column].to_numpy(dtype=float)).astype(int)
+        return np.where(valid, t[np.clip(scans, 0, last)], np.nan)
+
+    start = np.maximum(rt - N_HWHM * (rt - start_hm), base("left_base_scan"))
+    stop = np.minimum(rt + N_HWHM * (stop_hm - rt), base("right_base_scan"))
     return start, stop
+
+
+def has_ips(peaks) -> np.ndarray:
+    """Peaks with the half maximum crossings and prominence bases of the extraction.
+
+    A peak split by the fit (esper.fitting) has none.
+    """
+    columns = ("start_s", "stop_s", "left_base_scan", "right_base_scan")
+    return np.all(
+        [np.isfinite(peaks[c].to_numpy(dtype=float)) for c in columns], axis=0
+    )
 
 
 def peak_area(t: np.ndarray, y: np.ndarray, start: float, stop: float) -> float:

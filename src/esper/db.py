@@ -17,6 +17,7 @@ import logging
 import sqlite3
 from pathlib import Path
 
+import pandas as pd
 import yaml
 
 DB_FILENAME = "esper.sqlite"
@@ -25,15 +26,41 @@ CHROMATOGRAMS_DIRNAME = "chromatograms"
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
-# Versions that are upgraded by creating the missing tables
-COMPATIBLE_VERSIONS = (0, 1, 2)
+SCHEMA_VERSION = 4
+# Versions that are upgraded by creating the missing tables and columns (3: the area
+# columns of an unreleased version, kept)
+COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4)
 # Oldest SCHEMA_VERSION of esper that can still use a database of this version, stored in
 # the database so that older esper versions know whether they can use it. A schema change
 # that only adds tables or nullable columns keeps it, a breaking change sets it to SCHEMA_VERSION.
 MIN_READER_VERSION = 2
 # MIN_READER_VERSION of the schema versions written before schema_info existed
 LEGACY_MIN_READER_VERSIONS = {3: 2}  # 3 only adds nullable columns
+
+# Columns added after version 2: not in the CREATE TABLE statements, added by ALTER
+# TABLE to new and old databases alike (nullable or with a default: older versions can
+# still use the database)
+ADDED_COLUMNS = {
+    "measurement": [
+        ("fit_version", "INTEGER"),  # esper.fitting.FIT_VERSION, NULL: not fitted
+        ("fitted_at", "TEXT"),
+    ],
+    "peak": [
+        # 'extraction': found by alpinac; 'fit': split or added by the fit (esper.fitting)
+        ("source", "TEXT NOT NULL DEFAULT 'extraction'"),
+        # Chromatographic fit (peaxart, Pap-Papai peak on a constant baseline), NULL: not fitted
+        ("fit_rt_s", "REAL"),
+        ("fit_rt_u_s", "REAL"),  # uncertainty (1 sigma)
+        ("fit_height", "REAL"),  # above the baseline [counts]
+        ("fit_height_u", "REAL"),
+        ("fit_sigma_s", "REAL"),  # width (standard deviation for a Gaussian)
+        ("fit_tailing", "REAL"),  # tailing (0: Gaussian)
+        ("fit_baseline", "REAL"),  # [counts]
+        ("fit_area", "REAL"),  # [counts * s]
+        ("fit_area_u", "REAL"),
+        ("fit_sn", "REAL"),  # signal to noise
+    ],
+}
 
 SCHEMA_INFO = """
 CREATE TABLE IF NOT EXISTS schema_info (
@@ -328,9 +355,36 @@ def _upgrade(con: sqlite3.Connection, path: Path, version: int) -> None:
             f"{path} has schema version {version}, expected one of {COMPATIBLE_VERSIONS}"
         )
     con.executescript(SCHEMA + SCHEMA_INFO)
+    add_columns(con)
     con.execute(
         "INSERT OR REPLACE INTO schema_info (key, value) VALUES ('min_reader_version', ?)",
         (MIN_READER_VERSION,),
     )
     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     con.commit()
+
+
+def table_columns(con: sqlite3.Connection, table: str) -> list[str]:
+    return [row[1] for row in con.execute(f"PRAGMA table_info({table})")]
+
+
+def add_columns(con: sqlite3.Connection) -> None:
+    """Add the missing ``ADDED_COLUMNS``."""
+    for table, columns in ADDED_COLUMNS.items():
+        existing = set(table_columns(con, table))
+        for name, sql_type in columns:
+            if name not in existing:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
+
+
+def insert(con: sqlite3.Connection, table: str, df: pd.DataFrame) -> None:
+    """Insert the rows of a data frame (columns named as in the table, NaN/NA as NULL)."""
+    if df.empty:
+        return
+    df = df.astype(object).where(df.notna(), None)
+    columns = ", ".join(df.columns)
+    placeholders = ", ".join("?" * len(df.columns))
+    con.executemany(
+        f"INSERT INTO {table} ({columns}) VALUES ({placeholders})",
+        df.itertuples(index=False, name=None),
+    )

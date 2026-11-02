@@ -17,7 +17,8 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from esper import db
-from esper.integration import integration_bounds, peak_area
+from esper.fitting import FIT_COLUMNS, SOURCE_EXTRACTION
+from esper.integration import has_ips, integration_bounds, peak_area
 from esper.libraries import Spectrum
 from esper.targets import interp_extrapolate
 
@@ -322,11 +323,27 @@ class EsperData:
 
     @lru_cache(maxsize=32)
     def peaks(self, measurement_id: int) -> pd.DataFrame:
-        return self._query(
+        """Peaks of a measurement, with the fit columns (NaN if not fitted).
+
+        ``compound_idx`` is NA for a peak of the fit that matches no compound.
+        """
+        df = self._query(
             "SELECT * FROM peak WHERE measurement_id = ? ORDER BY rt_s",
             (int(measurement_id),),
             index_col="peak_idx",
         )
+        df["compound_idx"] = df["compound_idx"].astype("Int64")
+        # Database from before the fit
+        if "source" not in df:
+            df["source"] = SOURCE_EXTRACTION
+        for column in FIT_COLUMNS:
+            if column not in df:
+                df[column] = np.nan
+        return df
+
+    def is_fitted(self, measurement_id: int) -> bool:
+        """The peaks of the measurement were fitted (esper.fitting)."""
+        return bool(self.peaks(measurement_id)["fit_rt_s"].notna().any())
 
     def compound_peaks(
         self, measurement_id: int, compound_idx: int | tuple[int, ...]
@@ -340,14 +357,20 @@ class EsperData:
     def compound_spectrum(
         self, measurement_id: int, compound_idx: int | tuple[int, ...], intensity: str
     ) -> Spectrum:
-        """Spectrum of a compound (or of several together): unit masses and 'prominence', 'height' or 'area' of its peaks.
+        """Spectrum of a compound (or of several together): unit masses and 'prominence', 'height', 'area' or 'fit_area' of its peaks.
 
         Peaks on the same unit mass are summed. The area is integrated in the
-        chromatograms (reads the chromatogram of every mass of the compound).
+        chromatograms between the bounds from the ips (reads the chromatogram of
+        every mass of the compound; peaks split by the fit have none and are left
+        out); 'fit_area' is the area of the fitted peaks (unfitted peaks left out).
         """
         peaks = self.compound_peaks(measurement_id, compound_idx)
+        if intensity == "fit_area":
+            fitted = peaks[peaks["fit_area"].notna()]
+            return Spectrum.from_pairs(fitted["mass"], fitted["fit_area"])
         if intensity != "area":
             return Spectrum.from_pairs(peaks["mass"], peaks[intensity])
+        peaks = peaks[has_ips(peaks)]
         masses, areas = [], []
         for mass, group in peaks.groupby("mass"):
             series = self.chromatogram(measurement_id, int(mass))
@@ -553,6 +576,11 @@ class EsperData:
             """,
             tuple(candidates),
         )
+        df = df.merge(
+            self._fit_summaries(candidates, where),
+            on=["measurement_id", "compound_idx"],
+            how="left",
+        )
         meas = self.measurements[
             ["name", "acq_datetime", "sample_type", "sample_number"]
         ]
@@ -561,6 +589,54 @@ class EsperData:
             df["measurement_id"]
         )
         return df
+
+    def _fit_summaries(self, candidates: list[str], where: str) -> pd.DataFrame:
+        """Fit of the compounds of ``results``: ``fit_area_sum``, ``n_fitted`` and ``main_*``.
+
+        The main ion is the fitted peak of the compound with the largest fit height;
+        its ``mass`` and ``fit_*`` columns are given as ``main_mass`` and ``main_fit_*``,
+        with ``main_fit_area_rel_u`` its relative area uncertainty.
+        NaN for the compounds without fitted peaks (all of them in a database from before the fit).
+        """
+        main_columns = ["mass", *FIT_COLUMNS]
+        columns = [
+            "measurement_id",
+            "compound_idx",
+            "fit_area_sum",
+            "n_fitted",
+            *(f"main_{c}" for c in main_columns),
+            "main_fit_area_rel_u",
+        ]
+        if "fit_height" not in db.table_columns(self.con, "peak"):
+            return pd.DataFrame(columns=columns)
+        placeholders = ", ".join("?" * len(candidates))
+        peaks = self._query(
+            f"""
+            SELECT p.measurement_id, p.compound_idx, {", ".join(f"p.{c}" for c in main_columns)}
+            FROM {COMPOUND_VIEW} c
+            JOIN peak p
+                ON p.measurement_id = c.measurement_id AND p.compound_idx = c.compound_idx
+            WHERE c.compound_name IN ({placeholders}) {where} AND p.fit_height IS NOT NULL
+            """,
+            tuple(candidates),
+        )
+        keys = ["measurement_id", "compound_idx"]
+        grouped = peaks.groupby(keys)
+        summary = pd.DataFrame(
+            {
+                "fit_area_sum": grouped["fit_area"].sum(min_count=1),
+                "n_fitted": grouped.size(),
+            }
+        )
+        main = (
+            peaks.sort_values("fit_height", ascending=False)
+            .drop_duplicates(keys)
+            .set_index(keys)[main_columns]
+            .add_prefix("main_")
+        )
+        df = summary.join(main).reset_index()
+        df["main_fit_area_rel_u"] = df["main_fit_area_u"] / df["main_fit_area"]
+        return df.reindex(columns=columns)
 
     def search(
         self, masses: list[int], window: str, lo: float, hi: float

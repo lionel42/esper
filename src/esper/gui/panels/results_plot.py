@@ -25,6 +25,18 @@ Y_OPTIONS = {
     "score": "best_score",
     "score combined": "best_score_combined",
     "n peaks": "n_peaks",
+    # Fit (esper.fitting), main ion: the fitted peak with the largest fit height
+    "fit area sum": "fit_area_sum",
+    "main ion fit area": "main_fit_area",
+    "main ion fit area rel. u": "main_fit_area_rel_u",
+    "main ion fit height": "main_fit_height",
+    "main ion fit rt": "main_fit_rt_s",
+    "main ion fit sigma": "main_fit_sigma_s",
+    "main ion fit tailing": "main_fit_tailing",
+    "main ion fit baseline": "main_fit_baseline",
+    "main ion fit S/N": "main_fit_sn",
+    "main ion mass": "main_mass",
+    "n fitted peaks": "n_fitted",
 }
 X_OPTIONS = ["Time", "Measurement", "rt"]
 

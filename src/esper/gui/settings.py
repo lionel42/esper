@@ -24,13 +24,20 @@ SETTINGS_FILE = (
 MAX_RECENT_DATA_DIRS = 10
 
 # Intensity of the measured peaks used for the spectra
-INTENSITIES = ["prominence", "height", "area"]
+INTENSITIES = ["prominence", "height", "area", "fit_area"]
+
+# Peak integration drawn in the chromatograms: bases, baseline and area of the fitted
+# peaks (esper.fitting), from the ips of the extraction (alpinac), the fitted peaks
+# filled, or none
+INTEGRATIONS = ["integration", "ips", "fit", "none"]
 
 
 @dataclass
 class Settings:
     # Spectrum of the measured compounds
     spectrum_intensity: str = "prominence"
+    # Peak integration drawn in the chromatograms
+    chromatogram_integration: str = INTEGRATIONS[0]
     # Spectral libraries, by priority
     libraries: list[Library] = field(default_factory=default_libraries)
     # Matching (alpinac's processing)
@@ -65,6 +72,8 @@ class Settings:
         settings = cls(**known)
         if settings.spectrum_intensity not in INTENSITIES:
             settings.spectrum_intensity = INTENSITIES[0]
+        if settings.chromatogram_integration not in INTEGRATIONS:
+            settings.chromatogram_integration = INTEGRATIONS[0]
         return settings
 
 
