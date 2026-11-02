@@ -11,7 +11,7 @@ from esper.gui.data import EsperData
 from esper.gui.panels.base import BasePanel
 from esper.gui.plotting import make_highlight, make_plot, set_x_axis, time_values
 from esper.gui.selection import Selection
-from esper.gui.style import COLORS, CROSS
+from esper.gui.style import CROSS, runtype_colors
 
 ALL = "all"
 
@@ -122,11 +122,13 @@ class ResultsPlotPanel(BasePanel):
         df = df[np.isfinite(df["x"]) & np.isfinite(df["y"])]
         self.plotted = df
 
-        for i, stype in enumerate(self.data.sample_types()):
+        sample_types = self.data.sample_types()
+        colors = runtype_colors(sample_types)
+        for stype in sample_types:
             sub = df[df["sample_type"] == stype]
             if sub.empty:
                 continue
-            color = COLORS[i % len(COLORS)]
+            color = colors[stype]
             item = pg.ScatterPlotItem(
                 sub["x"].to_numpy(),
                 sub["y"].to_numpy(),
