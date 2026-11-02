@@ -339,11 +339,18 @@ class EsperData:
         for column in FIT_COLUMNS:
             if column not in df:
                 df[column] = np.nan
+        # A column all NULL (e.g. the extraction columns when the fit split every peak)
+        # is read as objects
+        numeric = [c for c in df.columns if c not in ("source", "compound_idx")]
+        df[numeric] = df[numeric].apply(pd.to_numeric)
         return df
 
     def is_fitted(self, measurement_id: int) -> bool:
         """The peaks of the measurement were fitted (esper.fitting)."""
-        return bool(self.peaks(measurement_id)["fit_rt_s"].notna().any())
+        measurements = self.measurements
+        return "fit_version" in measurements and pd.notna(
+            measurements.at[measurement_id, "fit_version"]
+        )
 
     def compound_peaks(
         self, measurement_id: int, compound_idx: int | tuple[int, ...]
@@ -402,11 +409,33 @@ class EsperData:
         return name if isinstance(name, str) else None
 
     def main_ion(self, measurement_id: int, compound_idx: int) -> int | None:
-        """Mass of the most prominent peak of the compound."""
+        """Main ion of a compound: of its target (``target_main_ion``) if it has one, else
+        the mass of its most prominent peak."""
+        name = self.compounds(measurement_id).at[compound_idx, "main_name"]
+        main = self.target_main_ion(name)
+        if main is not None:
+            return main
         peaks = self.compound_peaks(measurement_id, compound_idx)
         if peaks.empty:
             return None
         return int(peaks.loc[peaks["prominence"].idxmax(), "mass"])
+
+    def main_ions(self, measurement_id: int) -> pd.Series:
+        """``main_ion`` of all the compounds of a measurement (Int64, NA without peaks)."""
+        compounds = self.compounds(measurement_id)
+        main = compounds["main_name"].map(self.target_main_ion).astype("Int64")
+        peaks = self.peaks(measurement_id).dropna(subset=["compound_idx"])
+        largest = peaks.loc[
+            peaks.groupby("compound_idx")["prominence"].idxmax().dropna()
+        ]
+        largest = largest.set_index("compound_idx")["mass"].astype("Int64")
+        return main.fillna(largest.reindex(compounds.index))
+
+    def target_main_ion(self, name: str | None) -> int | None:
+        """Main ion (rank 0 of ``target_ion``) of the target a name stands for, None if none."""
+        target = self.target_of(name) if isinstance(name, str) else None
+        masses = self.target_masses(target) if target is not None else []
+        return masses[0] if masses else None
 
     def find_compound(
         self, measurement_id: int, name: str | None, near_rt: float | None = None
@@ -458,7 +487,7 @@ class EsperData:
     def target_ions_all(self) -> pd.DataFrame:
         return self._query_or_empty(
             "SELECT * FROM target_ion ORDER BY name, rank",
-            ["name", "rank", "ion", "exact_mass", "mass"],
+            ["name", "rank", "ion", "exact_mass", "mass", "spectrum_ref"],
         )
 
     @cached_property
@@ -550,7 +579,10 @@ class EsperData:
     # --- across measurements ------------------------------------------------------------
 
     def results(self, name: str, valid_only: bool) -> pd.DataFrame:
-        """All compounds with that main name (a target found under any of its aliases), with peak summaries."""
+        """All compounds with that main name (a target found under any of its aliases), with peak summaries.
+
+        See ``_peak_summaries``; the main ion is the target's (``target_main_ion``).
+        """
         where = "AND c.valid_candidate = 1" if valid_only else ""
         candidates = self.names_of(name)
         placeholders = ", ".join("?" * len(candidates))
@@ -559,27 +591,19 @@ class EsperData:
             SELECT
                 c.measurement_id, c.compound_idx, c.rt_mean_s, c.retention_index,
                 c.compound_name, c.valid_candidate,
-                COUNT(p.peak_idx) AS n_peaks,
-                SUM(p.prominence) AS prominence_sum,
-                MAX(p.height) AS max_height,
-                MAX(p.prominence) AS max_prominence,
                 {BEST_CANDIDATE_SELECT}
             FROM {COMPOUND_VIEW} c
-            JOIN peak p
-                ON p.measurement_id = c.measurement_id AND p.compound_idx = c.compound_idx
             LEFT JOIN compound_candidate cc
                 ON cc.measurement_id = c.measurement_id
                 AND cc.compound_idx = c.compound_idx
                 AND cc.is_best = 1
             WHERE c.compound_name IN ({placeholders}) {where}
-            GROUP BY c.measurement_id, c.compound_idx
             """,
             tuple(candidates),
         )
         df = df.merge(
-            self._fit_summaries(candidates, where),
+            self._peak_summaries(candidates, where, self.target_main_ion(name)),
             on=["measurement_id", "compound_idx"],
-            how="left",
         )
         meas = self.measurements[
             ["name", "acq_datetime", "sample_type", "sample_number"]
@@ -590,60 +614,60 @@ class EsperData:
         )
         return df
 
-    def _fit_summaries(self, candidates: list[str], where: str) -> pd.DataFrame:
-        """Fit of the compounds of ``results``: ``fit_area_sum``, ``n_fitted`` and ``main_*``.
+    def _peak_summaries(
+        self, candidates: list[str], where: str, main_ion: int | None
+    ) -> pd.DataFrame:
+        """Peaks of the compounds of ``results`` (the compounds without peaks left out).
 
-        The main ion is the fitted peak of the compound with the largest fit height;
-        its ``mass`` and ``fit_*`` columns are given as ``main_mass`` and ``main_fit_*``,
-        with ``main_fit_area_rel_u`` its relative area uncertainty.
-        NaN for the compounds without fitted peaks (all of them in a database from before the fit).
+        ``n_peaks``, ``prominence_sum``, ``fit_area_sum`` and ``n_fitted`` (the fitted
+        peaks), and the ``main_*`` columns of the main peak: the most prominent peak on
+        the ``main_ion`` (NaN if the compound has none), or the most prominent peak if
+        no main ion is given; ``main_fit_area_rel_u`` is its relative area uncertainty.
         """
-        main_columns = ["mass", *FIT_COLUMNS]
-        columns = [
-            "measurement_id",
-            "compound_idx",
-            "fit_area_sum",
-            "n_fitted",
-            *(f"main_{c}" for c in main_columns),
-            "main_fit_area_rel_u",
-        ]
-        if "fit_height" not in db.table_columns(self.con, "peak"):
-            return pd.DataFrame(columns=columns)
+        main_columns = ["mass", "height", "prominence", *FIT_COLUMNS]
+        keys = ["measurement_id", "compound_idx"]
+        fitted_db = "fit_height" in db.table_columns(self.con, "peak")
+        selected = main_columns if fitted_db else main_columns[:3]
         placeholders = ", ".join("?" * len(candidates))
         peaks = self._query(
             f"""
-            SELECT p.measurement_id, p.compound_idx, {", ".join(f"p.{c}" for c in main_columns)}
+            SELECT p.measurement_id, p.compound_idx, {", ".join(f"p.{c}" for c in selected)}
             FROM {COMPOUND_VIEW} c
             JOIN peak p
                 ON p.measurement_id = c.measurement_id AND p.compound_idx = c.compound_idx
-            WHERE c.compound_name IN ({placeholders}) {where} AND p.fit_height IS NOT NULL
+            WHERE c.compound_name IN ({placeholders}) {where}
             """,
             tuple(candidates),
-        )
-        keys = ["measurement_id", "compound_idx"]
+        ).reindex(columns=keys + main_columns)
         grouped = peaks.groupby(keys)
         summary = pd.DataFrame(
             {
+                "n_peaks": grouped.size(),
+                "prominence_sum": grouped["prominence"].sum(),
                 "fit_area_sum": grouped["fit_area"].sum(min_count=1),
-                "n_fitted": grouped.size(),
+                "n_fitted": grouped["fit_area"].count(),
             }
         )
+        candidates_main = (
+            peaks if main_ion is None else peaks[peaks["mass"] == main_ion]
+        )
         main = (
-            peaks.sort_values("fit_height", ascending=False)
+            candidates_main.sort_values("prominence", ascending=False)
             .drop_duplicates(keys)
             .set_index(keys)[main_columns]
             .add_prefix("main_")
         )
         df = summary.join(main).reset_index()
         df["main_fit_area_rel_u"] = df["main_fit_area_u"] / df["main_fit_area"]
-        return df.reindex(columns=columns)
+        return df
 
     def search(
         self, masses: list[int], window: str, lo: float, hi: float
     ) -> pd.DataFrame:
         """Peaks of the given masses within an rt [s] or retention index window.
 
-        The retention index of a peak is the one of its compound.
+        The retention index of a peak is the one of its compound (``compound_idx`` NA:
+        a peak of the fit without compound, found by rt only).
         """
         column = {"rt": "p.rt_s", "ri": "c.retention_index"}[window]
         placeholders = ", ".join("?" * len(masses))
@@ -654,12 +678,13 @@ class EsperData:
                 p.height, p.prominence, p.width_s,
                 c.retention_index, c.compound_name, c.valid_candidate
             FROM peak p
-            JOIN compound c
+            LEFT JOIN compound c
                 ON c.measurement_id = p.measurement_id AND c.compound_idx = p.compound_idx
             WHERE p.mass IN ({placeholders}) AND {column} BETWEEN ? AND ?
             """,
             (*[int(m) for m in masses], float(lo), float(hi)),
         )
+        df["compound_idx"] = df["compound_idx"].astype("Int64")
         # Not joined with COMPOUND_VIEW, which SQLite would read whole: the names given by hand afterwards
         if self._has_table("compound_identification") and len(df):
             edited = self._query(

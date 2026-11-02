@@ -8,12 +8,11 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pandas as pd
 import pyqtgraph as pg
-from peaxart.shapes import chromato
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import QCheckBox, QVBoxLayout, QWidgetAction
 
-from esper.fitting import CONVENTION, SOURCE_FIT
+from esper.fitting import SOURCE_FIT, peak_shape
 from esper.gui.data import TIC, EsperData
 from esper.gui.panels.base import BasePanel
 from esper.gui.plotting import add_curve, make_plot
@@ -26,18 +25,19 @@ from esper.integration import integration_bounds, peak_area
 RT_HALF_WINDOW = 30.0
 # Headroom above the selected peak
 Y_ZOOM = 1.5
-# Overlays: key -> menu text. 'rankN' is the Nth most prominent mass of the selected compound.
+# Overlays: key -> menu text. 'rankN' is the Nth most prominent mass of the selected compound
+# (checking the 3rd checks the 2nd too, which can then be unchecked alone).
 OVERLAYS = {
     "rank2": "2nd mass",
     "rank3": "3rd mass",
-    "rank4": "4th mass",
-    "rank5": "5th mass",
     "compound": "all compound masses",
     "peaking": "masses peaking here",
     "all": "all masses",
     "target": "target ions",
     "tic": "TIC",
 }
+# Overlays checked at start: the qualifier ions of the target
+DEFAULT_OVERLAYS = {"target"}
 TARGET_COLOR = "#008000"
 # Half width of the window used for the y zoom around a target not found [s]
 TARGET_HALF_WINDOW = 10.0
@@ -51,9 +51,9 @@ RESCALE_DELAY_MS = 100
 PEAKING_DELAY_MS = 300
 # Integration menu: key -> menu text
 INTEGRATION_TEXTS = {
-    "integration": "integration (fit)",
-    "ips": "ips (extraction)",
-    "fit": "fitted peaks",
+    "fit_integration": "fit: integration",
+    "fit_shapes": "fit: peak shapes",
+    "extraction": "extraction (ips)",
     "none": "none",
 }
 # Fitted peaks: drawn where above this fraction of their height, filled with this
@@ -88,6 +88,34 @@ def peak_compound_label(names, compound_idx: int) -> str:
     if compound_idx == NO_COMPOUND:
         return "no compound"
     return compound_label(names.get(compound_idx), compound_idx)
+
+
+def _pairs(a0, a1) -> np.ndarray:
+    """Points of segments (a0[i], a1[i]), for ``connect="pairs"``."""
+    return np.column_stack([a0, a1]).ravel()
+
+
+def fitted_shapes(t: np.ndarray, peaks, fraction: float):
+    """(peak, slice of t, shape above the baseline) of the fitted peaks of one mass,
+    where the shape is above ``fraction`` of its height."""
+    fitted = peaks[peaks["fit_rt_s"].notna() & (peaks["fit_height"] > 0)]
+    for p in fitted.itertuples():
+        shape = peak_shape(t, p)
+        inside = np.flatnonzero(shape > fraction * p.fit_height)
+        if len(inside) < 2:
+            continue
+        part = slice(inside[0], inside[-1] + 1)
+        yield p, part, shape[part]
+
+
+def lowest_near(t: np.ndarray, y: np.ndarray, rt: np.ndarray) -> np.ndarray:
+    """Lowest signal within LABEL_HALF_WINDOW of each rt (the signal at rt if no sample is)."""
+    out = np.interp(rt, t, y)
+    for i, r in enumerate(rt):
+        near = y[(t >= r - LABEL_HALF_WINDOW) & (t <= r + LABEL_HALF_WINDOW)]
+        if len(near):
+            out[i] = near.min()
+    return out
 
 
 def mass_label(mass: int | None) -> str:
@@ -166,7 +194,9 @@ class ChromatogramPanel(BasePanel):
         current = self._check_sets[0] if self._check_sets else {}
         for key, text in OVERLAYS.items():
             check = QCheckBox(text)
-            check.setChecked(current[key].isChecked() if current else False)
+            check.setChecked(
+                current[key].isChecked() if current else key in DEFAULT_OVERLAYS
+            )
             check.setStyleSheet("QCheckBox { padding: 3px 12px; }")
             check.toggled.connect(lambda value, key=key: self._on_check(key, value))
             action = QWidgetAction(submenu)
@@ -208,10 +238,12 @@ class ChromatogramPanel(BasePanel):
         self.invalidate()
 
     def _on_check(self, key: str, value: bool) -> None:
+        keys = [key, "rank2"] if key == "rank3" and value else [key]
         for checks in self._check_sets:
-            checks[key].blockSignals(True)
-            checks[key].setChecked(value)
-            checks[key].blockSignals(False)
+            for k in keys:
+                checks[k].blockSignals(True)
+                checks[k].setChecked(value)
+                checks[k].blockSignals(False)
         self._keep_range = True
         self.invalidate()
 
@@ -232,7 +264,7 @@ class ChromatogramPanel(BasePanel):
         elif "compound" in checked:
             masses = compound_masses
         else:
-            for rank in range(2, 6):
+            for rank in (2, 3):
                 if f"rank{rank}" in checked and len(compound_masses) >= rank:
                     masses.append(compound_masses[rank - 1])
         if "peaking" in checked and "all" not in checked:
@@ -293,10 +325,9 @@ class ChromatogramPanel(BasePanel):
             title = f"{name}   {html.escape(sel.label or '')}   {title}"
         if series is None:
             title = f"{title} (no chromatogram)"
-        elif self.integration in (
-            "integration",
-            "fit",
-        ) and not self.data.is_fitted(sel.measurement_id):
+        elif self.integration.startswith("fit") and not self.data.is_fitted(
+            sel.measurement_id
+        ):
             title = f"{title} (peaks not fitted)"
         self.title_label.setText(title)
         if self.show_info:
@@ -368,7 +399,7 @@ class ChromatogramPanel(BasePanel):
             self._overlay_items.append(item)
             curves.append(curve)
             # Fitted peaks of the overlaid masses, unless there are too many
-            if self.integration == "fit" and mass is not TIC and show_legend:
+            if self.integration == "fit_shapes" and mass is not TIC and show_legend:
                 self._draw_fits(curve.t, peaks[peaks["mass"] == mass], color)
             if show_legend:
                 self.legend.addItem(item, curve.label)
@@ -457,23 +488,24 @@ class ChromatogramPanel(BasePanel):
         rt = peaks["rt_s"].to_numpy(dtype=float)
         y_apex = np.interp(rt, t, y)
         # Labels below the baseline, under the lowest signal near the peak if none is drawn
-        y_label = np.array(
-            [
-                y[(t >= r - LABEL_HALF_WINDOW) & (t <= r + LABEL_HALF_WINDOW)].min()
-                for r in rt
-            ]
-        )
+        y_label = lowest_near(t, y, rt)
         areas = np.full(len(peaks), np.nan)
-        fitted = self.integration == "integration"
+        integration = self.integration
+        # Not fitted: no integration of the fit (the title says so)
+        if integration.startswith("fit") and not self.data.is_fitted(
+            sel.measurement_id
+        ):
+            integration = "none"
+        fitted = integration == "fit_integration"
         if fitted:
             self._draw_fit_integration(t, peaks)
             areas = peaks["fit_area"].to_numpy(dtype=float)
             base = peaks["fit_baseline"].to_numpy(dtype=float)
             y_label = np.where(np.isfinite(base), base, y_label)
-        elif self.integration == "ips":
+        elif integration == "extraction":
             areas, y_base = self._draw_ips(t, y, peaks)
             y_label = np.where(np.isfinite(y_base), y_base, y_label)
-        elif self.integration == "fit":
+        elif integration == "fit_shapes":
             self._draw_fits(t, peaks, "k", selected=sel.compound_idxs)
             areas = peaks["fit_area"].to_numpy(dtype=float)
             base = peaks["fit_baseline"].to_numpy(dtype=float)
@@ -506,7 +538,7 @@ class ChromatogramPanel(BasePanel):
                     html.escape(peak_compound_label(names, compound_idxs[i])),
                     f"H = {p.height:.0f}",
                 ]
-                if self.integration != "none":
+                if integration != "none":
                     lines.append(
                         "A = –" if np.isnan(areas[i]) else f"A = {areas[i]:.0f}"
                     )
@@ -535,7 +567,7 @@ class ChromatogramPanel(BasePanel):
         return [
             f"{p.fit_rt_s:.2f}",
             compound,
-            f"H = {p.fit_height:.0f}",
+            f"H = {p.height:.0f}",
             area,
             f"σ = {p.fit_sigma_s:.2f}, tail = {p.fit_tailing:.2f}",
             f"S/N = {p.fit_sn:.0f}",
@@ -543,44 +575,32 @@ class ChromatogramPanel(BasePanel):
 
     def _draw_fit_integration(self, t: np.ndarray, peaks) -> None:
         """Bases, constant baseline, apex line and outline of the fitted peaks of one mass."""
-        fitted = peaks[peaks["fit_rt_s"].notna() & (peaks["fit_height"] > 0)]
         pen = pg.mkPen(INTEGRATION_COLOR, width=1)
         starts, stops, bases, rts, tops = [], [], [], [], []
-        for p in fitted.itertuples():
-            shape = chromato(
-                t, p.fit_height, p.fit_rt_s, p.fit_sigma_s, p.fit_tailing, CONVENTION
-            )
-            inside = np.flatnonzero(shape > FIT_BASE_FRACTION * p.fit_height)
-            if len(inside) < 2:
-                continue
-            i0, i1 = inside[0], inside[-1]
-            starts.append(t[i0])
-            stops.append(t[i1])
+        for p, part, shape in fitted_shapes(t, peaks, FIT_BASE_FRACTION):
+            starts.append(t[part][0])
+            stops.append(t[part][-1])
             bases.append(p.fit_baseline)
             rts.append(p.fit_rt_s)
             tops.append(p.fit_baseline + p.fit_height)
             outline = pg.PlotCurveItem(
-                t[i0 : i1 + 1],
-                p.fit_baseline + shape[i0 : i1 + 1],
+                t[part],
+                p.fit_baseline + shape,
                 pen=pg.mkPen(INTEGRATION_COLOR, width=1, style=Qt.PenStyle.DashLine),
             )
             outline.setZValue(-1)
             self._add(outline)
         if not starts:
             return
-
-        def pairs(a0, a1):
-            return np.column_stack([a0, a1]).ravel()
-
         self._add(
             pg.PlotDataItem(
-                pairs(starts, stops), pairs(bases, bases), connect="pairs", pen=pen
+                _pairs(starts, stops), _pairs(bases, bases), connect="pairs", pen=pen
             )
         )
         self._add(
             pg.PlotDataItem(
-                pairs(rts, rts),
-                pairs(bases, tops),
+                _pairs(rts, rts),
+                _pairs(bases, tops),
                 connect="pairs",
                 pen=pg.mkPen("k", width=0.5),
             )
@@ -617,21 +637,18 @@ class ChromatogramPanel(BasePanel):
         )
         areas[valid] = [peak_area(t, y, a, b) for a, b in zip(start, stop)]
 
-        def pairs(a0, a1):
-            return np.column_stack([a0, a1]).ravel()
-
         self._add(
             pg.PlotDataItem(
-                pairs(start, stop),
-                pairs(y_start, y_stop),
+                _pairs(start, stop),
+                _pairs(y_start, y_stop),
                 connect="pairs",
                 pen=pg.mkPen("r", width=1),
             )
         )
         self._add(
             pg.PlotDataItem(
-                pairs(rt, rt),
-                pairs(y_base[valid], y_apex),
+                _pairs(rt, rt),
+                _pairs(y_base[valid], y_apex),
                 connect="pairs",
                 pen=pg.mkPen("k", width=0.5),
             )
@@ -649,15 +666,8 @@ class ChromatogramPanel(BasePanel):
 
     def _draw_fits(self, t: np.ndarray, peaks, color, selected=()) -> None:
         """Fitted peaks of one mass, filled between the baseline and the peak, in the color of the mass."""
-        fitted = peaks[peaks["fit_rt_s"].notna() & (peaks["fit_height"] > 0)]
-        for p in fitted.itertuples():
-            shape = chromato(
-                t, p.fit_height, p.fit_rt_s, p.fit_sigma_s, p.fit_tailing, CONVENTION
-            )
-            visible = shape > FIT_VISIBLE * p.fit_height
-            if visible.sum() < 2:
-                continue
-            tt = t[visible]
+        for p, part, shape in fitted_shapes(t, peaks, FIT_VISIBLE):
+            tt = t[part]
             base = np.full(len(tt), p.fit_baseline)
             alpha = (
                 FIT_ALPHA_SELECTED
@@ -667,9 +677,7 @@ class ChromatogramPanel(BasePanel):
             fill_color = pg.mkColor(color)
             fill_color.setAlpha(alpha)
             lower = pg.PlotCurveItem(tt, base)
-            upper = pg.PlotCurveItem(
-                tt, base + shape[visible], pen=pg.mkPen(color, width=1)
-            )
+            upper = pg.PlotCurveItem(tt, base + shape, pen=pg.mkPen(color, width=1))
             fill = pg.FillBetweenItem(lower, upper, brush=pg.mkBrush(fill_color))
             for item in (fill, upper):
                 item.setZValue(-2)

@@ -62,7 +62,12 @@ class CompoundTablePanel(TablePanel):
             color=valid_color,
         ),
         Column("n_peaks", "peaks", "{:d}", "Number of peaks (masses) of the compound"),
-        Column("main_ion", "ion", "{:d}", "Most prominent mass"),
+        Column(
+            "main_ion",
+            "ion",
+            "{:d}",
+            "Main ion: of the target (reference), else the most prominent mass",
+        ),
         Column(
             "best_spectrum", "spectrum", tooltip="Library spectrum of the best match"
         ),
@@ -81,15 +86,12 @@ class CompoundTablePanel(TablePanel):
         compounds = self.data.compounds(mid)
         peaks = self.data.peaks(mid)
         grouped = peaks.groupby("compound_idx")
-        main_ion = peaks.loc[grouped["prominence"].idxmax()].set_index("compound_idx")[
-            "mass"
-        ]
 
         df = compounds.copy()
         df["compound_idx"] = df.index
         df["name"] = [compound_label(n, i) for i, n in df["main_name"].items()]
         df["n_peaks"] = grouped.size().reindex(df.index).fillna(0).astype(int)
-        df["main_ion"] = main_ion.reindex(df.index).astype("Int64")
+        df["main_ion"] = self.data.main_ions(mid)
         # Pencil: identification edited by hand (identified_at is None if by alpinac)
         df["valid"] = [
             " ".join(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import shutil
 import sqlite3
@@ -132,9 +133,14 @@ def upload(
 
     ``workers``: processes of the fit (None: the number of CPUs).
     """
+    from esper.fitting import fit_pool
+
     data_dir = Path(data_dir)
     summary = UploadSummary([], [], [], [])
     con = db.connect(data_dir, create=True)
+    stack = contextlib.ExitStack()
+    # The processes of the fits, for all the measurements (started at the first fit)
+    pool = stack.enter_context(fit_pool(workers)) if fit else None
     try:
         for folder in find_alpinac_folders(source):
             name = folder.name.removesuffix(ALPINAC_SUFFIX)
@@ -163,8 +169,9 @@ def upload(
             )
             summary.imported.append(name)
             if fit:
-                _fit(con, name, mid, data_dir, workers, summary)
+                _fit(con, name, mid, data_dir, pool, summary)
     finally:
+        stack.close()
         con.close()
     return summary
 
@@ -174,13 +181,14 @@ def _fit(
     name: str,
     mid: int,
     data_dir: Path,
-    workers: int | None,
+    pool,
     summary: UploadSummary,
 ) -> None:
-    from esper.fitting import SOURCE_FIT, fit_measurement
+    from esper.fitting import fit_measurement
+    from esper.fitting import summary as fit_summary
 
     try:
-        table = fit_measurement(con, mid, data_dir, workers)
+        table = fit_measurement(con, mid, data_dir, workers=1, pool=pool)
     except Exception as e:
         logger.exception(f"{name}: fit failed")
         summary.fit_failed.append((name, repr(e)))
@@ -188,7 +196,4 @@ def _fit(
     if table is None:
         logger.warning(f"{name}: no chromatograms, not fitted")
         return
-    logger.info(
-        f"{name}: {int(table['fit_rt_s'].notna().sum())} peaks fitted,"
-        f" {int((table['source'] == SOURCE_FIT).sum())} split or added by the fit"
-    )
+    logger.info(f"{name}: {fit_summary(table)}")
