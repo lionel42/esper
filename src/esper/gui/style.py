@@ -49,7 +49,11 @@ def runtype_colors(runtypes: list[str]) -> dict[str, str]:
     colors = {}
     others = 0
     for runtype in runtypes:
-        prefixes = [k for k in RUNTYPE_COLORS if runtype.startswith(k)]
+        prefixes = [
+            k
+            for k in RUNTYPE_COLORS
+            if isinstance(runtype, str) and runtype.startswith(k)
+        ]
         if prefixes:
             colors[runtype] = RUNTYPE_COLORS[max(prefixes, key=len)]
         else:

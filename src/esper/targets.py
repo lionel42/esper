@@ -20,6 +20,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from esper import db
+from esper.libraries import READERS, Library, default_libraries
+
 logger = logging.getLogger(__name__)
 
 # Columns of Targets.table (index: name)
@@ -34,8 +37,12 @@ TARGET_COLUMNS = [
     "inchi",
     "smiles",
 ]
-# Columns of Targets.ions
-ION_COLUMNS = ["name", "rank", "ion", "exact_mass", "mass"]
+# Columns of Targets.ions (spectrum_ref: the reference spectrum the ion comes from,
+# None if from the target list)
+ION_COLUMNS = ["name", "rank", "ion", "exact_mass", "mass", "spectrum_ref"]
+# Ions of a target without ions in the target list: the largest masses of its
+# reference spectrum (as many as the ions of the Excel list)
+N_SPECTRUM_IONS = 8
 
 
 @dataclass
@@ -43,7 +50,8 @@ class Targets:
     """Target compounds, whatever their source.
 
     - ``table``: one row per target, indexed by name, with ``TARGET_COLUMNS``
-    - ``ions``: expected ions (``ION_COLUMNS``), rank 0 is the main ion
+    - ``ions``: expected ions (``ION_COLUMNS``), rank 0 is the main ion (the
+      quantification ion)
     - ``aliases``: other name -> target name
     """
 
@@ -186,6 +194,7 @@ def load_excel(path: Path, ri_references: Path | None = None) -> Targets:
         else pd.DataFrame(columns=ION_COLUMNS)
     )
     ions["mass"] = ions["exact_mass"].round().astype(int)
+    ions["spectrum_ref"] = None
 
     aliases = {alias: name for alias, name in aliases.items() if name in table.index}
     return Targets(table=table, ions=ions[ION_COLUMNS], aliases=aliases)
@@ -198,7 +207,11 @@ LOADERS: dict[str, Callable[..., Targets]] = {
 }
 
 
-def load_targets(source: Path, **options) -> Targets:
+def load_targets(
+    source: Path, libraries: list[Library] | None = None, **options
+) -> Targets:
+    """Targets of a target list, with the ions of their reference spectrum if the list
+    gives none (``spectrum_ions``; ``libraries``: the default ones, [] for none)."""
     source = Path(source)
     loader = LOADERS.get(source.suffix.lower())
     if loader is None:
@@ -207,7 +220,63 @@ def load_targets(source: Path, **options) -> Targets:
         )
     targets = loader(source, **options)
     targets.check()
+    ions = spectrum_ions(
+        targets, default_libraries() if libraries is None else libraries
+    )
+    if not ions.empty:
+        # (all-None columns left out of the concatenation, they are reindexed)
+        targets.ions = pd.concat(
+            [df.dropna(axis=1, how="all") for df in (targets.ions, ions)],
+            ignore_index=True,
+        ).reindex(columns=ION_COLUMNS)
     return targets
+
+
+def spectrum_ions(targets: Targets, libraries: list[Library]) -> pd.DataFrame:
+    """Ions (``ION_COLUMNS``) of the targets without ions, from their reference spectrum.
+
+    The spectrum is the first found in the enabled libraries (by priority) under the
+    target name, then under its aliases; its ``N_SPECTRUM_IONS`` most intense masses,
+    by decreasing intensity (rank 0: the main ion).
+    """
+    names = {name: [name] for name in targets.table.index}
+    for alias, name in targets.aliases.items():
+        names[name].append(alias)
+    with_ions = set(targets.ions["name"])
+    rows = []
+    for name in targets.table.index:
+        if name in with_ions:
+            continue
+        found = _reference_spectrum(
+            names[name], [lib for lib in libraries if lib.enabled]
+        )
+        if found is None:
+            continue
+        spectrum_ref, spectrum = found
+        order = np.argsort(-spectrum.intensities, kind="stable")[:N_SPECTRUM_IONS]
+        rows += [
+            (name, rank, None, None, int(spectrum.mz[i]), spectrum_ref)
+            for rank, i in enumerate(order)
+        ]
+    return pd.DataFrame(rows, columns=ION_COLUMNS)
+
+
+def _reference_spectrum(names: list[str], libraries: list[Library]):
+    """(spectrum_ref, spectrum) of the first spectrum of one of the names, None if none."""
+    for library in libraries:
+        for name in names:
+            for suffix, read in READERS.items():
+                file = Path(library.path) / f"{name}{suffix}"
+                if not file.is_file():
+                    continue
+                try:
+                    spectrum = read(file)
+                except Exception as e:
+                    logger.warning(f"Skipping unreadable spectrum {file}: {e}")
+                    continue
+                if len(spectrum):
+                    return f"{library.family}_{name}", spectrum
+    return None
 
 
 def store_targets(con: sqlite3.Connection, targets: Targets, source: str) -> None:
@@ -217,9 +286,9 @@ def store_targets(con: sqlite3.Connection, targets: Targets, source: str) -> Non
         con.execute("DELETE FROM target_alias")
         con.execute("DELETE FROM target_ion")
         con.execute("DELETE FROM target")
-        _insert(con, "target", table[["name"] + TARGET_COLUMNS])
-        _insert(con, "target_ion", targets.ions[ION_COLUMNS])
-        _insert(
+        db.insert(con, "target", table[["name"] + TARGET_COLUMNS])
+        db.insert(con, "target_ion", targets.ions[ION_COLUMNS])
+        db.insert(
             con,
             "target_alias",
             pd.DataFrame(list(targets.aliases.items()), columns=["alias", "name"]),
@@ -231,15 +300,3 @@ def store_targets(con: sqlite3.Connection, targets: Targets, source: str) -> Non
             con.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value)
             )
-
-
-def _insert(con: sqlite3.Connection, table: str, df: pd.DataFrame) -> None:
-    if df.empty:
-        return
-    df = df.astype(object).where(df.notna(), None)
-    columns = ", ".join(df.columns)
-    placeholders = ", ".join("?" * len(df.columns))
-    con.executemany(
-        f"INSERT INTO {table} ({columns}) VALUES ({placeholders})",
-        df.itertuples(index=False, name=None),
-    )

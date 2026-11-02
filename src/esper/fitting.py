@@ -6,20 +6,28 @@ the areas are true areas), by groups of overlapping peaks. The fit starts at the
 rts of the extraction and adds peaks where the data show a coelution (peaxart's
 extra-peak search).
 
+The fit improves the extraction: the peak table becomes the peaks of the fit.
 Each fitted peak goes to the nearest extraction peak of its group:
 
-- given one fitted peak, the extraction peak keeps its row (``source``
-  'extraction') with the ``fit_*`` columns filled;
+- given one fitted peak (within its half maximum crossings, or within
+  ``MATCH_HWHM`` half widths if none is within them), the extraction peak keeps
+  its row (``source`` 'extraction') with the ``fit_*`` columns filled;
 - given several, it is split: its row takes the fitted peak nearest to it,
-  new rows the others. All get ``source`` 'fit', ``rt_s`` and ``height`` /
-  ``prominence`` of the fit and NULL for the other extraction columns (they
-  describe the unsplit peak), and are assigned to the compound that matches them
+  new rows the others. All get ``source`` 'fit', ``rt_s`` of the fit, ``height``
+  and ``prominence`` (scipy's definitions, as the extraction) measured on the
+  fitted signal and NULL for the other extraction columns (they describe the
+  unsplit peak), and are assigned to the compound that matches them
   (``match_compounds``), or to none (``compound_idx`` NULL);
 - given none (rejected by the fit: e.g. a straight background explains the
   data as well), the fit columns stay NULL.
 
-A measurement is fitted once (``measurement.fit_version``), after its import: to
-fit it again, import it again (``esper upload --force``).
+The compounds that gain or lose peaks get their summary columns again. Every
+compound gets its largest peak again (``is_max_of_cmp``, and ``main_ion_mass``):
+the fit changes them, and alpinac's merged compounds can have several.
+
+The values of the extraction that the fit replaces are kept (``extraction_peak``,
+``extraction_compound``), so that a measurement can be fitted again
+(``measurement.fit_version`` older than ``FIT_VERSION``, or forced).
 """
 
 from __future__ import annotations
@@ -28,7 +36,8 @@ import logging
 import os
 import sqlite3
 import warnings
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Executor, ProcessPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -39,8 +48,9 @@ from esper import db
 
 logger = logging.getLogger(__name__)
 
-# Increase when the fit changes
-FIT_VERSION = 1
+# Increase when the fit changes (2: prominence and height of the fitted signal,
+# extraction kept)
+FIT_VERSION = 2
 # Gaussian convention of peaxart's peak shapes
 CONVENTION = "standard"
 # Iteration limit of each fit: the few fits that do not converge (weak, unresolved
@@ -52,6 +62,9 @@ FRONT_HWHM = 6.0
 TAIL_HWHM = 8.0
 # Half widths of the extraction are clipped to this range [s]
 HWHM_RANGE_S = (0.3, 10.0)
+# A fitted peak outside the half maximum crossings of its extraction peak still takes
+# its row within this many half widths (of each side), if no other is within them
+MATCH_HWHM = 2.0
 
 SOURCE_EXTRACTION = "extraction"
 SOURCE_FIT = "fit"
@@ -69,6 +82,8 @@ FIT_COLUMNS = {
     "fit_area_u": "area_u",
     "fit_sn": "sn",
 }
+# Columns of fit_mass / fit_peaks
+FITTED_COLUMNS = ["peak_idx", *FIT_COLUMNS, "signal_height", "signal_prominence"]
 
 
 def fit_method():
@@ -84,6 +99,20 @@ def fit_method():
     )
 
 
+def peak_shape(t: np.ndarray, peak) -> np.ndarray:
+    """Signal of a fitted peak above its baseline (``fit_*`` columns of a peak row)."""
+    from peaxart.shapes import chromato
+
+    return chromato(
+        t,
+        peak.fit_height,
+        peak.fit_rt_s,
+        peak.fit_sigma_s,
+        peak.fit_tailing,
+        CONVENTION,
+    )
+
+
 def peak_groups(peaks: pd.DataFrame) -> list[tuple[pd.DataFrame, float, float]]:
     """Groups of overlapping peaks of one mass, with the rt range fitted [s]."""
     peaks = peaks.sort_values("rt_s")
@@ -96,52 +125,112 @@ def peak_groups(peaks: pd.DataFrame) -> list[tuple[pd.DataFrame, float, float]]:
         np.nan_to_num(tail, nan=HWHM_RANGE_S[0]),
     )
     lo, hi = rt - FRONT_HWHM * front, rt + TAIL_HWHM * tail
+    # Connected intervals, swept by their start (a broad peak can start before the
+    # narrow ones eluting before it)
+    order = np.argsort(lo, kind="stable")
     groups = []
-    first, end = 0, hi[0] if len(rt) else 0.0
-    for i in range(1, len(rt) + 1):
-        if i == len(rt) or lo[i] >= end:
-            groups.append((peaks.iloc[first:i], float(lo[first:i].min()), float(end)))
-            if i < len(rt):
-                first, end = i, hi[i]
-        else:
-            end = max(end, hi[i])
-    return groups
+    members, end = [], -np.inf
+    for i in order:
+        if members and lo[i] >= end:
+            groups.append(members)
+            members = []
+        members.append(i)
+        end = max(end, hi[i]) if len(members) > 1 else hi[i]
+    if members:
+        groups.append(members)
+    return [
+        (peaks.iloc[sorted(g)], float(lo[g].min()), float(hi[g].max())) for g in groups
+    ]
 
 
-def fit_mass(t: np.ndarray, y: np.ndarray, peaks: pd.DataFrame) -> pd.DataFrame:
-    """Fitted peaks of one mass: ``peak_idx`` (the nearest extraction peak) and the ``fit_*`` columns."""
+def signal_peaks(t: np.ndarray, fitted: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """Height and prominence of fitted peaks of one group, on the fitted signal.
+
+    The fitted signal is the baseline plus all the fitted peaks of the group; the
+    height is its value at the apex, the prominence is scipy's (``find_peaks``, as
+    the extraction). A shoulder (apex not a local maximum) has none by scipy's
+    definition: it gets its prominence alone, its fitted height above the baseline.
+    """
+    from scipy.signal import peak_prominences
+
+    signal = fitted["fit_baseline"].iloc[0] + sum(
+        np.nan_to_num(peak_shape(t, p)) for p in fitted.itertuples()
+    )
+    rt = fitted["fit_rt_s"].to_numpy(dtype=float)
+    nearest = np.abs(t[None, :] - rt[:, None]).argmin(axis=1)
+    # The apex falls between samples: the highest of the nearest one and its neighbours
+    apex = np.array(
+        [max(i - 1, 0) + int(np.argmax(signal[max(i - 1, 0) : i + 2])) for i in nearest]
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # PeakPropertyWarning: a prominence is 0
+        prominence = peak_prominences(signal, apex)[0]
+    shoulder = prominence <= 0
+    prominence[shoulder] = fitted["fit_height"].to_numpy(dtype=float)[shoulder]
+    return signal[apex], prominence
+
+
+def fit_mass(
+    t: np.ndarray, y: np.ndarray, peaks: pd.DataFrame
+) -> tuple[pd.DataFrame, int]:
+    """Fitted peaks of one mass, and the number of warnings of the fits.
+
+    Columns: ``peak_idx`` (the nearest extraction peak), the ``fit_*`` columns and
+    ``signal_height`` / ``signal_prominence`` (``signal_peaks``).
+    """
     method = fit_method()
     rows = []
+    n_warnings = 0
     for group, lo, hi in peak_groups(peaks):
         inside = (t >= lo) & (t <= hi)
         if inside.sum() < 10:
             continue
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
             fitted = method.integrate(t[inside], y[inside], rt=group["rt_s"].to_numpy())
+        n_warnings += len(caught)
         if fitted.empty:
             continue
         rt = group["rt_s"].to_numpy(dtype=float)
         nearest = np.abs(fitted["rt"].to_numpy()[:, None] - rt[None, :]).argmin(axis=1)
         fitted = fitted.rename(columns={v: k for k, v in FIT_COLUMNS.items()})
         fitted["peak_idx"] = group.index.to_numpy()[nearest]
-        rows.append(fitted[["peak_idx", *FIT_COLUMNS]])
+        fitted["signal_height"], fitted["signal_prominence"] = signal_peaks(
+            t[inside], fitted
+        )
+        rows.append(fitted[FITTED_COLUMNS])
     if not rows:
-        return pd.DataFrame(columns=["peak_idx", *FIT_COLUMNS])
-    return pd.concat(rows, ignore_index=True)
+        return pd.DataFrame(columns=FITTED_COLUMNS), n_warnings
+    return pd.concat(rows, ignore_index=True), n_warnings
 
 
-def _fit_mass_task(args) -> pd.DataFrame:
+def _fit_mass_task(args) -> tuple[pd.DataFrame, int]:
     return fit_mass(*args)
 
 
+@contextmanager
+def fit_pool(workers: int | None = None):
+    """Processes for the fits of several measurements (``fit_peaks``); None if ``workers`` is 1."""
+    workers = workers or os.cpu_count() or 1
+    if workers == 1:
+        yield None
+        return
+    with ProcessPoolExecutor(workers) as pool:
+        yield pool
+
+
 def fit_peaks(
-    frame: pd.DataFrame, peaks: pd.DataFrame, workers: int | None = None
+    frame: pd.DataFrame,
+    peaks: pd.DataFrame,
+    workers: int | None = None,
+    pool: Executor | None = None,
 ) -> pd.DataFrame:
     """Fitted peaks of all masses (see ``fit_mass``); ``peaks`` indexed by peak_idx.
 
     ``frame``: the unit mass chromatograms (index: rt [s], columns: masses).
-    ``workers``: processes (None: the number of CPUs, 1: in this process).
+    ``pool``: the processes of the fits (``fit_pool``), else ``workers`` processes
+    are started (None: the number of CPUs, 1: in this process).
+    The number of warnings of the fits is in ``attrs["n_warnings"]``.
     """
     t = frame.index.to_numpy(dtype=float)
     tasks = [
@@ -149,18 +238,30 @@ def fit_peaks(
         for mass, group in peaks.groupby("mass")
         if str(mass) in frame
     ]
-    workers = workers or os.cpu_count() or 1
-    if workers == 1 or len(tasks) < 2:
-        results = [_fit_mass_task(task) for task in tasks]
+    # Largest first, for the load balance
+    tasks.sort(key=lambda task: -len(task[2]))
+
+    def run(pool):
+        if pool is None or len(tasks) < 2:
+            return [_fit_mass_task(task) for task in tasks]
+        return list(pool.map(_fit_mass_task, tasks))
+
+    if pool is None and len(tasks) > 1:
+        with fit_pool(min(workers or os.cpu_count() or 1, len(tasks))) as own:
+            results = run(own)
     else:
-        # Largest first, for the load balance
-        tasks.sort(key=lambda task: -len(task[2]))
-        with ProcessPoolExecutor(min(workers, len(tasks))) as pool:
-            results = list(pool.map(_fit_mass_task, tasks))
-    results = [r for r in results if not r.empty]
-    if not results:
-        return pd.DataFrame(columns=["peak_idx", *FIT_COLUMNS])
-    return pd.concat(results, ignore_index=True)
+        results = run(pool)
+    n_warnings = sum(n for _, n in results)
+    results = [r for r, _ in results if not r.empty]
+    out = (
+        pd.concat(results, ignore_index=True)
+        if results
+        else pd.DataFrame(columns=FITTED_COLUMNS)
+    )
+    out.attrs["n_warnings"] = n_warnings
+    if n_warnings:
+        logger.debug(f"{n_warnings} warnings in the fits")
+    return out
 
 
 # --- compounds of the split peaks ---------------------------------------------------
@@ -262,13 +363,31 @@ def _half_max_interval(peak: pd.Series) -> tuple[float, float]:
     )
 
 
+def _taking_row(peak: pd.Series, group: pd.DataFrame) -> pd.Series:
+    """The fitted peaks given to an extraction peak that are its pieces (see ``fitted_peak_table``)."""
+    start, stop = _half_max_interval(peak)
+    inside = group["fit_rt_s"].between(start, stop)
+    if inside.any():
+        return inside
+    # None within the crossings: the nearest one within MATCH_HWHM half widths
+    rt = peak["rt_s"]
+    near = group["fit_rt_s"].between(
+        rt - MATCH_HWHM * (rt - start), rt + MATCH_HWHM * (stop - rt)
+    )
+    if near.any():
+        nearest = (group.loc[near, "fit_rt_s"] - rt).abs().idxmin()
+        inside[nearest] = True
+    return inside
+
+
 def fitted_peak_table(peaks: pd.DataFrame, fitted: pd.DataFrame) -> pd.DataFrame:
     """The peak table of a measurement with the fit (see the module docstring).
 
     ``peaks``: the extraction peaks, indexed by peak_idx; ``fitted``: ``fit_peaks``.
     The fitted peaks given to an extraction peak (the nearest) split it when
     several are within its half maximum crossings; the others are new peaks.
-    Returns all the peaks, indexed by peak_idx (new peaks after the last one).
+    Returns all the peaks, indexed by peak_idx (new peaks after the last one), with
+    ``is_max_of_cmp`` of all the compounds again.
     """
     table = peaks.copy()
     table["source"] = SOURCE_EXTRACTION
@@ -279,8 +398,7 @@ def fitted_peak_table(peaks: pd.DataFrame, fitted: pd.DataFrame) -> pd.DataFrame
     matched, to_match = [], []  # (peak_idx, fitted row)
     for peak_idx, group in fitted.groupby("peak_idx"):
         peak = peaks.loc[peak_idx]
-        start, stop = _half_max_interval(peak)
-        inside = group["fit_rt_s"].between(start, stop)
+        inside = _taking_row(peak, group)
         distance = (group["fit_rt_s"] - peak["rt_s"]).abs()
         if inside.sum() == 1:
             matched.append((peak_idx, group[inside].iloc[0]))
@@ -310,8 +428,8 @@ def fitted_peak_table(peaks: pd.DataFrame, fitted: pd.DataFrame) -> pd.DataFrame
             source=SOURCE_FIT,
             compound_idx=compounds.iloc[k],
             rt_s=row["fit_rt_s"],
-            height=row["fit_baseline"] + row["fit_height"],
-            prominence=row["fit_height"],
+            height=row["signal_height"],
+            prominence=row["signal_prominence"],
             is_max_of_cmp=0,
         )
         if peak_idx is not None:
@@ -328,34 +446,159 @@ def fitted_peak_table(peaks: pd.DataFrame, fitted: pd.DataFrame) -> pd.DataFrame
         if "measurement_id" in table:
             new["measurement_id"] = table["measurement_id"].iloc[0]
         table = pd.concat([table, new.reindex(columns=table.columns)])
+    _set_max_of_cmp(table, table["compound_idx"].dropna().unique())
     return table
 
 
-def _compound_summaries(table: pd.DataFrame, compound_idxs) -> list[tuple]:
-    """(n_peaks, prominence_sum, rt_mean_s, rt_std_s, compound_idx) of compounds, from
-    the peak table; the rts are None for a compound left without peaks."""
-    rows = []
-    for compound_idx in compound_idxs:
-        peaks = table[table["compound_idx"] == compound_idx]
-        rt = peaks["rt_s"].to_numpy(dtype=float)
-        rows.append(
-            (
-                len(peaks),
-                float(peaks["prominence"].sum()),
-                float(rt.mean()) if len(rt) else None,
-                float(rt.std()) if len(rt) else None,
-                int(compound_idx),
-            )
-        )
-    return rows
+def changed_compounds(peaks: pd.DataFrame, table: pd.DataFrame) -> set[int]:
+    """Compounds that gained, lost or had split peaks with the fit (``peaks``: as extracted)."""
+    old = peaks["compound_idx"]
+    new = table["compound_idx"].reindex(peaks.index)
+    moved = new.ne(old).fillna(True).astype(bool)  # NA: given to no compound
+    return set(old[moved].dropna().astype(int)) | set(
+        table.loc[table["source"] == SOURCE_FIT, "compound_idx"].dropna().astype(int)
+    )
 
 
-def is_fitted(con: sqlite3.Connection, measurement_id: int) -> bool:
+def _set_max_of_cmp(table: pd.DataFrame, compound_idxs) -> None:
+    """``is_max_of_cmp`` of the peaks of these compounds: their most prominent peak (as alpinac)."""
+    peaks = table[table["compound_idx"].isin(list(compound_idxs))]
+    table.loc[peaks.index, "is_max_of_cmp"] = 0
+    largest = peaks.groupby("compound_idx")["prominence"].idxmax().dropna()
+    table.loc[largest.to_numpy(), "is_max_of_cmp"] = 1
+
+
+# Summary columns of the compounds from their peaks (as alpinac), kept in extraction_compound
+COMPOUND_SUMMARY_COLUMNS = [
+    "n_peaks",
+    "prominence_sum",
+    "rt_mean_s",
+    "rt_std_s",
+    "main_ion_mass",
+]
+
+
+def compound_summaries(
+    table: pd.DataFrame, current: pd.DataFrame, compound_idxs
+) -> pd.DataFrame:
+    """``COMPOUND_SUMMARY_COLUMNS`` of compounds from the peak table, as alpinac computes them.
+
+    ``current``: the summaries now (indexed by compound_idx); a compound left without
+    peaks keeps its rts and its main ion.
+    """
+    out = current.reindex(sorted(compound_idxs))[COMPOUND_SUMMARY_COLUMNS].copy()
+    out["n_peaks"] = 0
+    out["prominence_sum"] = 0.0
+    peaks = table[table["compound_idx"].isin(out.index)]
+    grouped = peaks.groupby("compound_idx")
+    has = grouped.size().index.astype(int)
+    out.loc[has, "n_peaks"] = grouped.size().to_numpy()
+    out.loc[has, "prominence_sum"] = grouped["prominence"].sum().to_numpy()
+    out.loc[has, "rt_mean_s"] = grouped["rt_s"].mean().to_numpy()
+    out.loc[has, "rt_std_s"] = grouped["rt_s"].std().to_numpy()  # ddof 1, as pandas
+    main = peaks[peaks["is_max_of_cmp"] == 1].drop_duplicates("compound_idx")
+    out.loc[main["compound_idx"].astype(int).to_numpy(), "main_ion_mass"] = main[
+        "mass"
+    ].to_numpy()
+    return out
+
+
+def summary(table: pd.DataFrame) -> str:
+    """One line on the fit of a measurement (``fit_measurement``)."""
+    text = (
+        f"{int(table['fit_rt_s'].notna().sum())} of {len(table)} peaks fitted,"
+        f" {int((table['source'] == SOURCE_FIT).sum())} split or added by the fit"
+    )
+    n_warnings = table.attrs.get("n_warnings")
+    return f"{text}, {n_warnings} warnings" if n_warnings else text
+
+
+# --- measurements -------------------------------------------------------------------
+
+
+def fit_version(con: sqlite3.Connection, measurement_id: int) -> int | None:
+    """FIT_VERSION of the fit of a measurement, None if not fitted."""
     row = con.execute(
         "SELECT fit_version FROM measurement WHERE measurement_id = ?",
         (int(measurement_id),),
     ).fetchone()
-    return row is not None and row[0] is not None
+    return None if row is None else row[0]
+
+
+def is_fitted(con: sqlite3.Connection, measurement_id: int) -> bool:
+    return fit_version(con, measurement_id) is not None
+
+
+def to_fit(con: sqlite3.Connection, force: bool = False) -> list[tuple[int, str]]:
+    """(measurement_id, name) of the measurements not fitted, or fitted by an older
+    FIT_VERSION (all of them if ``force``), by acquisition time."""
+    where = "" if force else "WHERE fit_version IS NULL OR fit_version < ?"
+    return con.execute(
+        f"SELECT measurement_id, name FROM measurement {where} ORDER BY acq_datetime, name",
+        () if force else (FIT_VERSION,),
+    ).fetchall()
+
+
+def extraction(
+    con: sqlite3.Connection, measurement_id: int
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The peaks as extracted (indexed by peak_idx) and the summaries of the compounds
+    as extracted (indexed by compound_idx), restored from the fit if any.
+
+    Raises if the measurement was fitted without keeping the extraction (FIT_VERSION 1).
+    """
+    mid = int(measurement_id)
+    columns = [
+        c for c in db.table_columns(con, "extraction_peak") if c != "measurement_id"
+    ]
+    peaks = pd.read_sql(
+        "SELECT * FROM peak WHERE measurement_id = ?",
+        con,
+        params=(mid,),
+        index_col="peak_idx",
+    )
+    compounds = pd.read_sql(
+        f"SELECT compound_idx, {', '.join(COMPOUND_SUMMARY_COLUMNS)} FROM compound"
+        " WHERE measurement_id = ?",
+        con,
+        params=(mid,),
+        index_col="compound_idx",
+    )
+    version = fit_version(con, mid)
+    if version is None:
+        return peaks[[c for c in columns if c != "peak_idx"]], compounds
+    if version < 2 and (peaks["source"] == SOURCE_FIT).any():
+        raise ValueError(
+            f"measurement {mid} was fitted without keeping the extraction,"
+            " import it again (esper upload --force)"
+        )
+    kept = pd.read_sql(
+        "SELECT * FROM extraction_peak WHERE measurement_id = ?",
+        con,
+        params=(mid,),
+        index_col="peak_idx",
+    )
+    kept_compounds = pd.read_sql(
+        f"SELECT compound_idx, {', '.join(COMPOUND_SUMMARY_COLUMNS)}"
+        " FROM extraction_compound WHERE measurement_id = ?",
+        con,
+        params=(mid,),
+        index_col="compound_idx",
+    )
+    extracted = peaks[
+        (peaks["source"] == SOURCE_EXTRACTION) & ~peaks.index.isin(kept.index)
+    ]
+    columns = [c for c in columns if c != "peak_idx"]
+    peaks = pd.concat([extracted[columns], kept[columns]]).sort_index()
+    compounds.update(kept_compounds)
+    return peaks, compounds
+
+
+def _changed_rows(before: pd.DataFrame, after: pd.DataFrame) -> pd.Index:
+    """Rows of ``before`` whose values are not the same in ``after`` (NaN equal to NaN)."""
+    after = after.loc[before.index, before.columns]
+    same = (after == before) | (after.isna() & before.isna())
+    return before.index[~same.all(axis=1).to_numpy()]
 
 
 def fit_measurement(
@@ -363,45 +606,71 @@ def fit_measurement(
     measurement_id: int,
     data_dir: Path,
     workers: int | None = None,
+    pool: Executor | None = None,
 ) -> pd.DataFrame | None:
-    """Fit the peaks of a measurement and store the result (single transaction).
+    """Fit the peaks of a measurement (again: from the extraction) and store the result.
 
-    Returns the new peak table, None if the measurement has no chromatograms.
-    Raises if the measurement was already fitted (import it again to fit it again).
+    Single transaction. Returns the new peak table (``attrs["n_warnings"]``: warnings of
+    the fits), None if the measurement has no chromatograms. ``workers``, ``pool``: see
+    ``fit_peaks``.
     """
     mid = int(measurement_id)
-    if is_fitted(con, mid):
-        raise ValueError(f"measurement {mid} is already fitted, import it again")
     (chromatogram_file,) = con.execute(
         "SELECT chromatogram_file FROM measurement WHERE measurement_id = ?", (mid,)
     ).fetchone()
     if chromatogram_file is None:
         return None
+    peaks, compounds = extraction(con, mid)
     frame = pd.read_parquet(Path(data_dir) / chromatogram_file)
-    peaks = pd.read_sql(
-        "SELECT * FROM peak WHERE measurement_id = ?",
+    fitted = fit_peaks(frame, peaks, workers, pool)
+    table = fitted_peak_table(peaks, fitted)
+    table.attrs["n_warnings"] = fitted.attrs.get("n_warnings", 0)
+
+    changed = changed_compounds(peaks, table)
+    kept_peaks = peaks.loc[_changed_rows(peaks, table)]
+    # Compounds whose peaks did not change but whose largest peak did: main ion only
+    new_main = compound_summaries(table, compounds, compounds.index)["main_ion_mass"]
+    old_main = compounds["main_ion_mass"]
+    same = new_main.eq(old_main) | (new_main.isna() & old_main.isna())
+    main_changed = set(compounds.index[~same.to_numpy()]) - changed
+    summaries = compound_summaries(table, compounds, changed)
+    main_only = compounds.loc[sorted(main_changed)].assign(
+        main_ion_mass=new_main.loc[sorted(main_changed)]
+    )
+    # The compounds changed by an earlier fit and not by this one get their values back
+    earlier = pd.read_sql(
+        "SELECT compound_idx FROM extraction_compound WHERE measurement_id = ?",
         con,
         params=(mid,),
-        index_col="peak_idx",
+    )["compound_idx"]
+    restored = (
+        set(compounds.index[compounds.index.isin(earlier)]) - changed - main_changed
     )
-    fitted = fit_peaks(frame, peaks, workers)
-    table = fitted_peak_table(peaks, fitted)
-
-    old = peaks["compound_idx"]
-    new = table["compound_idx"].reindex(peaks.index)
-    moved = new.ne(old).fillna(True).astype(bool)  # NA: given to no compound
-    changed = set(old[moved].dropna().astype(int)) | set(
-        table.loc[table["source"] == SOURCE_FIT, "compound_idx"].dropna().astype(int)
-    )
-    summaries = _compound_summaries(table, sorted(changed))
+    summaries = pd.concat([summaries, main_only, compounds.loc[sorted(restored)]])
+    kept_compounds = compounds.loc[sorted(changed | main_changed)]
     with con:
         con.execute("DELETE FROM peak WHERE measurement_id = ?", (mid,))
+        con.execute("DELETE FROM extraction_peak WHERE measurement_id = ?", (mid,))
+        con.execute("DELETE FROM extraction_compound WHERE measurement_id = ?", (mid,))
         db.insert(con, "peak", table.assign(measurement_id=mid).reset_index())
+        db.insert(
+            con, "extraction_peak", kept_peaks.assign(measurement_id=mid).reset_index()
+        )
+        db.insert(
+            con,
+            "extraction_compound",
+            kept_compounds.assign(measurement_id=mid).reset_index(),
+        )
+        assignments = ", ".join(f"{c} = ?" for c in COMPOUND_SUMMARY_COLUMNS)
+        db_rows = summaries.astype(object).where(summaries.notna(), None)
         con.executemany(
-            "UPDATE compound SET n_peaks = ?, prominence_sum = ?,"
-            " rt_mean_s = COALESCE(?, rt_mean_s), rt_std_s = COALESCE(?, rt_std_s)"
-            " WHERE measurement_id = ? AND compound_idx = ?",
-            [(*row[:4], mid, row[4]) for row in summaries],
+            f"UPDATE compound SET {assignments} WHERE measurement_id = ? AND compound_idx = ?",
+            [
+                (*row, mid, int(idx))
+                for idx, row in zip(
+                    db_rows.index, db_rows.itertuples(index=False, name=None)
+                )
+            ],
         )
         con.execute(
             "UPDATE measurement SET n_peaks = ?, fit_version = ?, fitted_at = ?"

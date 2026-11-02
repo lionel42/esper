@@ -9,6 +9,8 @@ from peaxart.shapes import chromato, chromato_area
 
 from esper import db
 from esper.fitting import (
+    FIT_COLUMNS,
+    FIT_VERSION,
     SOURCE_EXTRACTION,
     SOURCE_FIT,
     compound_shapes,
@@ -16,6 +18,8 @@ from esper.fitting import (
     fit_peaks,
     fitted_peak_table,
     match_compounds,
+    peak_groups,
+    to_fit,
 )
 
 DT = 1 / 6
@@ -167,7 +171,60 @@ def test_compound_shapes_weighted_by_height():
     assert shapes.loc[A, "sigma_s"] == 1.5
 
 
-def test_fit_measurement(tmp_path):
+def test_prominence_of_the_pieces_is_scipys(table):
+    on_43 = table[table["mass"] == 43].sort_values("fit_rt_s")
+    a, b = on_43.iloc[0], on_43.iloc[1]
+    # A is a local maximum of the fitted signal: scipy's prominence, from the
+    # baseline, includes the tail of B under its apex (more than A alone)
+    assert a["prominence"] > a["fit_height"]
+    assert a["prominence"] == pytest.approx(a["height"] - a["fit_baseline"], rel=0.01)
+    # B is a shoulder (no local maximum, as seen by the extraction): its height alone
+    assert b["prominence"] == b["fit_height"]
+    # heights: the fitted signal at the apex, above zero as find_peaks
+    assert (on_43["height"] > on_43["fit_baseline"] + on_43["fit_height"]).all()
+
+
+def test_largest_peak_of_the_changed_compounds(table):
+    largest = table[table["is_max_of_cmp"] == 1]
+    # A and B gained a piece of m/z 43: their largest peak is recomputed (D, E untouched)
+    assert set(largest["compound_idx"].dropna()) == {A, B}
+    for compound_idx in (A, B):
+        peaks = table[table["compound_idx"] == compound_idx]
+        assert peaks.loc[peaks["is_max_of_cmp"] == 1].index.tolist() == [
+            peaks["prominence"].idxmax()
+        ]
+
+
+def test_fitted_peak_just_outside_the_crossings_takes_the_row():
+    # The half maximum crossings of the extraction are narrow on the tail side: the
+    # fitted apex is 0.2 s beyond them, it is still the same peak
+    peaks = extraction_peaks().loc[[0]]
+    peaks["rt_s"] = RT_A - 0.6
+    peaks["stop_s"] = RT_A - 0.2
+    table = fitted_peak_table(peaks, fit_peaks(chromatograms(), peaks, workers=1))
+    on_85 = table[table["mass"] == 85].sort_values("fit_rt_s")
+    assert on_85.index[0] == 0
+    assert on_85["source"].iloc[0] == SOURCE_EXTRACTION
+    assert on_85["fit_rt_s"].iloc[0] == pytest.approx(RT_A, abs=0.1)
+    assert len(on_85) == 1
+
+
+def test_peak_groups_sorted_by_their_start():
+    # A broad peak whose window starts before the narrow ones eluting before it
+    peaks = pd.DataFrame(
+        {
+            "mass": 1,
+            "rt_s": [100.0, 105.0, 110.0],
+            "start_s": [99.7, 104.7, 100.0],
+            "stop_s": [100.3, 105.3, 110.3],
+        }
+    )
+    ((group, lo, hi),) = peak_groups(peaks)
+    assert group.index.tolist() == [0, 1, 2]
+    assert lo == pytest.approx(110.0 - 6 * 10.0)
+
+
+def _measurement(tmp_path):
     con = db.connect(tmp_path, create=True)
     db.chromatograms_dir(tmp_path).mkdir()
     chromatograms().to_parquet(db.chromatograms_dir(tmp_path) / "m.parquet")
@@ -179,14 +236,19 @@ def test_fit_measurement(tmp_path):
     )
     for idx in (A, B, C, E):
         con.execute(
-            "INSERT INTO compound (measurement_id, compound_idx, n_peaks, prominence_sum, rt_mean_s)"
-            " VALUES (1, ?, 1, 1, 0)",
+            "INSERT INTO compound (measurement_id, compound_idx, n_peaks, prominence_sum,"
+            " rt_mean_s, main_ion_mass) VALUES (1, ?, 1, 1, 0, 1)",
             (idx,),
         )
     peaks = extraction_peaks().reset_index().assign(measurement_id=1)
     db.insert(con, "peak", peaks)
     con.commit()
+    return con
 
+
+def test_fit_measurement(tmp_path):
+    con = _measurement(tmp_path)
+    assert [mid for mid, _ in to_fit(con)] == [1]
     fit_measurement(con, 1, tmp_path, workers=1)
     stored = pd.read_sql("SELECT * FROM peak", con, index_col="peak_idx")
     # one more piece on m/z 43 and 31, the peak not extracted on m/z 85
@@ -194,12 +256,56 @@ def test_fit_measurement(tmp_path):
     assert set(stored["source"]) == {SOURCE_EXTRACTION, SOURCE_FIT}
     on_43 = stored[stored["mass"] == 43].sort_values("rt_s")
     assert on_43["compound_idx"].tolist() == [A, B]
-    n_peaks = dict(con.execute("SELECT compound_idx, n_peaks FROM compound"))
-    assert n_peaks == {A: 3, B: 3, C: 0, E: 0}
+    compounds = pd.read_sql(
+        "SELECT * FROM compound", con, index_col="compound_idx"
+    ).sort_index()
+    assert compounds["n_peaks"].to_dict() == {A: 3, B: 3, C: 0, E: 0}
+    # the main ion of A and B: their largest peak; C, E without peaks keep theirs
+    assert compounds["main_ion_mass"].to_dict() == {
+        A: stored.loc[
+            stored[stored["compound_idx"] == A]["prominence"].idxmax(), "mass"
+        ],
+        B: stored.loc[
+            stored[stored["compound_idx"] == B]["prominence"].idxmax(), "mass"
+        ],
+        C: 1,
+        E: 1,
+    }
     assert con.execute("SELECT n_peaks, fit_version FROM measurement").fetchone() == (
         len(stored),
-        1,
+        FIT_VERSION,
     )
-    with pytest.raises(ValueError, match="already fitted"):
+    assert to_fit(con) == []
+    # the extraction values replaced by the fit are kept: the split peaks (4, 5) and
+    # the peaks whose is_max_of_cmp changed, and the compounds changed
+    kept = pd.read_sql("SELECT * FROM extraction_peak", con, index_col="peak_idx")
+    assert {4, 5} <= set(kept.index)
+    assert kept.loc[4, "compound_idx"] == C
+    assert kept.loc[4, "start_s"] == pytest.approx(T0 + 98.4)
+    kept_compounds = pd.read_sql("SELECT * FROM extraction_compound", con)
+    assert set(kept_compounds["compound_idx"]) == {A, B, C, E}
+    assert (kept_compounds["n_peaks"] == 1).all()
+
+    # Fitted again (forced): from the extraction, same result
+    assert [mid for mid, _ in to_fit(con, force=True)] == [1]
+    fit_measurement(con, 1, tmp_path, workers=1)
+    again = pd.read_sql("SELECT * FROM peak", con, index_col="peak_idx")
+    columns = ["compound_idx", "mass", "source", "rt_s", "is_max_of_cmp", *FIT_COLUMNS]
+    pd.testing.assert_frame_equal(again[columns], stored[columns])
+    assert (
+        pd.read_sql("SELECT * FROM extraction_peak", con, index_col="peak_idx")
+        .sort_index()
+        .equals(kept.sort_index())
+    )
+    con.close()
+
+
+def test_fitted_without_the_extraction_must_be_imported_again(tmp_path):
+    con = _measurement(tmp_path)
+    fit_measurement(con, 1, tmp_path, workers=1)
+    con.execute("UPDATE measurement SET fit_version = 1")
+    con.execute("DELETE FROM extraction_peak")
+    con.commit()
+    with pytest.raises(ValueError, match="import it again"):
         fit_measurement(con, 1, tmp_path, workers=1)
     con.close()

@@ -12,10 +12,37 @@ pip install -e .
 ## Usage
 
 ```
-esper upload /path/to/alpinac/results /path/to/esper/data   # import / update
+esper upload /path/to/alpinac/results /path/to/esper/data   # import / update, and fit the peaks
+esper fit /path/to/esper/data                               # fit the measurements not fitted yet
 esper targets /shared/data/substances.xlsx /path/to/esper/data  # import the target compounds
 esper gui /path/to/esper/data                               # open the GUI
 ```
+
+`upload --no-fit` imports without fitting; `-j N` (upload and fit) uses N processes for the
+fit (default: all CPUs, ~1 min per measurement with 10).
+
+### Peak fit
+
+After the import, the peaks of each mass are fitted in the unit mass chromatograms with
+[peaxart](https://github.com/lionel42/peaxart) (`src/esper/fitting.py`): Pap-Papai peaks
+on a constant baseline, starting at the rts of the extraction, by groups of overlapping
+peaks. peaxart adds a peak where the data show a coelution. The fit is stored in the peak
+table (`fit_rt_s`, `fit_height`, `fit_sigma_s`, `fit_tailing`, `fit_baseline`, `fit_area`,
+their uncertainties `*_u*`, `fit_sn`; NULL when the fit rejected the peak).
+
+Each fitted peak goes to the nearest extraction peak. When several are within its half
+maximum crossings, the extraction peak is split: its row takes the nearest piece, new rows
+the others, all with `source = 'fit'` (else `'extraction'`), their rt and height from the
+fit, and no ips. A fitted peak outside them (a peak the extraction missed) is a new row too.
+These peaks are given to the compound that matches them best: rt within 0.3 peak sigma
+(widened by 3 rt uncertainties) and width within a factor 2 of the compound's (weighted
+medians of its peaks fitted as extracted); a peak matching no compound gets none
+(`compound_idx` NULL). The thresholds are in `fitting.py`, from how well the peaks of a
+compound agree in 251104.1724.air.1 (95 % within 0.28 sigma). Example: the single peak of
+2- and 3-methylhexane on m/z 43 is split in two, one for each.
+
+A measurement is fitted once (`measurement.fit_version`): to fit it again, import it again
+(`esper upload --force`).
 
 ### Application menu / desktop icon
 
@@ -47,7 +74,12 @@ browse for another one.
 ## GUI
 
 - **Chromatograms** (Ctrl+1): one mass of one measurement around the selected compound,
-  with the peaks found at that mass (baseline, rt, compound, height H, area A, width W).
+  with the peaks found at that mass (rt, compound, height H, area A, width W).
+  Right click > Integration: the fit integration (default: bases where the fitted peak falls
+  to 1 % of its height, constant baseline, fitted shape dashed, and the fit values: rt,
+  height, area ± uncertainty, σ, tailing, S/N), the bounds and baseline from the ips of
+  the extraction, the fitted peaks (filled in the color of the mass, also for the overlaid masses; darker for
+  the selected compound), or none (saved in the settings).
   Click on a peak apex to select its compound. Changing file keeps the compound and the mass.
   Right click > Masses overlays other chromatograms: 2nd to 5th most prominent mass of the
   compound, all compound masses, masses peaking here (every mass with a peak apex in the
@@ -57,7 +89,9 @@ browse for another one.
   linked) show the same curves, each rescaled to the range of the main mass in the visible
   window.
 - **Results** (Ctrl+2): one compound (Cmp) across all measurements. Click a point to select
-  that measurement/compound, double click to open its chromatogram.
+  that measurement/compound, double click to open its chromatogram. Each run type has its
+  color (`style.RUNTYPE_COLORS`, by prefix: air blue; std red; tank orange; cal green;
+  blank purple; tert pink; labair black; others from `style.COLORS`).
 - **Search** (Ctrl+3): peaks of some masses (e.g. `85, 87 101-103`) in an rt or retention
   index window, across all measurements. Color = mass, symbol = run type. "only runs with all
   masses" keeps the runs where every mass has a peak in the window. "From selection" fills the
@@ -87,8 +121,8 @@ search box searches the spectra of all the configured libraries, also the disabl
 `library/name` (e.g. `nist_ch/` or `CFC-11`), scored against the compound.
 
 File > Settings (saved in `~/.config/esper/settings.json`):
-- intensity of the measured peaks: prominence (default), height or area (integrated in the
-  chromatograms, slower);
+- intensity of the measured peaks: prominence (default), height, area (integrated in the
+  chromatograms between the ips bounds, slower) or fit_area (of the fitted peaks);
 - spectral libraries (peaksdb folders: NIST `.jdx` and alpinac fragment `.txt` files, read like
   peaksdb's `db_reader` but without it, whose import takes seconds), checked = used, ordered by
   priority: a spectrum in several libraries is taken from the first one. alpinac's references
@@ -102,8 +136,10 @@ The compound table (left of Chromatograms) lists the compounds extracted in the 
 measurement (rt, RI, name, scores, valid, number of peaks, main ion); it is sortable, has a
 text filter and a "valid only" filter, and choosing a row selects the compound.
 
-A is computed by esper from the chromatogram, above a straight baseline over
-±3 half widths at half maximum, limited to the prominence bases of the peak.
+With the ips integration, A is computed by esper from the chromatogram, above a straight
+baseline over ±3 half widths at half maximum, limited to the prominence bases of the peak
+(none for the peaks split by the fit). With the fit integration and the fitted peaks, A is
+`fit_area`.
 
 ## GUI structure (`src/esper/gui/`)
 
@@ -140,7 +176,7 @@ database: /home/me/Data/esper/esper.sqlite
 ```
 
 Without `esper.yaml`, or without `database` in it, the database is `esper.sqlite` in the data
-directory. All commands (`upload`, `targets`, `gui`) follow it; `upload` creates the database
+directory. All commands (`upload`, `fit`, `targets`, `gui`) follow it; `upload` creates the database
 there if it does not exist yet.
 
 Tables: `measurement`, `mass_cal`, `mass_cal_rt`, `mass_cal_mass`, `compound`,

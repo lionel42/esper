@@ -120,10 +120,15 @@ class Selection(QObject):
         self._set(**values)
 
     def select_peak(
-        self, measurement_id: int, compound_idx: int, mass: int, rt: float
+        self, measurement_id: int, compound_idx: int | None, mass: int, rt: float
     ) -> None:
-        """Select the compound of a peak, showing the mass and rt of that peak."""
-        candidate = self.data.candidate_of(measurement_id, compound_idx)
+        """Select the compound of a peak, showing the mass and rt of that peak
+        (``compound_idx`` None: a peak of the fit without compound)."""
+        candidate = (
+            None
+            if compound_idx is None
+            else self.data.candidate_of(measurement_id, compound_idx)
+        )
         self._set(
             measurement_id=measurement_id,
             compound_idx=compound_idx,

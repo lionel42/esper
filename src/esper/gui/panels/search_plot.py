@@ -217,7 +217,10 @@ class SearchPlotPanel(BasePanel):
             return
         measurement_id, compound_idx, mass, rt, *_ = points[0].data()
         self.selection.select_peak(
-            int(measurement_id), int(compound_idx), int(mass), float(rt)
+            int(measurement_id),
+            None if pd.isna(compound_idx) else int(compound_idx),
+            int(mass),
+            float(rt),
         )
         if ev is not None and ev.double():
             self.open_chromatogram.emit()

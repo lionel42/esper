@@ -18,14 +18,15 @@ ALL = "all"
 # Label -> column of EsperData.results
 Y_OPTIONS = {
     "prominence sum": "prominence_sum",
-    "main ion height": "max_height",
-    "main ion prominence": "max_prominence",
+    # Main ion: the target's (target_ion rank 0), else the most prominent peak
+    "main ion height": "main_height",
+    "main ion prominence": "main_prominence",
     "rt": "rt_mean_s",
     "retention index": "retention_index",
     "score": "best_score",
     "score combined": "best_score_combined",
     "n peaks": "n_peaks",
-    # Fit (esper.fitting), main ion: the fitted peak with the largest fit height
+    # Fit (esper.fitting)
     "fit area sum": "fit_area_sum",
     "main ion fit area": "main_fit_area",
     "main ion fit area rel. u": "main_fit_area_rel_u",

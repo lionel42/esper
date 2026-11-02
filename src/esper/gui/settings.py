@@ -26,10 +26,16 @@ MAX_RECENT_DATA_DIRS = 10
 # Intensity of the measured peaks used for the spectra
 INTENSITIES = ["prominence", "height", "area", "fit_area"]
 
-# Peak integration drawn in the chromatograms: bases, baseline and area of the fitted
-# peaks (esper.fitting), from the ips of the extraction (alpinac), the fitted peaks
-# filled, or none
-INTEGRATIONS = ["integration", "ips", "fit", "none"]
+# Peak integration drawn in the chromatograms: of the fit (esper.fitting): bases,
+# baseline and area of the fitted peaks, or the fitted peak shapes filled; of the
+# extraction (alpinac): from its ips; or none
+INTEGRATIONS = ["fit_integration", "fit_shapes", "extraction", "none"]
+# Names of an earlier version
+OLD_INTEGRATIONS = {
+    "integration": "fit_integration",
+    "fit": "fit_shapes",
+    "ips": "extraction",
+}
 
 
 @dataclass
@@ -72,6 +78,9 @@ class Settings:
         settings = cls(**known)
         if settings.spectrum_intensity not in INTENSITIES:
             settings.spectrum_intensity = INTENSITIES[0]
+        settings.chromatogram_integration = OLD_INTEGRATIONS.get(
+            settings.chromatogram_integration, settings.chromatogram_integration
+        )
         if settings.chromatogram_integration not in INTEGRATIONS:
             settings.chromatogram_integration = INTEGRATIONS[0]
         return settings

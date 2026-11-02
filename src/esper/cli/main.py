@@ -8,6 +8,8 @@ import os
 import sys
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 
 def _gui(args: argparse.Namespace) -> int:
     from esper.gui.main_window import run
@@ -42,31 +44,32 @@ def _upload(args: argparse.Namespace) -> int:
 
 def _fit(args: argparse.Namespace) -> int:
     from esper import db
-    from esper.fitting import SOURCE_FIT, fit_measurement
+    from esper.fitting import fit_measurement, fit_pool, summary, to_fit
 
+    if not db.db_path(args.data_dir).is_file():
+        print(f"No esper database at {db.db_path(args.data_dir)}", file=sys.stderr)
+        return 1
+    # create: brings an older schema up to date (fit columns)
     con = db.connect(args.data_dir, create=True)
     failed = 0
     try:
-        todo = con.execute(
-            "SELECT measurement_id, name FROM measurement WHERE fit_version IS NULL"
-            " ORDER BY acq_datetime, name"
-        ).fetchall()
+        todo = to_fit(con, force=args.force)
         print(f"measurements to fit: {len(todo)}")
-        for mid, name in todo:
-            try:
-                table = fit_measurement(con, mid, args.data_dir, args.workers)
-            except Exception as e:
-                logging.exception(f"{name}: fit failed")
-                print(f"  FIT FAILED {name}: {e!r}", file=sys.stderr)
-                failed += 1
-                continue
-            if table is None:
-                print(f"  {name}: no chromatograms")
-                continue
-            print(
-                f"  {name}: {int(table['fit_rt_s'].notna().sum())} of {len(table)} peaks fitted,"
-                f" {int((table['source'] == SOURCE_FIT).sum())} split or added by the fit"
-            )
+        with fit_pool(args.workers) as pool:
+            for mid, name in todo:
+                try:
+                    table = fit_measurement(
+                        con, mid, args.data_dir, workers=1, pool=pool
+                    )
+                except Exception as e:
+                    logger.exception(f"{name}: fit failed")
+                    print(f"  FIT FAILED {name}: {e!r}", file=sys.stderr)
+                    failed += 1
+                    continue
+                if table is None:
+                    print(f"  {name}: no chromatograms")
+                    continue
+                print(f"  {name}: {summary(table)}")
     finally:
         con.close()
     return 1 if failed else 0
@@ -85,9 +88,12 @@ def _targets(args: argparse.Namespace) -> int:
         con.close()
     n_ri = int(targets.table["ri"].notna().sum())
     n_ions = targets.ions["name"].nunique()
+    n_spectrum = targets.ions.loc[
+        targets.ions["spectrum_ref"].notna(), "name"
+    ].nunique()
     print(
-        f"targets: {len(targets.table)} ({n_ri} with retention index, {n_ions} with expected ions), "
-        f"aliases: {len(targets.aliases)}"
+        f"targets: {len(targets.table)} ({n_ri} with retention index, {n_ions} with expected ions,"
+        f" {n_spectrum} of them from their reference spectrum), aliases: {len(targets.aliases)}"
     )
     return 0
 
@@ -150,7 +156,10 @@ def main(argv: list[str] | None = None) -> int:
 
     p_fit = sub.add_parser(
         "fit",
-        help="Fit the peaks of the measurements not fitted yet (to fit one again: upload --force)",
+        help="Fit the peaks of the measurements not fitted yet, or fitted by an older esper",
+    )
+    p_fit.add_argument(
+        "-f", "--force", action="store_true", help="fit all the measurements again"
     )
     p_fit.add_argument("data_dir", type=Path, help="esper data directory")
     p_fit.add_argument(

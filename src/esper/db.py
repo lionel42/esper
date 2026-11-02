@@ -33,7 +33,7 @@ COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4)
 # Oldest SCHEMA_VERSION of esper that can still use a database of this version, stored in
 # the database so that older esper versions know whether they can use it. A schema change
 # that only adds tables or nullable columns keeps it, a breaking change sets it to SCHEMA_VERSION.
-MIN_READER_VERSION = 2
+MIN_READER_VERSION = 4  # 4: the peaks split by the fit have no extraction bounds
 # MIN_READER_VERSION of the schema versions written before schema_info existed
 LEGACY_MIN_READER_VERSIONS = {3: 2}  # 3 only adds nullable columns
 
@@ -59,6 +59,11 @@ ADDED_COLUMNS = {
         ("fit_area", "REAL"),  # [counts * s]
         ("fit_area_u", "REAL"),
         ("fit_sn", "REAL"),  # signal to noise
+    ],
+    "target_ion": [
+        # Library spectrum the ion was taken from (target without ions in the target
+        # list, e.g. 'nist_CFC-12'), NULL: from the target list
+        ("spectrum_ref", "TEXT"),
     ],
 }
 
@@ -193,6 +198,41 @@ CREATE TABLE IF NOT EXISTS compound_identification (
     PRIMARY KEY (measurement_id, compound_idx),
     FOREIGN KEY (measurement_id, compound_idx)
         REFERENCES compound (measurement_id, compound_idx) ON DELETE CASCADE
+);
+
+-- Values of the extraction replaced by the fit (esper.fitting), to fit the measurement
+-- again without importing it again: the peaks the fit changed, as extracted
+CREATE TABLE IF NOT EXISTS extraction_peak (
+    measurement_id      INTEGER REFERENCES measurement ON DELETE CASCADE,
+    peak_idx            INTEGER,
+    compound_idx        INTEGER,
+    mass                INTEGER,
+    rt_s                REAL,
+    height              REAL,
+    prominence          REAL,
+    width_scans         REAL,
+    width_s             REAL,
+    width_height        REAL,
+    left_base_scan      INTEGER,
+    right_base_scan     INTEGER,
+    start_s             REAL,
+    stop_s              REAL,
+    flatness            REAL,
+    tailing_ratio       REAL,
+    is_max_of_cmp       INTEGER,
+    PRIMARY KEY (measurement_id, peak_idx)
+);
+
+-- ... and the summary columns of the compounds the fit changed, as extracted
+CREATE TABLE IF NOT EXISTS extraction_compound (
+    measurement_id      INTEGER REFERENCES measurement ON DELETE CASCADE,
+    compound_idx        INTEGER,
+    n_peaks             INTEGER,
+    prominence_sum      REAL,
+    rt_mean_s           REAL,
+    rt_std_s            REAL,
+    main_ion_mass       INTEGER,
+    PRIMARY KEY (measurement_id, compound_idx)
 );
 
 CREATE INDEX IF NOT EXISTS peak_mass_rt ON peak (mass, rt_s);
