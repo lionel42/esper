@@ -33,6 +33,19 @@ from esper.libraries import Library
 LIBRARY_ROLE = Qt.ItemDataRole.UserRole
 
 
+def _parse_masses(text: str) -> list[float]:
+    """'20, 50 100;230' -> [20.0, 50.0, 100.0, 230.0] (ValueError if not numbers)."""
+    return [
+        float(t)
+        for t in text.replace(";", ",").replace(" ", ",").split(",")
+        if t.strip()
+    ]
+
+
+def _masses_text(masses: list[float]) -> str:
+    return ", ".join(f"{m:g}" for m in masses)
+
+
 class SettingsDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -44,6 +57,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._spectrum_tab(settings), "Spectrum")
         tabs.addTab(self._libraries_tab(settings), "Libraries")
         tabs.addTab(self._matching_tab(settings), "Matching")
+        tabs.addTab(self._mass_cal_tab(settings), "Mass calibration")
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -117,7 +131,7 @@ class SettingsDialog(QDialog):
         self.cutoff.setRange(0, 1000)
         self.cutoff.setSuffix(" Da")
         self.cutoff.setValue(settings.cutoff_mass)
-        self.ignored = QLineEdit(", ".join(f"{m:g}" for m in settings.ignored_masses))
+        self.ignored = QLineEdit(_masses_text(settings.ignored_masses))
         self.ignored.setPlaceholderText("e.g. 28, 32, 40")
         self.normalize = QCheckBox()
         self.normalize.setChecked(settings.normalize)
@@ -128,6 +142,20 @@ class SettingsDialog(QDialog):
         form.addRow("Ignored masses:", self.ignored)
         form.addRow("Normalize intensities:", self.normalize)
         form.addRow("Number of best matches:", self.n_best)
+        return tab
+
+    def _mass_cal_tab(self, settings: Settings) -> QWidget:
+        tab = QWidget()
+        form = QFormLayout(tab)
+        self.drift_masses = QLineEdit(_masses_text(settings.mass_drift_masses))
+        self.drift_masses.setPlaceholderText("e.g. 20, 50, 100, 230")
+        form.addRow("Drift of the m/z:", self.drift_masses)
+        note = QLabel(
+            "m/z whose drift is shown in the mass calibration view, over time and "
+            "within the selected run."
+        )
+        note.setWordWrap(True)
+        form.addRow(note)
         return tab
 
     # --- libraries ------------------------------------------------------------------
@@ -193,17 +221,14 @@ class SettingsDialog(QDialog):
         self.intensity.setCurrentText(settings.spectrum_intensity)
         self._fill_libraries(settings.libraries)
         self.cutoff.setValue(settings.cutoff_mass)
-        self.ignored.setText(", ".join(f"{m:g}" for m in settings.ignored_masses))
+        self.ignored.setText(_masses_text(settings.ignored_masses))
         self.normalize.setChecked(settings.normalize)
         self.n_best.setValue(settings.n_best_matches)
+        self.drift_masses.setText(_masses_text(settings.mass_drift_masses))
 
     def settings(self) -> Settings:
         """The current settings with the values of the dialog (other fields kept)."""
-        ignored = [
-            float(t)
-            for t in self.ignored.text().replace(";", ",").replace(" ", ",").split(",")
-            if t.strip()
-        ]
+        ignored = _parse_masses(self.ignored.text())
         return replace(
             settings_manager().settings,
             spectrum_intensity=self.intensity.currentText(),
@@ -212,14 +237,19 @@ class SettingsDialog(QDialog):
             ignored_masses=ignored,
             normalize=self.normalize.isChecked(),
             n_best_matches=self.n_best.value(),
+            mass_drift_masses=_parse_masses(self.drift_masses.text()),
         )
 
     def accept(self) -> None:
-        try:
-            settings = self.settings()
-        except ValueError:
-            self.ignored.setFocus()
-            self.ignored.selectAll()
-            return
+        for edit in (self.ignored, self.drift_masses):
+            try:
+                _parse_masses(edit.text())
+            except ValueError:
+                edit.setFocus()
+                edit.selectAll()
+                return
+        settings = self.settings()
+        if not settings.mass_drift_masses:
+            settings.mass_drift_masses = Settings().mass_drift_masses
         settings_manager().update(settings)
         super().accept()

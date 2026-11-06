@@ -614,6 +614,75 @@ class EsperData:
         )
         return df
 
+    @cached_property
+    def mass_cal_points(self) -> pd.DataFrame:
+        """Points of the mass calibration of all measurements (``mass_cal_rt``, see
+        ``esper.mass_cal``), with their measurement and calibration mode, in time order.
+
+        ``time``: absolute time of the point (datetime, UTC); for points stored by an older esper,
+        from the measurement name (to the minute) + rt. ``ok`` 0: rejected rt window.
+        """
+        columns = set(db.table_columns(self.con, "mass_cal_rt"))
+        optional = ["time", "ok", "rt_start_s", "rt_stop_s", "n_calibrants", "n_used"]
+        optional += ["rms_ppm", "max_ppm"]
+        select = ", ".join(
+            f"r.{c}" if c in columns else f"NULL AS {c}" for c in optional
+        )
+        meas_columns = set(db.table_columns(self.con, "measurement"))
+        start = "m.acq_start" if "acq_start" in meas_columns else "NULL"
+        df = self._query(
+            f"""
+            SELECT
+                r.measurement_id, r.rt_s, r.p1, r.p2, r.p3, r.p4, r.p5, {select},
+                {start} AS acq_start, mc.mode, mc.n_params,
+                mc.sigma_tofidx_slope, mc.sigma_tofidx_b, mc.alpha_pseudo_voigt
+            FROM mass_cal_rt r
+            JOIN mass_cal mc USING (measurement_id)
+            JOIN measurement m USING (measurement_id)
+            """
+        )
+        meas = self.measurements[
+            ["name", "acq_datetime", "sample_type", "sample_number"]
+        ]
+        df = df.join(meas, on="measurement_id", how="inner")
+        start = pd.to_datetime(df["acq_start"]).fillna(df["acq_datetime"])
+        computed = start + pd.to_timedelta(df["rt_s"], unit="s")
+        df["time"] = pd.to_datetime(df["time"]).fillna(computed)
+        df["ok"] = df["ok"].fillna(1).astype(bool)
+        df["measurement_pos"] = self.measurements.index.get_indexer(
+            df["measurement_id"]
+        )
+        return df.sort_values(["time", "rt_s"], ignore_index=True)
+
+    @lru_cache(maxsize=16)
+    def mass_cal_run(self, measurement_id: int):
+        """Mass calibration of a measurement as a ``masscal.MassCalibration`` (the points used),
+        and its calibrant peaks (``mass_cal_peak``, empty if not stored); (None, peaks) without
+        calibration."""
+        from masscal import MassCalibration, Mode
+
+        points = self.mass_cal_points
+        points = points[(points["measurement_id"] == measurement_id) & points["ok"]]
+        peaks = pd.DataFrame()
+        if self._has_table("mass_cal_peak"):
+            peaks = self._query(
+                "SELECT * FROM mass_cal_peak WHERE measurement_id = ? ORDER BY mz_exact, rt_s",
+                (measurement_id,),
+            )
+            peaks["used"] = peaks["used"].astype(bool)
+        if points.empty:
+            return None, peaks
+        n = points["n_params"].iloc[0]
+        if pd.isna(n):
+            n = points[["p1", "p2", "p3", "p4", "p5"]].notna().sum(axis=1).max()
+        n = int(n)
+        cal = MassCalibration(
+            mode=Mode.from_tofwerk(int(points["mode"].iloc[0])),  # stored: TOFWERK number
+            rt=points["rt_s"].to_numpy(dtype=float),
+            params=points[[f"p{k + 1}" for k in range(n)]].to_numpy(dtype=float),
+        )
+        return cal, peaks
+
     def _peak_summaries(
         self, candidates: list[str], where: str, main_ion: int | None
     ) -> pd.DataFrame:

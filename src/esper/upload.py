@@ -10,9 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-import pandas as pd
-
-from esper import db
+from esper import db, mass_cal
 from esper.alpinac import (
     ALPINAC_SUFFIX,
     DATED_PIPELINE_GLOB,
@@ -55,18 +53,38 @@ def _is_unchanged(con: sqlite3.Connection, name: str, pipeline_file: Path) -> bo
     return row == (stat.st_mtime, stat.st_size)
 
 
-def _copy_chromatograms(result: AlpinacResult, data_dir: Path) -> str | None:
-    if result.chromatogram_file is None:
-        return None
-    target = db.chromatograms_dir(data_dir) / f"{result.name}.parquet"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    src_stat = result.chromatogram_file.stat()
+def _copy_if_changed(source: Path, target: Path) -> None:
+    """Copy ``source`` to ``target`` unless a copy of the same size and mtime is there."""
+    src_stat = source.stat()
     if not (
         target.is_file()
         and target.stat().st_size == src_stat.st_size
         and target.stat().st_mtime == src_stat.st_mtime
     ):
-        shutil.copy2(result.chromatogram_file, target)
+        shutil.copy2(source, target)
+
+
+def _copy_chromatograms(result: AlpinacResult, data_dir: Path) -> str | None:
+    """Copy the chromatograms to ``chromatograms/<name>.parquet``, with the raw sums and
+    the baselines of ``esper chromatograms`` next to them (``<name>.raw.parquet``,
+    ``<name>.baseline.parquet``, :func:`esper.chromatograms.part_path`) when written
+    (not by the legacy pipeline).
+
+    :return: the path of the chromatograms, relative to the data directory (stored).
+    """
+    from esper.chromatograms import part_path
+
+    if result.chromatogram_file is None:
+        return None
+    target = db.chromatograms_dir(data_dir) / f"{result.name}.parquet"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _copy_if_changed(result.chromatogram_file, target)
+    for part in ("raw", "baseline"):
+        source, copy = part_path(result.chromatogram_file, part), part_path(target, part)
+        if source.is_file():
+            _copy_if_changed(source, copy)
+        else:  # e.g. legacy chromatograms now: not the parts of an earlier import
+            copy.unlink(missing_ok=True)
     return str(target.relative_to(data_dir))
 
 
@@ -102,17 +120,7 @@ def store_result(
         )
         mid = cur.lastrowid
 
-        if result.mass_cal is not None:
-            mc = result.mass_cal
-            db.insert(
-                con,
-                "mass_cal",
-                pd.DataFrame(
-                    [{"measurement_id": mid, "ionization": mc.ionization, **mc.params}]
-                ),
-            )
-            db.insert(con, "mass_cal_rt", mc.rt.assign(measurement_id=mid))
-            db.insert(con, "mass_cal_mass", mc.masses.assign(measurement_id=mid))
+        mass_cal.store(con, mid, result.run)
 
         db.insert(con, "compound", result.compounds.assign(measurement_id=mid))
         db.insert(
@@ -153,6 +161,12 @@ def upload(
             if not force and _is_unchanged(con, name, find_pipeline(folder)):
                 logger.info(f"{name}: unchanged, skipped")
                 summary.skipped_unchanged.append(name)
+                # The calibration may have been made again (esper calibrate)
+                try:
+                    mass_cal.refresh(con, name, folder)
+                except Exception as e:
+                    logger.exception(f"{name}: mass calibration failed")
+                    summary.failed.append((name, f"mass calibration: {e!r}"))
                 continue
             try:
                 result = read_alpinac_folder(folder)

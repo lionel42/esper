@@ -51,6 +51,10 @@ class Settings:
     ignored_masses: list[float] = field(default_factory=list)
     normalize: bool = True
     n_best_matches: int = 20
+    # m/z whose drift is shown in the mass calibration view
+    mass_drift_masses: list[float] = field(
+        default_factory=lambda: [20.0, 50.0, 100.0, 230.0]
+    )
     # Data directories opened before, most recent first
     recent_data_dirs: list[str] = field(default_factory=list)
 
@@ -76,6 +80,8 @@ class Settings:
                 for d in known["libraries"]
             ]
         settings = cls(**known)
+        if not settings.mass_drift_masses:
+            settings.mass_drift_masses = Settings().mass_drift_masses
         if settings.spectrum_intensity not in INTENSITIES:
             settings.spectrum_intensity = INTENSITIES[0]
         settings.chromatogram_integration = OLD_INTEGRATIONS.get(
