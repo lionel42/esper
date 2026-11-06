@@ -14,6 +14,7 @@ from esper.fitting import (
     SOURCE_EXTRACTION,
     SOURCE_FIT,
     compound_shapes,
+    fit_changes,
     fit_measurement,
     fit_peaks,
     fitted_peak_table,
@@ -309,3 +310,72 @@ def test_fitted_without_the_extraction_must_be_imported_again(tmp_path):
     with pytest.raises(ValueError, match="import it again"):
         fit_measurement(con, 1, tmp_path, workers=1)
     con.close()
+
+
+def _extraction_tables() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Peaks and compound summaries as extracted, for ``fit_changes``.
+
+    Compound 0: peaks 0 (m/z 43, main) and 1 (m/z 57); 1: peak 2; 2: peak 3; 3: peak 4.
+    """
+    peaks = pd.DataFrame(
+        {
+            "compound_idx": [0, 0, 1, 2, 3],
+            "mass": [43, 57, 69, 85, 101],
+            "rt_s": [100.0, 100.2, 200.0, 300.0, 400.0],
+            "prominence": [10.0, 5.0, 8.0, 3.0, 7.0],
+            "is_max_of_cmp": [1, 0, 1, 1, 1],
+        },
+        index=pd.Index(range(5), name="peak_idx"),
+    )
+    compounds = pd.DataFrame(
+        {
+            "n_peaks": [2, 1, 1, 1],
+            "prominence_sum": [15.0, 8.0, 3.0, 7.0],
+            "rt_mean_s": [100.1, 200.0, 300.0, 400.0],
+            "rt_std_s": [0.14, np.nan, np.nan, np.nan],
+            "main_ion_mass": [43, 69, 85, 101],
+        },
+        index=pd.Index(range(4), name="compound_idx"),
+    )
+    return peaks, compounds
+
+
+def test_fit_changes():
+    peaks, compounds = _extraction_tables()
+    table = peaks.assign(source=SOURCE_EXTRACTION)
+    table["compound_idx"] = table["compound_idx"].astype("Int64")
+    # Compound 0: its m/z 57 peak becomes the largest (main ion only)
+    table.loc[1, "prominence"] = 20.0
+    table.loc[[0, 1], "is_max_of_cmp"] = [0, 1]
+    # Compound 2: its only peak is given to no compound (changed)
+    table.loc[3, "compound_idx"] = pd.NA
+    # Compound 3: changed by an earlier fit, as extracted now (restored)
+    changes = fit_changes(peaks, compounds, table, earlier=[3])
+
+    assert sorted(changes.extraction_peaks.index) == [0, 1, 3]
+    assert sorted(changes.extraction_compounds.index) == [0, 2]
+    pd.testing.assert_frame_equal(changes.extraction_compounds, compounds.loc[[0, 2]])
+    summaries = changes.summaries.sort_index()
+    assert list(summaries.index) == [0, 2, 3]
+    # Main ion only: the other columns as extracted
+    assert summaries.loc[0, "main_ion_mass"] == 57
+    assert summaries.loc[0, "n_peaks"] == 2
+    assert summaries.loc[0, "prominence_sum"] == 15.0
+    # Without peaks: none counted, rt and main ion kept
+    assert summaries.loc[2, "n_peaks"] == 0
+    assert summaries.loc[2, "prominence_sum"] == 0.0
+    assert summaries.loc[2, "rt_mean_s"] == 300.0
+    assert summaries.loc[2, "main_ion_mass"] == 85
+    # Restored: as extracted
+    pd.testing.assert_series_equal(
+        summaries.loc[3], compounds.loc[3], check_dtype=False
+    )
+
+
+def test_fit_changes_nothing_changed():
+    peaks, compounds = _extraction_tables()
+    table = peaks.assign(source=SOURCE_EXTRACTION)
+    changes = fit_changes(peaks, compounds, table)
+    assert changes.extraction_peaks.empty
+    assert changes.extraction_compounds.empty
+    assert changes.summaries.empty

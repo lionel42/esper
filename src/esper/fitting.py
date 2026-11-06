@@ -38,6 +38,7 @@ import sqlite3
 import warnings
 from concurrent.futures import Executor, ProcessPoolExecutor
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -594,11 +595,113 @@ def extraction(
     return peaks, compounds
 
 
+def _same(a, b):
+    """Element-wise equality of two series or frames, NaN equal to NaN.
+
+    A value and NA are not equal (``==`` gives NA with the nullable dtypes, e.g.
+    a compound_idx set to NA by the fit, which ``all`` would skip as true).
+    """
+    equal = (a == b).fillna(False).astype(bool)
+    return equal | (a.isna() & b.isna())
+
+
 def _changed_rows(before: pd.DataFrame, after: pd.DataFrame) -> pd.Index:
     """Rows of ``before`` whose values are not the same in ``after`` (NaN equal to NaN)."""
     after = after.loc[before.index, before.columns]
-    same = (after == before) | (after.isna() & before.isna())
-    return before.index[~same.all(axis=1).to_numpy()]
+    return before.index[~_same(after, before).all(axis=1).to_numpy()]
+
+
+@dataclass
+class FitChanges:
+    """What the fit of a measurement writes besides its peak table (``fit_changes``)."""
+
+    # The peaks as extracted whose values the fit changes (-> extraction_peak)
+    extraction_peaks: pd.DataFrame
+    # The summaries as extracted of the compounds the fit changes (-> extraction_compound)
+    extraction_compounds: pd.DataFrame
+    # COMPOUND_SUMMARY_COLUMNS to write in the compound table, indexed by compound_idx
+    summaries: pd.DataFrame
+
+
+def fit_changes(
+    peaks: pd.DataFrame,
+    compounds: pd.DataFrame,
+    table: pd.DataFrame,
+    earlier=(),
+) -> FitChanges:
+    """The changes of the fit of a measurement, from the extraction to the peak table.
+
+    ``peaks``, ``compounds``: as extracted (``extraction``); ``table``: the peaks with
+    the fit (``fitted_peak_table``); ``earlier``: the compounds changed by an earlier
+    fit (in extraction_compound).
+
+    - the compounds that gained, lost or had split peaks (``changed_compounds``) get
+      all their summary columns again (``compound_summaries``);
+    - the compounds whose peaks did not change but whose largest peak did get only
+      their main ion again;
+    - the compounds changed by an earlier fit and not by this one get their values
+      as extracted back.
+    """
+    changed = changed_compounds(peaks, table)
+    new_main = compound_summaries(table, compounds, compounds.index)["main_ion_mass"]
+    same_main = _same(new_main, compounds["main_ion_mass"])
+    main_changed = sorted(set(compounds.index[~same_main.to_numpy()]) - changed)
+    restored = sorted(
+        set(compounds.index[compounds.index.isin(list(earlier))])
+        - changed
+        - set(main_changed)
+    )
+    summaries = pd.concat(
+        [
+            compound_summaries(table, compounds, changed),
+            compounds.loc[main_changed].assign(
+                main_ion_mass=new_main.loc[main_changed]
+            ),
+            compounds.loc[restored],
+        ]
+    )
+    return FitChanges(
+        extraction_peaks=peaks.loc[_changed_rows(peaks, table)],
+        extraction_compounds=compounds.loc[sorted(changed | set(main_changed))],
+        summaries=summaries,
+    )
+
+
+def _store_fit(
+    con: sqlite3.Connection, mid: int, table: pd.DataFrame, changes: FitChanges
+) -> None:
+    """Replace the peaks of a measurement with the fit (single transaction)."""
+    summaries = changes.summaries[COMPOUND_SUMMARY_COLUMNS]
+    assignments = ", ".join(f"{c} = ?" for c in COMPOUND_SUMMARY_COLUMNS)
+    db_rows = summaries.astype(object).where(summaries.notna(), None)
+    with con:
+        for name in ("peak", "extraction_peak", "extraction_compound"):
+            con.execute(f"DELETE FROM {name} WHERE measurement_id = ?", (mid,))
+        for name, df in (
+            ("peak", table),
+            ("extraction_peak", changes.extraction_peaks),
+            ("extraction_compound", changes.extraction_compounds),
+        ):
+            db.insert(con, name, df.assign(measurement_id=mid).reset_index())
+        con.executemany(
+            f"UPDATE compound SET {assignments} WHERE measurement_id = ? AND compound_idx = ?",
+            [
+                (*row, mid, int(idx))
+                for idx, row in zip(
+                    db_rows.index, db_rows.itertuples(index=False, name=None)
+                )
+            ],
+        )
+        con.execute(
+            "UPDATE measurement SET n_peaks = ?, fit_version = ?, fitted_at = ?"
+            " WHERE measurement_id = ?",
+            (
+                len(table),
+                FIT_VERSION,
+                datetime.now().isoformat(timespec="seconds"),
+                mid,
+            ),
+        )
 
 
 def fit_measurement(
@@ -626,60 +729,12 @@ def fit_measurement(
     table = fitted_peak_table(peaks, fitted)
     table.attrs["n_warnings"] = fitted.attrs.get("n_warnings", 0)
 
-    changed = changed_compounds(peaks, table)
-    kept_peaks = peaks.loc[_changed_rows(peaks, table)]
-    # Compounds whose peaks did not change but whose largest peak did: main ion only
-    new_main = compound_summaries(table, compounds, compounds.index)["main_ion_mass"]
-    old_main = compounds["main_ion_mass"]
-    same = new_main.eq(old_main) | (new_main.isna() & old_main.isna())
-    main_changed = set(compounds.index[~same.to_numpy()]) - changed
-    summaries = compound_summaries(table, compounds, changed)
-    main_only = compounds.loc[sorted(main_changed)].assign(
-        main_ion_mass=new_main.loc[sorted(main_changed)]
-    )
-    # The compounds changed by an earlier fit and not by this one get their values back
-    earlier = pd.read_sql(
-        "SELECT compound_idx FROM extraction_compound WHERE measurement_id = ?",
-        con,
-        params=(mid,),
-    )["compound_idx"]
-    restored = (
-        set(compounds.index[compounds.index.isin(earlier)]) - changed - main_changed
-    )
-    summaries = pd.concat([summaries, main_only, compounds.loc[sorted(restored)]])
-    kept_compounds = compounds.loc[sorted(changed | main_changed)]
-    with con:
-        con.execute("DELETE FROM peak WHERE measurement_id = ?", (mid,))
-        con.execute("DELETE FROM extraction_peak WHERE measurement_id = ?", (mid,))
-        con.execute("DELETE FROM extraction_compound WHERE measurement_id = ?", (mid,))
-        db.insert(con, "peak", table.assign(measurement_id=mid).reset_index())
-        db.insert(
-            con, "extraction_peak", kept_peaks.assign(measurement_id=mid).reset_index()
+    earlier = [
+        row[0]
+        for row in con.execute(
+            "SELECT compound_idx FROM extraction_compound WHERE measurement_id = ?",
+            (mid,),
         )
-        db.insert(
-            con,
-            "extraction_compound",
-            kept_compounds.assign(measurement_id=mid).reset_index(),
-        )
-        assignments = ", ".join(f"{c} = ?" for c in COMPOUND_SUMMARY_COLUMNS)
-        db_rows = summaries.astype(object).where(summaries.notna(), None)
-        con.executemany(
-            f"UPDATE compound SET {assignments} WHERE measurement_id = ? AND compound_idx = ?",
-            [
-                (*row, mid, int(idx))
-                for idx, row in zip(
-                    db_rows.index, db_rows.itertuples(index=False, name=None)
-                )
-            ],
-        )
-        con.execute(
-            "UPDATE measurement SET n_peaks = ?, fit_version = ?, fitted_at = ?"
-            " WHERE measurement_id = ?",
-            (
-                len(table),
-                FIT_VERSION,
-                datetime.now().isoformat(timespec="seconds"),
-                mid,
-            ),
-        )
+    ]
+    _store_fit(con, mid, table, fit_changes(peaks, compounds, table, earlier))
     return table
