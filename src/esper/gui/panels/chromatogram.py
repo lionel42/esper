@@ -410,7 +410,12 @@ class ChromatogramPanel(BasePanel):
         m = self.data.measurements.loc[sel.measurement_id]
         lines = [
             ("sample", f"{m.sample_type} {m.sample_number}"),
-            ("acquired", f"{m.acq_datetime:%Y-%m-%d %H:%M}"),
+            (
+                "acquired",
+                "unknown"
+                if pd.isna(m.acq_datetime)
+                else f"{m.acq_datetime:%Y-%m-%d %H:%M}",
+            ),
             ("peaks", f"{m.n_peaks}"),
             ("compounds", f"{m.n_compounds}"),
             ("mass cal", f"mode {m.mass_cal_mode}, {m.s_per_bin:.4f} s/bin"),
@@ -772,7 +777,10 @@ class RelativeChromatogramPanel(BasePanel):
 
     def rescale(self) -> None:
         """Scale each overlay to the range of the main mass in the visible window."""
-        if self._main is None or not self.isVisible():
+        if self._main is None:
+            return
+        if not self.isVisible():
+            self._outdated = True  # the window may have changed: rescaled when shown
             return
         x0, x1 = self.plot.viewRange()[0]
         t, y = self._main.t, self._main.y

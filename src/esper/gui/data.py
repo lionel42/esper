@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 from collections import OrderedDict
 from datetime import datetime
-from functools import cached_property, lru_cache
+from functools import cached_property, lru_cache, partial
 from pathlib import Path
 
 import numpy as np
@@ -44,6 +44,33 @@ BEST_CANDIDATE_SELECT = ", ".join(
 )
 
 
+class _cached_method:
+    """``functools.lru_cache`` of a method, one cache per instance.
+
+    ``lru_cache`` on a method is shared by all the instances and keeps them alive (with
+    their data frames) after the data directory is closed; its ``cache_clear`` clears the
+    caches of all of them. The cache is made at the first access, stored on the instance.
+    """
+
+    def __init__(self, maxsize: int | None) -> None:
+        self.maxsize = maxsize
+
+    def __call__(self, func):
+        self.func = func
+        self.__doc__ = func.__doc__
+        return self
+
+    def __set_name__(self, owner, name: str) -> None:
+        self.name = name
+
+    def __get__(self, obj, owner=None):
+        if obj is None:
+            return self
+        cached = lru_cache(maxsize=self.maxsize)(partial(self.func, obj))
+        obj.__dict__[self.name] = cached  # found before this (non-data) descriptor
+        return cached
+
+
 def _now() -> str:
     """Time of an edit by hand."""
     return datetime.now().isoformat(timespec="seconds")
@@ -60,9 +87,27 @@ class EsperData:
 
     def close(self) -> None:
         self.con.close()
+        # The data frames of the caches
+        for name, attr in vars(type(self)).items():
+            if isinstance(attr, _cached_method):
+                self.__dict__.pop(name, None)
 
     def _query(self, sql: str, params=(), **kwargs) -> pd.DataFrame:
         return pd.read_sql(sql, self.con, params=params, **kwargs)
+
+    def _numeric(self, df: pd.DataFrame, table: str, *extra: str) -> pd.DataFrame:
+        """The columns of ``df`` declared INTEGER or REAL in ``table`` (and ``extra``) as numbers.
+
+        A column all NULL (e.g. no retention index in a measurement) is read as objects.
+        """
+        numeric = [
+            row[1]
+            for row in self.con.execute(f"PRAGMA table_info({table})")
+            if row[2].split(" ")[0].upper() in ("INTEGER", "REAL")
+        ]
+        columns = [c for c in (*numeric, *extra) if c in df.columns]
+        df[columns] = df[columns].apply(pd.to_numeric)
+        return df
 
     def _has_table(self, name: str) -> bool:
         sql = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?"
@@ -152,6 +197,7 @@ class EsperData:
         finally:
             con.close()
         self._create_compound_view()
+        self._measurements = None  # n_compounds (merge)
         for cached in (
             self.compounds,
             self.peaks,
@@ -258,6 +304,7 @@ class EsperData:
                 """,
                 index_col="measurement_id",
             )
+            df = self._numeric(df, "measurement", "mass_cal_mode", "s_per_bin")
             df["acq_datetime"] = pd.to_datetime(df["acq_datetime"])
             self._measurements = df
         return self._measurements
@@ -295,7 +342,7 @@ class EsperData:
         counts = df.groupby(df["compound_name"].map(self.main_name))["n"].sum()
         return counts.sort_index(key=lambda names: names.str.lower())
 
-    @lru_cache(maxsize=32)
+    @_cached_method(maxsize=32)
     def compounds(self, measurement_id: int) -> pd.DataFrame:
         """Compounds detected in a measurement with their best candidate, sorted by rt.
 
@@ -318,10 +365,19 @@ class EsperData:
             (int(measurement_id),),
             index_col="compound_idx",
         )
+        df = self._numeric(
+            df,
+            "compound",
+            "alpinac_valid",
+            "best_score",
+            "best_score_combined",
+            "identified_score",
+            "identified_score_combined",
+        )
         df["main_name"] = df["compound_name"].map(self.main_name)
         return df
 
-    @lru_cache(maxsize=32)
+    @_cached_method(maxsize=32)
     def peaks(self, measurement_id: int) -> pd.DataFrame:
         """Peaks of a measurement, with the fit columns (NaN if not fitted).
 
@@ -360,7 +416,7 @@ class EsperData:
         idxs = compound_idx if isinstance(compound_idx, tuple) else (compound_idx,)
         return peaks[peaks["compound_idx"].isin(idxs)]
 
-    @lru_cache(maxsize=64)
+    @_cached_method(maxsize=64)
     def compound_spectrum(
         self, measurement_id: int, compound_idx: int | tuple[int, ...], intensity: str
     ) -> Spectrum:
@@ -391,7 +447,7 @@ class EsperData:
                 areas.append(max(peak_area(t, y, a, b), 0.0))
         return Spectrum.from_pairs(masses, np.nan_to_num(areas))
 
-    @lru_cache(maxsize=32)
+    @_cached_method(maxsize=32)
     def _candidates(self, measurement_id: int) -> pd.DataFrame:
         return self._query(
             "SELECT * FROM compound_candidate WHERE measurement_id = ? ORDER BY compound_idx, rank",
@@ -524,7 +580,7 @@ class EsperData:
             return []
         return self.targets.at[target, "masses"]
 
-    @lru_cache(maxsize=32)
+    @_cached_method(maxsize=32)
     def ri_anchors(self, measurement_id: int) -> tuple[np.ndarray, np.ndarray]:
         """(retention index, rt) of the reference compounds of a measurement, by increasing rt."""
         compounds = self.compounds(measurement_id)
@@ -570,7 +626,7 @@ class EsperData:
             measurement_id, target, self.expected_rt(measurement_id, target)
         )
 
-    @lru_cache(maxsize=32)
+    @_cached_method(maxsize=32)
     def targets_found(self, measurement_id: int) -> frozenset[str]:
         """Targets that have a compound in the measurement."""
         names = self.compounds(measurement_id)["compound_name"].dropna().unique()
@@ -654,7 +710,7 @@ class EsperData:
         )
         return df.sort_values(["time", "rt_s"], ignore_index=True)
 
-    @lru_cache(maxsize=16)
+    @_cached_method(maxsize=16)
     def mass_cal_run(self, measurement_id: int):
         """Mass calibration of a measurement as a ``masscal.MassCalibration`` (the points used),
         and its calibrant peaks (``mass_cal_peak``, empty if not stored); (None, peaks) without
@@ -780,14 +836,14 @@ class EsperData:
             return None
         return self.data_dir / file
 
-    @lru_cache(maxsize=None)
+    @_cached_method(maxsize=None)
     def chromatogram_columns(self, measurement_id: int) -> frozenset[str]:
         path = self._chromatogram_path(measurement_id)
         if path is None or not path.is_file():
             return frozenset()
         return frozenset(pq.read_schema(path).names)
 
-    @lru_cache(maxsize=2)
+    @_cached_method(maxsize=2)
     def chromatogram_frame(self, measurement_id: int) -> pd.DataFrame | None:
         """All unit mass chromatograms of a measurement (whole parquet file)."""
         path = self._chromatogram_path(measurement_id)

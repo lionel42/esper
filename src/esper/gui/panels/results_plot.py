@@ -77,7 +77,11 @@ class ResultsPlotPanel(BasePanel):
         self.invalidate()
 
     def on_selection_changed(self, fields: set) -> None:
-        if fields & {"candidate", "target"}:
+        if "identification" in fields:
+            # Names edited or compounds merged: the results are queried again
+            self._loaded_key = None
+            self.invalidate()
+        elif fields & {"candidate", "target"}:
             self.invalidate()
         elif fields & {"measurement_id", "compound_idx"}:
             self._update_highlight()

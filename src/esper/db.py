@@ -329,7 +329,8 @@ SELECT
     cc.score_combined AS best_score_combined
 FROM peak p
 JOIN measurement m USING (measurement_id)
-JOIN compound c USING (measurement_id, compound_idx)
+-- LEFT: the peaks of the fit that match no compound (compound_idx NULL) are kept
+LEFT JOIN compound c USING (measurement_id, compound_idx)
 LEFT JOIN compound_candidate cc
     ON cc.measurement_id = p.measurement_id
     AND cc.compound_idx = p.compound_idx
@@ -433,6 +434,8 @@ def _upgrade(con: sqlite3.Connection, path: Path, version: int) -> None:
         raise SchemaVersionError(
             f"{path} has schema version {version}, expected one of {COMPATIBLE_VERSIONS}"
         )
+    # Views are created again: CREATE VIEW IF NOT EXISTS keeps an older definition
+    con.execute("DROP VIEW IF EXISTS peak_full")
     con.executescript(SCHEMA + SCHEMA_INFO)
     add_columns(con)
     con.execute(

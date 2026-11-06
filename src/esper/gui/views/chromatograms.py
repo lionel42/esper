@@ -59,6 +59,12 @@ class ChromatogramToolbar(BasePanel):
         self.mass_box.text_entered.connect(self._on_mass_text)
         self.time_edit.editingFinished.connect(self._on_time)
 
+    def on_selection_changed(self, fields: set) -> None:
+        if "identification" in fields:
+            # Names edited or compounds merged (with their peaks): items made again
+            self._cmp_items_mid = self._mass_items_key = None
+        super().on_selection_changed(fields)
+
     def _on_file_selected(self, measurement_id) -> None:
         if measurement_id is not None:
             self.selection.select_measurement(int(measurement_id))

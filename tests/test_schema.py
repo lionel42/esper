@@ -103,3 +103,42 @@ def test_upgrade_adds_the_fit_columns(tmp_path):
     # again: nothing to add
     db.connect(tmp_path, create=True).close()
     assert _version(tmp_path) == db.SCHEMA_VERSION
+
+
+def _peak_full_count(con) -> int:
+    con.execute(
+        "INSERT INTO measurement (measurement_id, name, source_dir, source_mtime,"
+        " source_size, imported_at) VALUES (1, 'm', 'd', 0, 0, 'now')"
+    )
+    con.execute("INSERT INTO compound (measurement_id, compound_idx) VALUES (1, 0)")
+    # A peak of the fit that matches no compound: compound_idx NULL
+    con.execute(
+        "INSERT INTO peak (measurement_id, peak_idx, compound_idx, mass)"
+        " VALUES (1, 0, 0, 43), (1, 1, NULL, 43)"
+    )
+    return con.execute("SELECT COUNT(*) FROM peak_full").fetchone()[0]
+
+
+def test_peak_full_keeps_peaks_without_compound(tmp_path):
+    con = db.connect(tmp_path, create=True)
+    try:
+        assert _peak_full_count(con) == 2
+    finally:
+        con.close()
+
+
+def test_upgrade_replaces_peak_full(tmp_path):
+    con = db.connect(tmp_path, create=True)
+    # The view of older versions (inner join on compound)
+    con.execute("DROP VIEW peak_full")
+    con.execute(
+        "CREATE VIEW peak_full AS SELECT p.* FROM peak p"
+        " JOIN compound c USING (measurement_id, compound_idx)"
+    )
+    con.commit()
+    con.close()
+    con = db.connect(tmp_path, create=True)
+    try:
+        assert _peak_full_count(con) == 2
+    finally:
+        con.close()

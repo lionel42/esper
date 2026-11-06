@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QWidget
 
@@ -16,7 +16,9 @@ class BasePanel(QWidget):
     The panel is redrawn when the selection changes, but only while it is
     visible: a hidden panel is marked as outdated and redrawn when shown.
     Subclasses implement ``redraw`` and call ``invalidate`` when their own
-    options change.
+    options change. The redraw is deferred to the event loop, so that the
+    invalidations of one change (the selection, then the curves of another
+    panel, the settings...) give a single redraw.
     """
 
     # Name in the View menu
@@ -34,6 +36,10 @@ class BasePanel(QWidget):
         self.data = data
         self.selection = selection
         self._outdated = True
+        self._redraw_timer = QTimer(self)
+        self._redraw_timer.setSingleShot(True)
+        self._redraw_timer.setInterval(0)
+        self._redraw_timer.timeout.connect(self._redraw_if_outdated)
         self.selection.changed.connect(self.on_selection_changed)
 
     def on_selection_changed(self, fields: set) -> None:
@@ -41,9 +47,13 @@ class BasePanel(QWidget):
             self.invalidate()
 
     def invalidate(self) -> None:
-        """Redraw now if visible, otherwise when shown."""
+        """Redraw once back in the event loop if visible, otherwise when shown."""
         self._outdated = True
-        if self.isVisible():
+        if self.isVisible() and not self._redraw_timer.isActive():
+            self._redraw_timer.start()
+
+    def _redraw_if_outdated(self) -> None:
+        if self._outdated and self.isVisible():
             self._redraw()
 
     def showEvent(self, event) -> None:

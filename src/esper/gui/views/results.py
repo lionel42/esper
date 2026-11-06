@@ -83,8 +83,10 @@ class ResultsView(BaseView):
     def _load_names(self) -> None:
         """Candidate names for the Cmp box; selects the most frequent one if nothing is selected."""
         self._names_loaded = True
+        # Keeping the runtype the plot is filtered by
         self.runtype_box.set_items(
-            [(ALL, ALL)] + [(t, t) for t in self.data.sample_types()], ALL
+            [(ALL, ALL)] + [(t, t) for t in self.data.sample_types()],
+            self.results.options["runtype"],
         )
         counts = self.data.candidate_names(self.valid_only.isChecked())
         self.cmp_box.set_items([(name, name) for name in counts.index])

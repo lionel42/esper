@@ -312,3 +312,45 @@ def test_search_with_identification(selection):
     )
     assert (df.loc[(1, 0), "main_name"], df.loc[(1, 0), "valid_candidate"]) == (None, 0)
     assert df.loc[(2, 0), "main_name"] == "CFC-12"
+
+
+def test_all_null_columns_are_numeric(selection):
+    # No retention index, best candidate or mass calibration in the database: the
+    # columns are all NULL, read as objects unless converted (f"{None:.1f}" raises)
+    data = selection.data
+    compounds = data.compounds(1)
+    for column in ("retention_index", "best_score", "best_score_combined"):
+        assert pd.api.types.is_float_dtype(compounds[column]), column
+    assert f"{compounds['retention_index'].iloc[0]:.1f}" == "nan"
+    for column in ("s_per_bin", "mass_cal_mode", "rt_start_s"):
+        assert pd.api.types.is_float_dtype(data.measurements[column]), column
+    # Text columns stay text
+    assert compounds.loc[0, "compound_name"] == "CFC12"
+
+
+def test_merge_updates_measurement(selection):
+    data = selection.data
+    con = db.connect(data.data_dir)
+    con.execute("UPDATE measurement SET n_compounds = 3 WHERE measurement_id = 1")
+    con.commit()
+    con.close()
+    assert data.measurements.loc[1, "n_compounds"] == 3
+    data.merge_compounds(1, [0, 1])
+    assert data.measurements.loc[1, "n_compounds"] == 2
+    assert list(data.compounds(1).index) == [0, 2]
+
+
+def test_caches_per_instance(selection):
+    data = selection.data
+    other = EsperData(data.data_dir)
+    try:
+        assert data.compounds(1) is data.compounds(1)  # cached
+        other.compounds(1)
+        data.compounds.cache_clear()
+        # Clearing the cache of one instance leaves the other's
+        assert data.compounds.cache_info().currsize == 0
+        assert other.compounds.cache_info().currsize == 1
+    finally:
+        other.close()
+    # Closing drops the cached data frames
+    assert "compounds" not in other.__dict__
