@@ -44,6 +44,92 @@ compound agree in 251104.1724.air.1 (95 % within 0.28 sigma). Example: the singl
 A measurement is fitted once (`measurement.fit_version`): to fit it again, import it again
 (`esper upload --force`).
 
+### Mass calibration
+
+`esper calibrate` fits the mass calibration of h5 files (`src/esper/calibrate.py`): the spectra
+are read with [twutils](https://github.com/lionel42/twutils) (only the scans of each rt window and
+the tof indices around the calibrants) and the calibration is fitted with [masscal](../masscal)
+(peaks with peaxart), following its drift with the retention time. It writes
+`<run>.alpinac/<run>.seg0_mc.json` (where the extraction and esper find it) and the calibrant
+peaks (`.peaks.csv`).
+
+```
+esper -v calibrate run.h5                                   # default calibrants: air, F, Re, PFTBA
+esper calibrate "/media/Shuttle/TOF-Data/2024/2403*.air.*.h5" -c /shared/scripts/tof-processing/config_calib.yml
+esper calibrate run.h5 --calibrant CF3 C2F5 C3F5 N2 O2 Ar --spike 1200 C4F9 --averaging 240 --spacing 60
+esper calibrate run.h5 --plots                              # + <run>.seg0_mc.<plot>.png (matplotlib)
+esper plot-calibration run.alpinac/run.seg0_mc.json         # or the h5 file; --plot drift residuals --show
+```
+
+In Python: `esper.calibrate.calibrate_run(h5, calibrants, ...)` returns a
+`masscal.CalibrationResult`; `calibrate_to_file` also writes it. Calibrant formulas (not the
+default ones) need the alpinac of gitlabs/alpinac (`PYTHONPATH=../alpinac/src` in `/shared/pyenv`).
+
+The mass calibration of each run is read with masscal, found as twutils does
+(`src/esper/mass_cal.py`): `<run>.seg0_mc.json` of `esper calibrate` if there is one, else
+the legacy `<run>.EI_mc.txt`. Each calibration point (rt window) is stored in `mass_cal_rt` with
+its absolute `time` = start of the acquisition + rt, UTC: the start is read from the h5 file next
+to the `.alpinac` folder (`TimingData/AcquisitionTimeZero`, to the ms; `measurement.acq_start`),
+else taken from the run name (to the minute, `acq_start_source = 'name'`). The files of masscal
+also give, per window, the calibrants found and used and the residuals (`rms_ppm`, `max_ppm`),
+and the windows whose fit was rejected (`ok = 0`). The calibrant peaks (`mass_cal_peak`: tof,
+residual, used, per calibrant and window) come from `<run>.seg0_mc.peaks.csv` (written by
+`esper calibrate`) or the legacy `<run>.calibration_peaks.csv`.
+
+Without a calibration file, nothing of the calibration is stored. `upload` also reads again the
+calibration of the measurements it skips as unchanged (e.g. after `esper calibrate`, or for a
+database imported by an older esper), without importing or fitting them again.
+
+### Unit mass chromatograms
+
+`esper chromatograms` makes the unit mass chromatograms of h5 files (`src/esper/chromatograms.py`):
+the spectra are read with twutils, summed around each unit mass and their baseline removed with
+peaxart (`peaxart.unit_mass_sums`, `peaxart.remove_baseline`), with the mass calibration of the run
+(`esper calibrate`, else the legacy `*_mc.txt`).
+
+```
+esper chromatograms 241007.0423.air.1.h5        # -> 241007.0423.air.1.alpinac/241007.0423.air.1.unit_mass_chromatos.parquet
+esper chromatograms run.h5 --rt-stop 196.6      # until the filament failed
+esper chromatograms run.h5 --legacy --output-dir v2/   # as the legacy pipeline (unit_mass_chromatos)
+esper chromatograms run.h5 --no-steps           # one baseline over the whole run
+```
+
+The run is read in blocks
+of whole writes (~600 scans), the spectra summed in `m - 0.5 < m/z < m + 0.5`
+for each unit mass (default masses: those of the spectra, 2 to 300), then each
+chromatogram smoothed and its arPLS baseline removed (peaxart, see its README).
+**Steps of the acquisition**: the acquisition switches the filament emission
+target (0.5 mA -> 0.05 at ~15 s, 0.5 at ~205 s, 0.05 at ~385 s, 0.5 at ~1105 s:
+the background of all masses x10) and the resonant ejection of the quadrupole
+(`QUADA_REXAMPL1-4`, at 25.9 / 30.5 / 43 / 83.91 Th: N2 / O2 (m/z 28-34) from
+~191 s, CO2 (42-46) during ~1181-1320 s, while the air peaks elute). A smooth
+baseline over the whole run lags behind such steps for 30-100 s (false signal);
+and arPLS weights use the noise of the whole series, so with the x10 emission
+steps the whole-run baseline sinks to the bottom of the noise late in the run
+(an offset is left, e.g. m/z 70: 60 under troughs of 100-200). By default the
+changes are read from `TPS2` (full resolution, logged ~0.5 s after they take
+effect), the scan of each step located in the data (tic for the emission, each
+mass for the ejection) and the baseline fitted separately between the steps,
+with lam 1e7 (`peaxart.StepConfig`, cuts by `peaxart.step_cuts`): all masses at the emission
+steps, at the ejection switches the masses whose level drops by > x2 (from >= 20)
+when the ejection is switched on. The cuts are in `result.steps` and the
+provenance. `--no-steps`: one baseline over the whole run.
+The m/z windows follow the calibration at the rt of each scan (`--mass-axis
+drift`); the legacy pipeline used the calibration at the end of the run for all
+scans (`end`). Default smoothing with edge padding (the legacy zero padding pulls
+the baseline down at the ends of the run). `--legacy` (`--mass-axis end
+--no-steps`, lam 1e5, zero padding) reproduces the legacy
+`<run>.unit_mass_chromatos.parquet` (within 1e-6 of each column maximum). Output
+`<run>.alpinac/<run>.unit_mass_chromatos.parquet`, the file of the legacy pipeline
+(replaced): index `rt` (s), one column per unit mass (`"2"`, ...) and `tic` (their
+sum), how it was made in its metadata (`esper.chromatograms.provenance`). Files with
+several segments: the segment range in the column names (`"seg1:69"`, `"seg1:tic"`).
+Next to it (to check the raw data; `--no-raw`: not
+written), same layout in float32: `.raw.parquet`, the raw sums before smoothing,
+and `.baseline.parquet`, the baselines removed (corrected = smoothed raw -
+baseline, clipped at 0); `read_chromatograms(path, "raw")`. ~30 s per 50 min run
+(half reading, half baselines).
+
 ### Application menu / desktop icon
 
 ```
@@ -97,9 +183,20 @@ browse for another one.
   masses" keeps the runs where every mass has a peak in the window. "From selection" fills the
   window and the 3 main masses from the selected compound. Click / double click as in Results.
   The retention index of a peak is the one of its compound.
+- **Mass calibration** (Ctrl+4): above, the calibration of all the runs over time (or by
+  measurement, the points of a run spread by rt): its parameters p1, p2, … and the drift of
+  the m/z of the settings (File > Settings > Mass calibration, default 20, 50, 100, 230),
+  one line per run. "Drift in" ppm (error on the m/z if the median calibration of the plotted
+  points were used) or tof index (shift of the tof of the m/z). Click a point to select the
+  run. Below, the selected run against the rt: the drift of the calibration since its first
+  window at the same m/z (lines), and of each calibrant peak (points colored by m/z, hollow:
+  left out of the fit of its window; hover for the calibrant and its residual). The
+  calibrant residuals (View menu) show each calibrant peak minus the calibration of its window.
+  The y ranges leave out the few outliers (right click > View All shows them).
 
 The View menu lists the optional panels of the current view: compound table, relative
-chromatograms and spectrum (Chromatograms), chromatogram and spectrum of the selected point (Results). The
+chromatograms and spectrum (Chromatograms), chromatogram and spectrum of the selected point (Results),
+drift in the run and calibrant residuals (Mass calibration). The
 spectrum shows one stick per mass of the selected compound (prominence, % of the largest);
 the masses plotted in the chromatogram panel of the same view have the same colors there
 (main mass black, others grey). Clicking a stick selects that mass. Panel heights are adjustable
@@ -165,7 +262,15 @@ baseline over ±3 half widths at half maximum, limited to the prominence bases o
     esper.yaml      (optional)
     esper.sqlite
     chromatograms/<measurement>.parquet
+    chromatograms/<measurement>.raw.parquet        (esper chromatograms only)
+    chromatograms/<measurement>.baseline.parquet   (esper chromatograms only)
 ```
+
+`upload` copies the unit mass chromatograms of each run there (`<run>.unit_mass_chromatos.parquet`,
+of `esper chromatograms` or of the legacy pipeline), with the raw sums and baselines of
+`esper chromatograms` when they are next to it. The database
+only stores the path of the chromatograms (`measurement.chromatogram_file`); the raw sums and
+baselines are next to it (`esper.chromatograms.read_chromatograms(path, "raw")`).
 
 The database can live elsewhere, e.g. on a faster disk than the chromatograms: put an
 `esper.yaml` in the data directory with the path of the database (absolute, `~/...`, or
@@ -179,7 +284,7 @@ Without `esper.yaml`, or without `database` in it, the database is `esper.sqlite
 directory. All commands (`upload`, `fit`, `targets`, `gui`) follow it; `upload` creates the database
 there if it does not exist yet.
 
-Tables: `measurement`, `mass_cal`, `mass_cal_rt`, `mass_cal_mass`, `compound`,
+Tables: `measurement`, `mass_cal`, `mass_cal_rt`, `mass_cal_mass`, `mass_cal_peak`, `compound`,
 `compound_candidate`, `peak`, and the view `peak_full` (peaks joined with their
 measurement, compound and best library candidate). See `src/esper/db.py`.
 
