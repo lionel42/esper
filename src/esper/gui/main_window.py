@@ -27,11 +27,12 @@ from esper.gui.selection import Selection
 from esper.gui.settings import settings_manager
 from esper.gui.views.base import BaseView
 from esper.gui.views.chromatograms import ChromatogramsView
+from esper.gui.views.mass_cal import MassCalView
 from esper.gui.views.results import ResultsView
 from esper.gui.views.search import SearchView
 
 # Tabs, in order; the first one shows the chromatogram of the selection
-VIEWS: list[type[BaseView]] = [ChromatogramsView, ResultsView, SearchView]
+VIEWS: list[type[BaseView]] = [ChromatogramsView, ResultsView, SearchView, MassCalView]
 
 
 class MainWindow(QMainWindow):

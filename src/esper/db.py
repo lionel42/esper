@@ -26,10 +26,10 @@ CHROMATOGRAMS_DIRNAME = "chromatograms"
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 # Versions that are upgraded by creating the missing tables and columns (3: the area
 # columns of an unreleased version, kept)
-COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4)
+COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5)
 # Oldest SCHEMA_VERSION of esper that can still use a database of this version, stored in
 # the database so that older esper versions know whether they can use it. A schema change
 # that only adds tables or nullable columns keeps it, a breaking change sets it to SCHEMA_VERSION.
@@ -44,6 +44,29 @@ ADDED_COLUMNS = {
     "measurement": [
         ("fit_version", "INTEGER"),  # esper.fitting.FIT_VERSION, NULL: not fitted
         ("fitted_at", "TEXT"),
+        # Start of the acquisition (rt 0), UTC, ISO to the ms (esper.mass_cal)
+        ("acq_start", "TEXT"),
+        (
+            "acq_start_source",
+            "TEXT",
+        ),  # 'h5': read in the h5 file; 'name': to the minute
+    ],
+    "mass_cal": [
+        ("source_file", "TEXT"),  # the calibration file read
+        ("segments", "TEXT"),  # segment range calibrated ('seg0'), masscal files only
+    ],
+    "mass_cal_rt": [
+        # Absolute time of the point: acq_start + rt_s (UTC, ISO to the ms)
+        ("time", "TEXT"),
+        # 1: used by the calibration; 0: rt window whose fit was rejected (masscal files)
+        ("ok", "INTEGER NOT NULL DEFAULT 1"),
+        # rt window of esper calibrate (NULL for the legacy files)
+        ("rt_start_s", "REAL"),
+        ("rt_stop_s", "REAL"),
+        ("n_calibrants", "INTEGER"),  # calibrant peaks found in the window
+        ("n_used", "INTEGER"),  # used by the fit
+        ("rms_ppm", "REAL"),  # residuals of the calibrants used
+        ("max_ppm", "REAL"),
     ],
     "peak": [
         # 'extraction': found by alpinac; 'fit': split or added by the fit (esper.fitting)
@@ -123,6 +146,22 @@ CREATE TABLE IF NOT EXISTS mass_cal_mass (
     u_ppm               REAL,
     PRIMARY KEY (measurement_id, exact_mass)
 );
+
+-- Calibrant peaks of the mass calibration: one per calibrant and rt window
+-- (masscal.read_calibrant_peaks)
+CREATE TABLE IF NOT EXISTS mass_cal_peak (
+    measurement_id      INTEGER REFERENCES measurement ON DELETE CASCADE,
+    calibrant           TEXT,                   -- e.g. 'CF3', 'N2'
+    mz_exact            REAL,
+    rt_s                REAL,                   -- centre of the rt window
+    tof                 REAL,                   -- fitted position, tof index
+    area                REAL,
+    sigma               REAL,                   -- tof index
+    alpha               REAL,                   -- Lorentzian fraction
+    ppm                 REAL,                   -- residual of the calibration of the window
+    used                INTEGER                 -- in the fit of the window
+);
+CREATE INDEX IF NOT EXISTS mass_cal_peak_measurement ON mass_cal_peak (measurement_id);
 
 -- Group of co-eluting peaks. Summary columns are as written by alpinac.
 CREATE TABLE IF NOT EXISTS compound (

@@ -6,15 +6,21 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 
+if TYPE_CHECKING:
+    from esper.mass_cal import RunCalibration
+
 ALPINAC_SUFFIX = ".alpinac"
 PIPELINE_FILENAME = "pipeline.nc"
 # Older alpinac versions saved dated pipelines, e.g. pipeline_20260915_0555.nc
 DATED_PIPELINE_GLOB = "pipeline_*.nc"
+# Unit mass chromatograms of a run: of esper chromatograms or of the legacy pipeline
+CHROMATOGRAM_FILENAME = "{name}.unit_mass_chromatos.parquet"
 
 # e.g. 241007.0423.air.1
 _NAME_RE = re.compile(
@@ -56,19 +62,6 @@ _COMPOUND_COLUMNS = {
     "compound_name": "compound_name",
 }
 
-# Header lines of the *_mc.txt file -> sql column
-_MC_HEADER = {
-    "Number of points, mass cal. vs RT": "n_rt",
-    "Number of points, mass cal. u vs mass": "n_mass",
-    "Mass cal. mode": "mode",
-    "Peak shape, sigma_slope vs TOF index": "sigma_tofidx_slope",
-    "Peak shape, sigma_b vs TOF index": "sigma_tofidx_b",
-    "Peak shape, sigma_slope vs mass": "sigma_m_slope",
-    "Peak shape, sigma_b vs mass": "sigma_m_b",
-    "alpha, for tofidx Pseudo-Voigt fit": "alpha_pseudo_voigt",
-    "s_per_bin": "s_per_bin",
-}
-
 
 def parse_measurement_name(name: str) -> dict:
     """Split 'YYMMDD.HHMM.<type>.<number>' into its parts (None if not matching)."""
@@ -81,47 +74,6 @@ def parse_measurement_name(name: str) -> dict:
         "sample_type": m["type"],
         "sample_number": int(m["number"]),
     }
-
-
-@dataclass
-class MassCalibration:
-    ionization: str
-    params: dict
-    rt: pd.DataFrame  # rt_idx, p1..pN
-    masses: pd.DataFrame  # exact_mass, u_ppm
-
-
-def read_mass_cal(path: Path) -> MassCalibration:
-    """Read a ``<name>.<ionization>_mc.txt`` file written by ``alpinac.io_tools.export_mc``."""
-    lines = [line.split("\t") for line in path.read_text().splitlines() if line.strip()]
-
-    header = {}
-    for values in lines[: len(_MC_HEADER)]:
-        key = _MC_HEADER[values[1].strip()]
-        header[key] = float(values[0])
-    n_rt, n_mass = int(header.pop("n_rt")), int(header.pop("n_mass"))
-    header["mode"] = int(header["mode"])
-
-    body = lines[len(_MC_HEADER) :]
-    if len(body) != n_rt + n_mass:
-        raise ValueError(f"{path}: expected {n_rt} + {n_mass} lines, got {len(body)}")
-
-    rt_rows = [[float(v) for v in values] for values in body[:n_rt]]
-    n_params = len(rt_rows[0]) - 1 if rt_rows else 0
-    rt = pd.DataFrame(
-        rt_rows, columns=["rt_idx"] + [f"p{i}" for i in range(1, n_params + 1)]
-    )
-    rt["rt_idx"] = rt["rt_idx"].astype(int)
-    rt["rt_s"] = rt["rt_idx"] * header["s_per_bin"]
-    header["n_params"] = n_params
-
-    masses = pd.DataFrame(
-        [[float(v) for v in values] for values in body[n_rt:]],
-        columns=["exact_mass", "u_ppm"],
-    )
-
-    ionization = path.name.removesuffix("_mc.txt").rsplit(".", 1)[-1]
-    return MassCalibration(ionization=ionization, params=header, rt=rt, masses=masses)
 
 
 def _str_or_none(values: np.ndarray) -> list:
@@ -138,7 +90,8 @@ class AlpinacResult:
     peaks: pd.DataFrame
     compounds: pd.DataFrame
     candidates: pd.DataFrame
-    mass_cal: MassCalibration | None
+    # Mass calibration and start of the acquisition (esper.mass_cal)
+    run: RunCalibration
     chromatogram_file: Path | None
     warnings: list[str] = field(default_factory=list)
 
@@ -161,11 +114,19 @@ def find_pipeline(folder: Path) -> Path | None:
     return dated[-1] if dated else None
 
 
+def find_chromatograms(folder: Path, name: str) -> Path | None:
+    """The unit mass chromatograms of a .alpinac folder (:data:`CHROMATOGRAM_FILENAME`)."""
+    path = Path(folder) / CHROMATOGRAM_FILENAME.format(name=name)
+    return path if path.is_file() else None
+
+
 def is_complete(folder: Path) -> bool:
     return find_pipeline(folder) is not None
 
 
 def read_alpinac_folder(folder: Path) -> AlpinacResult:
+    from esper.mass_cal import read_run
+
     folder = Path(folder)
     name = folder.name.removesuffix(ALPINAC_SUFFIX)
     warnings = []
@@ -223,24 +184,13 @@ def read_alpinac_folder(folder: Path) -> AlpinacResult:
             f"{len(missing)} compound ids of peaks are not in the compound table"
         )
 
-    mc_files = sorted(folder.glob("*_mc.txt"))
-    mass_cal = None
-    if mc_files:
-        mass_cal = read_mass_cal(mc_files[0])
-        if len(mc_files) > 1:
-            warnings.append(f"Several mass calibration files, using {mc_files[0].name}")
-    else:
-        warnings.append("No mass calibration file")
-    if mass_cal is not None:
-        s_per_bin = mass_cal.params["s_per_bin"]
-        peaks["width_s"] = peaks["width_scans"] * s_per_bin
-    else:
-        peaks["width_s"] = np.nan
+    run = read_run(folder, name)
+    warnings += run.warnings
+    peaks["width_s"] = peaks["width_scans"] * (run.s_per_bin or np.nan)
 
-    chromatos = folder / f"{name}.unit_mass_chromatos.parquet"
-    if not chromatos.is_file():
+    chromatos = find_chromatograms(folder, name)
+    if chromatos is None:
         warnings.append("No unit mass chromatograms")
-        chromatos = None
 
     attrs = {
         "rt_start_s": float(ds.attrs.get("rt_start", np.nan)),
@@ -255,7 +205,7 @@ def read_alpinac_folder(folder: Path) -> AlpinacResult:
         peaks=peaks,
         compounds=compounds,
         candidates=candidates,
-        mass_cal=mass_cal,
+        run=run,
         chromatogram_file=chromatos,
         warnings=warnings,
     )

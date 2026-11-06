@@ -39,7 +39,12 @@ def add_curve(plot: pg.PlotWidget, t, y, color, z: float = -1) -> pg.PlotDataIte
 
 
 def set_x_axis(plot: pg.PlotWidget, time: bool) -> None:
-    """Date axis for acquisition times, plain axis otherwise."""
+    """Date axis for acquisition times, plain axis otherwise.
+
+    Replaced only when the kind changes: a new axis shows 0-1 until the view range changes.
+    """
+    if isinstance(plot.getAxis("bottom"), pg.DateAxisItem) == time:
+        return
     axis = pg.DateAxisItem(utcOffset=0) if time else pg.AxisItem("bottom")
     plot.setAxisItems({"bottom": axis})
 

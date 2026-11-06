@@ -20,8 +20,16 @@ dependencies = [
     "jcamp",
     "pyyaml",
     "scipy",
-    "peaxart @ git+https://github.com/lionel42/peaxart.git@v0.1.0",
+    "peaxart @ git+https://github.com/lionel42/peaxart.git",
+    # h5 files: spectra, timing, where the calibration files are (esper.mass_cal, esper.calibrate)
+    "twutils @ git+https://github.com/lionel42/twutils.git",
+    # Mass calibration: fit, files, plots (esper calibrate)
+    "masscal @ git+https://github.com/lionel42/masscal.git",
 ]
+
+[project.optional-dependencies]
+# plots of the mass calibration (esper calibrate --plots, esper plot-calibration)
+plots = ["matplotlib>=3.6"]
 
 [project.scripts]
 esper = "esper.cli.main:main"

@@ -1,4 +1,5 @@
-"""Command line interface: ``esper gui``, ``esper upload``, ``esper fit`` and ``esper targets``."""
+"""Command line interface: ``esper gui``, ``esper upload``, ``esper fit``, ``esper targets``,
+``esper calibrate``, ``esper plot-calibration`` and ``esper chromatograms``."""
 
 from __future__ import annotations
 
@@ -98,6 +99,173 @@ def _targets(args: argparse.Namespace) -> int:
     return 0
 
 
+def _files(patterns: list[str]) -> list[Path]:
+    """The files of the arguments (glob patterns expanded, in order, without duplicates)."""
+    import glob
+
+    files = []
+    for pattern in patterns:
+        matches = sorted(glob.glob(pattern)) if glob.has_magic(pattern) else [pattern]
+        if not matches:
+            print(f"No file matches {pattern}", file=sys.stderr)
+        files += [Path(m) for m in matches if Path(m) not in files]
+    return files
+
+
+def _calibrants(values: list[str] | None) -> list | None:
+    """Formulas or m/z values."""
+    if values is None:
+        return None
+    out = []
+    for v in values:
+        try:
+            out.append(float(v))
+        except ValueError:
+            out.append(v)
+    return out
+
+
+def _segments(value: str | None) -> tuple[int, int] | None:
+    """``1`` -> (1, 2), ``1:3`` -> (1, 3)."""
+    if value is None:
+        return None
+    start, _, stop = value.partition(":")
+    return (int(start), int(stop) if stop else int(start) + 1)
+
+
+def _calibrate(args: argparse.Namespace) -> int:
+    from masscal import Calibrants, CalibrationConfig
+
+    from esper.calibrate import calibrate_to_file
+
+    files = _files(args.files)
+    if not files:
+        return 1
+    if args.output is not None and len(files) > 1:
+        raise SystemExit("--output can only be used with one file.")
+    try:
+        spikes = {float(rt): _calibrants(cals) for rt, *cals in args.spike}
+    except ValueError:
+        raise SystemExit("--spike: expected RT FORMULA [FORMULA ...]") from None
+    calibrants = _calibrants(args.calibrant)
+    if args.calibrants_file is not None:
+        from_file = Calibrants.from_yaml(args.calibrants_file)
+        calibrants = from_file if calibrants is None else Calibrants(
+            calibrants, from_file.spikes, from_file.initial
+        )
+    config = CalibrationConfig(
+        mode=args.mode,
+        averaging=args.averaging,
+        spacing=args.spacing,
+        mz_range=args.mz_range,
+        max_ppm=args.max_ppm,
+        ionised=not args.neutral,
+    )
+    failed = 0
+    for path in files:
+        try:
+            result, written = calibrate_to_file(
+                path,
+                output=args.output,
+                output_dir=args.output_dir,
+                peaks_csv=not args.no_peaks_csv,
+                plots=args.plots,
+                calibrants=calibrants,
+                spikes=spikes,
+                rt_start=args.rt_start,
+                rt_stop=args.rt_stop,
+                initial=args.initial,
+                segments=_segments(args.segments),
+                config=config,
+                block=args.block,
+            )
+        except Exception as e:
+            logger.exception(f"{path}: calibration failed")
+            print(f"  CALIBRATION FAILED {path}: {e!r}", file=sys.stderr)
+            failed += 1
+            continue
+        print(result.summary())
+        print(f"  {written}")
+    return 1 if failed else 0
+
+
+def _plot_calibration(args: argparse.Namespace) -> int:
+    import twutils
+    from masscal.plots import PLOTS, plot_outputs
+
+    files = _files(args.files)
+    if not files:
+        return 1
+    if args.peaks is not None and len(files) > 1:
+        raise SystemExit("--peaks can only be used with one file.")
+    failed = 0
+    for path in files:
+        mc_file = path
+        if path.suffix == ".h5":
+            candidates = [
+                twutils.mc_path(path, _segments(args.segments)),
+                *twutils.legacy_mc_paths(path, args.ionisation),
+            ]
+            mc_file = next((c for c in candidates if c.is_file()), candidates[0])
+        try:
+            pngs = plot_outputs(mc_file, args.peaks, args.plots or PLOTS, show=args.show)
+        except Exception as e:
+            logger.exception(f"{mc_file}: plots failed")
+            print(f"  PLOTS FAILED {mc_file}: {e!r}", file=sys.stderr)
+            failed += 1
+            continue
+        print(mc_file)
+        for png in pngs.values():
+            print(f"  {png}")
+    return 1 if failed else 0
+
+
+def _chromatograms(args: argparse.Namespace) -> int:
+    import peaxart
+
+    from esper.chromatograms import DEFAULT_STEPS, chromatograms_to_file
+
+    files = _files(args.files)
+    if not files:
+        return 1
+    if args.output is not None and len(files) > 1:
+        raise SystemExit("--output can only be used with one file (use --output-dir).")
+    baseline = {"method": None if args.no_baseline else "arpls"}
+    baseline |= {} if args.lam is None else {"lam": args.lam}
+    baseline = (
+        peaxart.BaselineConfig.legacy(**baseline)
+        if args.legacy
+        else peaxart.BaselineConfig(**baseline)
+    )
+    config = peaxart.UnitMassConfig(d_m=args.d_m, baseline=baseline)
+    failed = 0
+    for path in files:
+        try:
+            written = chromatograms_to_file(
+                path,
+                output=args.output,
+                output_dir=args.output_dir,
+                masses=args.mass,
+                segments=_segments(args.segments),
+                calibration=args.mass_cal,
+                rt_start=args.rt_start,
+                rt_stop=args.rt_stop,
+                mass_axis="end" if args.legacy else args.mass_axis,
+                steps=None if args.legacy or args.no_steps else DEFAULT_STEPS,
+                config=config,
+                ionisation=args.ionisation,
+                keep_raw=not args.no_raw,
+                block=args.block,
+            )
+        except Exception as e:
+            logger.exception(f"{path}: chromatograms failed")
+            print(f"  CHROMATOGRAMS FAILED {path}: {e!r}", file=sys.stderr)
+            failed += 1
+            continue
+        print(written)
+    return 1 if failed else 0
+
+
 def _install(args: argparse.Namespace) -> int:
     from esper.install import install, is_root, uninstall
 
@@ -180,6 +348,232 @@ def main(argv: list[str] | None = None) -> int:
         help="retention index references (default: alpinac's)",
     )
     p_targets.set_defaults(func=_targets)
+
+    from masscal import CalibrationConfig, Mode
+
+    default = CalibrationConfig()
+    p_cal = sub.add_parser(
+        "calibrate",
+        help="Mass calibration of h5 files, following the drift with the retention time",
+        description="Read the spectra of h5 files (twutils), fit the mass calibration in rt "
+        "windows on calibrant ions (masscal) and write <run>.alpinac/<run>.seg0_mc.json "
+        "and the calibrant peaks (.peaks.csv), used by the extraction and esper upload.",
+    )
+    p_cal.add_argument("files", nargs="+", help="h5 files (glob patterns allowed)")
+    p_cal.add_argument(
+        "-c",
+        "--calibrants-file",
+        type=Path,
+        help="yaml file of the calibrants (and initial calibration), as "
+        "/shared/scripts/tof-processing/config_calib.yml",
+    )
+    p_cal.add_argument(
+        "--calibrant",
+        nargs="+",
+        metavar="FORMULA",
+        help="calibrants present during the run: formulas (CF3, Re+2, [13C]O) or m/z "
+        "values (instead of those of --calibrants-file). Default: air, F, Re and PFTBA "
+        "ions (masscal.DEFAULT_CALIBRANTS)",
+    )
+    p_cal.add_argument(
+        "--spike",
+        nargs="+",
+        action="append",
+        default=[],
+        metavar=("RT", "FORMULA"),
+        help="calibrants injected at RT s (repeatable): --spike 1200 CF3 C2F5",
+    )
+    p_cal.add_argument(
+        "--mode",
+        default=str(default.mode),
+        choices=[m.value for m in Mode],
+        help="calibration function (default %(default)s)",
+    )
+    p_cal.add_argument(
+        "--averaging",
+        type=float,
+        default=default.averaging,
+        help="duration of the rt windows, s (default %(default)s)",
+    )
+    p_cal.add_argument(
+        "--spacing",
+        type=float,
+        default=default.spacing,
+        help="interval between the rt windows, s (default %(default)s)",
+    )
+    p_cal.add_argument("--rt-start", type=float, help="start of the calibrated rt range, s")
+    p_cal.add_argument("--rt-stop", type=float, help="end of the calibrated rt range, s")
+    p_cal.add_argument(
+        "--mz-range",
+        type=float,
+        default=default.mz_range,
+        help="half width of the calibrant domains, m/z (default %(default)s)",
+    )
+    p_cal.add_argument(
+        "--max-ppm",
+        type=float,
+        default=default.max_ppm,
+        help="calibrants with larger residuals are left out (default %(default)s)",
+    )
+    p_cal.add_argument(
+        "--initial",
+        type=Path,
+        help="calibration file to find the calibrants (default: the h5 calibration)",
+    )
+    p_cal.add_argument(
+        "--neutral",
+        action="store_true",
+        help="neutral masses of the formulas without charge (legacy alpinac)",
+    )
+    p_cal.add_argument(
+        "--segments",
+        help="segments calibrated (summed): 1, or 1:3 for 1 and 2. Required for files "
+        "with several segments (EI/CI instruments); names the output (seg1, seg1-2)",
+    )
+    p_cal.add_argument("-o", "--output", type=Path, help="output file (one h5 file only)")
+    p_cal.add_argument(
+        "--output-dir",
+        type=Path,
+        help="output directory (default: <run>.alpinac next to the h5 file)",
+    )
+    p_cal.add_argument(
+        "--no-peaks-csv", action="store_true", help="do not write the calibrant peaks"
+    )
+    p_cal.add_argument(
+        "--plots",
+        action="store_true",
+        help="also write the plots (.<plot>.png next to the output, needs matplotlib)",
+    )
+    p_cal.add_argument(
+        "--block", type=int, default=600, help="scans read at once (default %(default)s)"
+    )
+    p_cal.set_defaults(func=_calibrate)
+
+    p_plot = sub.add_parser(
+        "plot-calibration",
+        help="Plots of mass calibrations written by esper calibrate",
+        description="Plot *_mc.json files and their calibrant peaks (.peaks.csv next to "
+        "them; without them only the parameters and the drift). The plots are written "
+        "next to the calibration file.",
+    )
+    p_plot.add_argument(
+        "files",
+        nargs="+",
+        help="*_mc.json (or legacy *_mc.txt) files, or h5 files (their calibration file)",
+    )
+    p_plot.add_argument(
+        "--peaks", type=Path, help="calibrant peaks file (one input file only)"
+    )
+    p_plot.add_argument(
+        "--plot",
+        nargs="+",
+        dest="plots",
+        metavar="NAME",
+        help="plots to make: parameters drift residuals peak_shape (default all)",
+    )
+    p_plot.add_argument(
+        "--segments", help="segments of the calibration file of the h5 files (1, 1:3)"
+    )
+    p_plot.add_argument(
+        "--ionisation",
+        choices=["EI", "CI"],
+        default="EI",
+        help="legacy calibration file <run>.<EI|CI>_mc.txt, used if there is no json file",
+    )
+    p_plot.add_argument("--show", action="store_true", help="show the plots")
+    p_plot.set_defaults(func=_plot_calibration)
+
+    import peaxart
+
+    default_um = peaxart.UnitMassConfig()
+    p_chrom = sub.add_parser(
+        "chromatograms",
+        help="Unit mass chromatograms of h5 files (summed, baseline removed)",
+        description="Read the spectra of h5 files (twutils), sum each scan around each unit "
+        "mass, smooth and remove the arPLS baseline (peaxart), and write "
+        "<run>.alpinac/<run>.unit_mass_chromatos.parquet (index rt, one column per unit "
+        "mass and tic; files with several segments: seg1:69, ...).",
+    )
+    p_chrom.add_argument("files", nargs="+", help="h5 files (glob patterns allowed)")
+    p_chrom.add_argument("--rt-start", type=float, help="start of the rt range, s")
+    p_chrom.add_argument(
+        "--rt-stop",
+        type=float,
+        help="end of the rt range, s (e.g. when the filament failed)",
+    )
+    p_chrom.add_argument(
+        "--mass",
+        type=float,
+        nargs="+",
+        help="unit masses (default: those of the spectra, as the legacy pipeline)",
+    )
+    p_chrom.add_argument(
+        "--mass-cal",
+        type=Path,
+        help="mass calibration file (*_mc.json, or legacy *_mc.txt); default: searched "
+        "next to the h5 file",
+    )
+    p_chrom.add_argument(
+        "--segments",
+        help="segments read (summed): 1, or 1:3 for 1 and 2. Required for files with "
+        "several segments (EI/CI instruments); selects the calibration file",
+    )
+    p_chrom.add_argument(
+        "--ionisation",
+        choices=["EI", "CI"],
+        default="EI",
+        help="legacy calibration file <run>.<EI|CI>_mc.txt, used if there is no json file",
+    )
+    p_chrom.add_argument(
+        "--mass-axis",
+        choices=["drift", "end"],
+        default="drift",
+        help="m/z windows with the calibration at the rt of each scan (drift), or at the "
+        "end of the run for all scans (end: legacy pipeline). Default %(default)s",
+    )
+    p_chrom.add_argument(
+        "--d-m",
+        type=float,
+        default=default_um.d_m,
+        help="half width of the m/z window of each unit mass (default %(default)s)",
+    )
+    p_chrom.add_argument(
+        "--lam",
+        type=float,
+        help=f"arPLS smoothness (default {default_um.baseline.lam:g}, "
+        f"--legacy {peaxart.BaselineConfig.legacy().lam:g})",
+    )
+    p_chrom.add_argument(
+        "--no-baseline", action="store_true", help="do not remove the baseline"
+    )
+    p_chrom.add_argument(
+        "--no-steps",
+        action="store_true",
+        help="fit the baseline over the whole run, not separately between the steps of "
+        "the acquisition (filament emission target, resonant ejection; from TPS2)",
+    )
+    p_chrom.add_argument(
+        "--legacy",
+        action="store_true",
+        help="reproduce the legacy pipeline (unit_mass_chromatos.parquet): --mass-axis "
+        "end, --no-steps, lam 1e5, zero padding of the smoothing",
+    )
+    p_chrom.add_argument(
+        "--no-raw",
+        action="store_true",
+        help="do not write the raw sums and the baselines (.raw.parquet, "
+        ".baseline.parquet next to the chromatograms)",
+    )
+    p_chrom.add_argument(
+        "--block", type=int, default=600, help="scans read at once (default %(default)s)"
+    )
+    p_chrom.add_argument("-o", "--output", type=Path, help="output file (one h5 file only)")
+    p_chrom.add_argument(
+        "--output-dir",
+        type=Path,
+        help="output directory (default: <run>.alpinac next to the h5 file)",
+    )
+    p_chrom.set_defaults(func=_chromatograms)
 
     p_install = sub.add_parser(
         "install",
