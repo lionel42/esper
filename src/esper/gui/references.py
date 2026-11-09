@@ -43,9 +43,11 @@ def identification_candidate(
     as alpinac does. All None if no library has a spectrum of the name.
     Waits for the libraries to be read.
     """
-    main_name = data.main_name(name)
+    main_name = data.target_index.main_name(name)
     candidates = data.candidates(measurement_id, compound_idx)
-    same = candidates[candidates["candidate_name"].map(data.main_name) == main_name]
+    same = candidates[
+        candidates["candidate_name"].map(data.target_index.main_name) == main_name
+    ]
     if not same.empty:
         best = same.sort_values("rank").iloc[0]
         return best["spectrum_ref"], best["score"], best["score_combined"]
@@ -64,13 +66,13 @@ def identification_candidate(
             library,
             spectrum_name,
         )
-        for spectrum_name in data.names_of(main_name)
+        for spectrum_name in data.target_index.names_of(main_name)
         for library in libraries.libraries_with(spectrum_name)
     ]
     if not scored:
         return None, None, None
     score, library, spectrum_name = max(scored)
-    target = data.target_of(main_name)
+    target = data.target_index.target_of(main_name)
     ri = data.targets.at[target, "ri"] if target is not None else np.nan
     ri_diff = data.compounds(measurement_id).at[compound_idx, "retention_index"] - ri
     family = library.split("_", 1)[0]

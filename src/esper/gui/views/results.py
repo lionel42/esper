@@ -6,11 +6,11 @@ from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel
 
 from esper.gui.data import EsperData
 from esper.gui.panels.chromatogram import ChromatogramPanel
-from esper.gui.panels.results_plot import ALL, X_OPTIONS, Y_OPTIONS, ResultsPlotPanel
+from esper.gui.panels.results_plot import Y_OPTIONS, ResultsPlotPanel
 from esper.gui.panels.spectrum import SpectrumPanel
 from esper.gui.selection import Selection
 from esper.gui.views.base import BaseView
-from esper.gui.widgets import StepCombo
+from esper.gui.widgets import RuntypeBox, StepCombo
 
 
 class ResultsView(BaseView):
@@ -21,9 +21,9 @@ class ResultsView(BaseView):
         self._names_loaded = False
 
         self.cmp_box = StepCombo("Cmp:", min_width=220)
-        self.runtype_box = StepCombo("Runtype:", editable=False, min_width=90)
+        self.runtype_box = RuntypeBox()
         self.x_combo = QComboBox()
-        self.x_combo.addItems(X_OPTIONS)
+        self.x_combo.addItems(ResultsPlotPanel.x_options())
         self.y_combo = QComboBox()
         self.y_combo.addItems(list(Y_OPTIONS))
         self.valid_only = QCheckBox("valid only")
@@ -84,10 +84,7 @@ class ResultsView(BaseView):
         """Candidate names for the Cmp box; selects the most frequent one if nothing is selected."""
         self._names_loaded = True
         # Keeping the runtype the plot is filtered by
-        self.runtype_box.set_items(
-            [(ALL, ALL)] + [(t, t) for t in self.data.sample_types()],
-            self.results.options["runtype"],
-        )
+        self.runtype_box.fill(self.data.sample_types(), self.results.options["runtype"])
         counts = self.data.candidate_names(self.valid_only.isChecked())
         self.cmp_box.set_items([(name, name) for name in counts.index])
         if self.selection.label is None and not counts.empty:

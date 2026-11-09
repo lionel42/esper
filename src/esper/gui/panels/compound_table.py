@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QApplication, QCheckBox, QMenu, QMessageBox
 from esper import db
 from esper.gui.data import EsperData
 from esper.gui.identification_dialog import IdentificationDialog
-from esper.gui.panels.chromatogram import compound_label
+from esper.gui.labels import compound_label
 from esper.gui.panels.table import Column, TablePanel, bool_color, score_color
 from esper.gui.references import identification_candidate
 from esper.gui.selection import Selection

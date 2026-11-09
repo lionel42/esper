@@ -6,7 +6,6 @@ from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel
 
 from esper.gui.data import EsperData
 from esper.gui.panels.mass_cal_plot import (
-    ALL,
     UNITS,
     X_OPTIONS,
     MassCalPlotPanel,
@@ -15,7 +14,7 @@ from esper.gui.panels.mass_cal_plot import (
 )
 from esper.gui.selection import Selection
 from esper.gui.views.base import BaseView
-from esper.gui.widgets import StepCombo
+from esper.gui.widgets import RuntypeBox
 
 
 class MassCalView(BaseView):
@@ -25,7 +24,7 @@ class MassCalView(BaseView):
         super().__init__(data, selection, parent)
         self._loaded = False
 
-        self.runtype_box = StepCombo("Runtype:", editable=False, min_width=90)
+        self.runtype_box = RuntypeBox()
         self.unit_combo = QComboBox()
         self.unit_combo.addItems(list(UNITS))
         self.unit_combo.setToolTip(
@@ -76,9 +75,7 @@ class MassCalView(BaseView):
             # The parameters and the drift over time get most of the height
             height = self.splitter.height()
             self.splitter.setSizes([height * 2 // 3, height // 3, height // 3])
-            self.runtype_box.set_items(
-                [(ALL, ALL)] + [(t, t) for t in self.data.sample_types()], ALL
-            )
+            self.runtype_box.fill(self.data.sample_types())
             points = self.data.mass_cal_points
             n_runs = points["measurement_id"].nunique()
             missing = len(self.data.measurements) - n_runs

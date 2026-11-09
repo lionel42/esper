@@ -6,14 +6,12 @@ from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit
 
 from esper.gui.data import TIC, EsperData
+from esper.gui.labels import compound_label
 from esper.gui.panels.base import BasePanel
-from esper.gui.panels.chromatogram import (
-    ChromatogramPanel,
-    RelativeChromatogramPanel,
-    compound_label,
-)
+from esper.gui.panels.chromatogram import ChromatogramPanel
 from esper.gui.panels.compound_table import CompoundTablePanel
 from esper.gui.panels.matches import BestMatchesPanel
+from esper.gui.panels.relative_chromatogram import RelativeChromatogramPanel
 from esper.gui.panels.spectrum import SpectrumPanel
 from esper.gui.panels.target_table import TargetTablePanel
 from esper.gui.selection import Selection
@@ -137,10 +135,7 @@ class ChromatogramToolbar(BasePanel):
         if self._mass_items_key != key:
             self._mass_items_key = key
             if sel.measurement_id is not None and sel.compound_idx is not None:
-                peaks = self.data.compound_peaks(*key).sort_values(
-                    "prominence", ascending=False
-                )
-                masses = [int(m) for m in peaks["mass"].drop_duplicates()]
+                masses = self.data.compound_masses(*key)
             else:
                 masses = list(range(2, 301))
             self.mass_box.set_items([("tic", TIC)] + [(str(m), m) for m in masses])

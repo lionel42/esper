@@ -1,4 +1,4 @@
-"""Chromatogram panels: absolute, with the peaks found by alpinac, and relative."""
+"""Chromatogram panel: the selected mass of a measurement, with its peaks and overlays."""
 
 from __future__ import annotations
 
@@ -8,18 +8,30 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pandas as pd
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import QCheckBox, QVBoxLayout, QWidgetAction
 
-from esper.fitting import SOURCE_FIT, peak_shape
+from esper.fitting import SOURCE_FIT
 from esper.gui.data import TIC, EsperData
+from esper.gui.labels import (
+    NO_COMPOUND,
+    combined_label,
+    compound_label,
+    mass_label,
+    peak_compound_label,
+)
 from esper.gui.panels.base import BasePanel
+from esper.gui.panels.chromatogram_items import (
+    fit_fill_items,
+    fit_integration_items,
+    ips_items,
+    lowest_near,
+)
 from esper.gui.plotting import add_curve, make_plot
 from esper.gui.selection import Selection
 from esper.gui.settings import INTEGRATIONS, settings_manager
-from esper.gui.style import overlay_colors
-from esper.integration import integration_bounds, peak_area
+from esper.gui.style import TARGET_COLOR, overlay_colors
 
 # Half width of the rt window shown around the selected compound [s]
 RT_HALF_WINDOW = 30.0
@@ -38,15 +50,12 @@ OVERLAYS = {
 }
 # Overlays checked at start: the qualifier ions of the target
 DEFAULT_OVERLAYS = {"target"}
-TARGET_COLOR = "#008000"
 # Half width of the window used for the y zoom around a target not found [s]
 TARGET_HALF_WINDOW = 10.0
 # Above this number of overlaid curves, no legend
 MAX_LEGEND_ENTRIES = 12
 # Above this number of overlaid curves, the whole chromatogram file is read at once
 READ_ALL_ABOVE = 20
-# Delay before rescaling the relative plot after a pan/zoom [ms]
-RESCALE_DELAY_MS = 100
 # Delay before updating the masses peaking in the view after a pan/zoom [ms]
 PEAKING_DELAY_MS = 300
 # Integration menu: key -> menu text
@@ -56,70 +65,6 @@ INTEGRATION_TEXTS = {
     "extraction": "extraction (ips)",
     "none": "none",
 }
-# Fitted peaks: drawn where above this fraction of their height, filled with this
-# opacity (0-255; peaks of the selected compounds: FIT_ALPHA_SELECTED)
-FIT_VISIBLE = 1e-3
-FIT_ALPHA = 40
-FIT_ALPHA_SELECTED = 90
-# Integration view: bases of a fitted peak where it falls to this fraction of its height
-FIT_BASE_FRACTION = 0.01
-INTEGRATION_COLOR = "#c80000"
-# Peak labels without a baseline: below the lowest signal within this of the apex [s]
-LABEL_HALF_WINDOW = 5.0
-# compound_idx of the peaks of the fit that match no compound
-NO_COMPOUND = -1
-
-
-def compound_label(name, compound_idx) -> str:
-    return name if isinstance(name, str) else f"#{compound_idx}"
-
-
-def combined_label(compound_idxs: tuple[int, ...]) -> str:
-    """The other compounds selected with the main one, e.g. ' + #12, #15'."""
-    return (
-        " + " + ", ".join(f"#{i}" for i in compound_idxs[1:])
-        if len(compound_idxs) > 1
-        else ""
-    )
-
-
-def peak_compound_label(names, compound_idx: int) -> str:
-    """Compound of a peak (``NO_COMPOUND``: none)."""
-    if compound_idx == NO_COMPOUND:
-        return "no compound"
-    return compound_label(names.get(compound_idx), compound_idx)
-
-
-def _pairs(a0, a1) -> np.ndarray:
-    """Points of segments (a0[i], a1[i]), for ``connect="pairs"``."""
-    return np.column_stack([a0, a1]).ravel()
-
-
-def fitted_shapes(t: np.ndarray, peaks, fraction: float):
-    """(peak, slice of t, shape above the baseline) of the fitted peaks of one mass,
-    where the shape is above ``fraction`` of its height."""
-    fitted = peaks[peaks["fit_rt_s"].notna() & (peaks["fit_height"] > 0)]
-    for p in fitted.itertuples():
-        shape = peak_shape(t, p)
-        inside = np.flatnonzero(shape > fraction * p.fit_height)
-        if len(inside) < 2:
-            continue
-        part = slice(inside[0], inside[-1] + 1)
-        yield p, part, shape[part]
-
-
-def lowest_near(t: np.ndarray, y: np.ndarray, rt: np.ndarray) -> np.ndarray:
-    """Lowest signal within LABEL_HALF_WINDOW of each rt (the signal at rt if no sample is)."""
-    out = np.interp(rt, t, y)
-    for i, r in enumerate(rt):
-        near = y[(t >= r - LABEL_HALF_WINDOW) & (t <= r + LABEL_HALF_WINDOW)]
-        if len(near):
-            out[i] = near.min()
-    return out
-
-
-def mass_label(mass: int | None) -> str:
-    return "TIC" if mass is TIC else f"m/z {mass}"
 
 
 @dataclass
@@ -129,6 +74,67 @@ class Curve:
     t: np.ndarray
     y: np.ndarray
     color: object
+
+
+class OverlayOptions(QObject):
+    """The overlays checked (keys of ``OVERLAYS``), with a 'Masses' menu in several plots.
+
+    Checking the 3rd mass checks the 2nd too (which can then be unchecked alone).
+    """
+
+    changed = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.checked: set[str] = set(DEFAULT_OVERLAYS)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.checked
+
+    def set(self, key: str, value: bool) -> None:
+        keys = {key, "rank2"} if key == "rank3" and value else {key}
+        checked = self.checked | keys if value else self.checked - keys
+        if checked != self.checked:
+            self.checked = checked
+            self.changed.emit()
+
+    def add_menu(self, plot: pg.PlotWidget) -> dict[str, QCheckBox]:
+        """Add the 'Masses' submenu to the right click menu of a plot (checkboxes keep
+        the menu open), kept in sync with the others."""
+        menu = plot.getViewBox().menu
+        menu.addSeparator()
+        submenu = menu.addMenu("Masses")
+        checks: dict[str, QCheckBox] = {}
+        for key, text in OVERLAYS.items():
+            check = QCheckBox(text)
+            check.setChecked(key in self.checked)
+            check.setStyleSheet("QCheckBox { padding: 3px 12px; }")
+            check.toggled.connect(lambda value, key=key: self.set(key, value))
+            action = QWidgetAction(submenu)
+            action.setDefaultWidget(check)
+            submenu.addAction(action)
+            checks[key] = check
+        _MenuSync(self, checks, submenu)
+        return checks
+
+
+class _MenuSync(QObject):
+    """Keeps the checkboxes of one 'Masses' menu in sync; owned by the menu, so that
+    the connection goes with it."""
+
+    def __init__(
+        self, overlays: OverlayOptions, checks: dict[str, QCheckBox], menu
+    ) -> None:
+        super().__init__(menu)
+        self.overlays = overlays
+        self.checks = checks
+        overlays.changed.connect(self.sync)
+
+    def sync(self) -> None:
+        for key, check in self.checks.items():
+            check.blockSignals(True)
+            check.setChecked(key in self.overlays)
+            check.blockSignals(False)
 
 
 class ChromatogramPanel(BasePanel):
@@ -163,8 +169,9 @@ class ChromatogramPanel(BasePanel):
         self.title_label.anchor(itemPos=(1, 0), parentPos=(1, 0), offset=(-10, 5))
         self.legend = self.plot.addLegend(offset=(-10, 30))
 
-        self._check_sets: list[dict[str, QCheckBox]] = []
-        self.overlay_checks = self.add_masses_menu(self.plot)
+        self.overlays = OverlayOptions(self)
+        self.overlay_checks = self.overlays.add_menu(self.plot)
+        self.overlays.changed.connect(self._on_overlays_changed)
         self.settings = settings_manager()
         self.integration = self.settings.settings.chromatogram_integration
         self.integration_actions = self._add_integration_menu(self.plot)
@@ -180,31 +187,6 @@ class ChromatogramPanel(BasePanel):
         layout.addWidget(self.plot)
 
     # --- overlays -------------------------------------------------------------------
-
-    def add_masses_menu(self, plot: pg.PlotWidget) -> dict[str, QCheckBox]:
-        """Add the 'Masses' submenu to the right click menu of a plot.
-
-        Checkboxes keep the menu open. Every plot gets its own checkboxes,
-        kept in sync with the ones of this panel.
-        """
-        menu = plot.getViewBox().menu
-        menu.addSeparator()
-        submenu = menu.addMenu("Masses")
-        checks: dict[str, QCheckBox] = {}
-        current = self._check_sets[0] if self._check_sets else {}
-        for key, text in OVERLAYS.items():
-            check = QCheckBox(text)
-            check.setChecked(
-                current[key].isChecked() if current else key in DEFAULT_OVERLAYS
-            )
-            check.setStyleSheet("QCheckBox { padding: 3px 12px; }")
-            check.toggled.connect(lambda value, key=key: self._on_check(key, value))
-            action = QWidgetAction(submenu)
-            action.setDefaultWidget(check)
-            submenu.addAction(action)
-            checks[key] = check
-        self._check_sets.append(checks)
-        return checks
 
     def _add_integration_menu(self, plot: pg.PlotWidget) -> dict[str, QAction]:
         """'Integration' submenu of the right click menu: ips, fitted peaks or none."""
@@ -237,25 +219,19 @@ class ChromatogramPanel(BasePanel):
         self._keep_range = True
         self.invalidate()
 
-    def _on_check(self, key: str, value: bool) -> None:
-        keys = [key, "rank2"] if key == "rank3" and value else [key]
-        for checks in self._check_sets:
-            for k in keys:
-                checks[k].blockSignals(True)
-                checks[k].setChecked(value)
-                checks[k].blockSignals(False)
+    def _on_overlays_changed(self) -> None:
         self._keep_range = True
         self.invalidate()
 
     def _overlay_masses(self) -> list[int | None]:
         """Masses to overlay on the main one (None: TIC), in display order."""
         sel = self.selection
-        checked = {k for k, c in self.overlay_checks.items() if c.isChecked()}
-        compound_masses = []
-        if sel.compound_idx is not None:
-            peaks = self.data.compound_peaks(sel.measurement_id, sel.compound_idxs)
-            peaks = peaks.sort_values("prominence", ascending=False)
-            compound_masses = [int(m) for m in peaks["mass"].drop_duplicates()]
+        checked = self.overlays.checked
+        compound_masses = (
+            []
+            if sel.compound_idx is None
+            else self.data.compound_masses(sel.measurement_id, sel.compound_idxs)
+        )
 
         masses: list = []
         if "all" in checked:
@@ -271,7 +247,7 @@ class ChromatogramPanel(BasePanel):
             masses.extend(self._peaking_masses())
         # Expected ions of the target; always when the target is not found in the measurement
         if sel.target is not None and ("target" in checked or sel.compound_idx is None):
-            masses.extend(self.data.target_masses(sel.target))
+            masses.extend(self.data.target_index.target_masses(sel.target))
         if "tic" in checked:
             masses.append(TIC)
         return [m for m in dict.fromkeys(masses) if m != sel.mass]
@@ -290,7 +266,7 @@ class ChromatogramPanel(BasePanel):
         ]
 
     def _on_x_range_changed(self, *_) -> None:
-        if self.overlay_checks["peaking"].isChecked():
+        if "peaking" in self.overlays:
             self._peaking_timer.start()
 
     def _update_peaking(self) -> None:
@@ -400,7 +376,9 @@ class ChromatogramPanel(BasePanel):
             curves.append(curve)
             # Fitted peaks of the overlaid masses, unless there are too many
             if self.integration == "fit_shapes" and mass is not TIC and show_legend:
-                self._draw_fits(curve.t, peaks[peaks["mass"] == mass], color)
+                self._add_all(
+                    fit_fill_items(curve.t, peaks[peaks["mass"] == mass], color)
+                )
             if show_legend:
                 self.legend.addItem(item, curve.label)
         return curves
@@ -436,7 +414,7 @@ class ChromatogramPanel(BasePanel):
         if sel.target is not None:
             target = self.data.targets.loc[sel.target]
             expected_rt = self.data.expected_rt(sel.measurement_id, sel.target)
-            masses = self.data.target_masses(sel.target)
+            masses = self.data.target_index.target_masses(sel.target)
             lines += [
                 (
                     "target",
@@ -480,6 +458,10 @@ class ChromatogramPanel(BasePanel):
         self.plot.addItem(item)
         self._annotations.append(item)
 
+    def _add_all(self, items) -> None:
+        for item in items:
+            self._add(item)
+
     def _annotate(self, t: np.ndarray, y: np.ndarray) -> None:
         """Integration (``self.integration``), apex marker and label of each peak at this mass."""
         sel = self.selection
@@ -503,15 +485,16 @@ class ChromatogramPanel(BasePanel):
             integration = "none"
         fitted = integration == "fit_integration"
         if fitted:
-            self._draw_fit_integration(t, peaks)
+            self._add_all(fit_integration_items(t, peaks))
             areas = peaks["fit_area"].to_numpy(dtype=float)
             base = peaks["fit_baseline"].to_numpy(dtype=float)
             y_label = np.where(np.isfinite(base), base, y_label)
         elif integration == "extraction":
-            areas, y_base = self._draw_ips(t, y, peaks)
+            items, areas, y_base = ips_items(t, y, peaks)
+            self._add_all(items)
             y_label = np.where(np.isfinite(y_base), y_base, y_label)
         elif integration == "fit_shapes":
-            self._draw_fits(t, peaks, "k", selected=sel.compound_idxs)
+            self._add_all(fit_fill_items(t, peaks, "k", selected=sel.compound_idxs))
             areas = peaks["fit_area"].to_numpy(dtype=float)
             base = peaks["fit_baseline"].to_numpy(dtype=float)
             y_label = np.where(np.isfinite(base), base, y_label)
@@ -578,116 +561,6 @@ class ChromatogramPanel(BasePanel):
             f"S/N = {p.fit_sn:.0f}",
         ]
 
-    def _draw_fit_integration(self, t: np.ndarray, peaks) -> None:
-        """Bases, constant baseline, apex line and outline of the fitted peaks of one mass."""
-        pen = pg.mkPen(INTEGRATION_COLOR, width=1)
-        starts, stops, bases, rts, tops = [], [], [], [], []
-        for p, part, shape in fitted_shapes(t, peaks, FIT_BASE_FRACTION):
-            starts.append(t[part][0])
-            stops.append(t[part][-1])
-            bases.append(p.fit_baseline)
-            rts.append(p.fit_rt_s)
-            tops.append(p.fit_baseline + p.fit_height)
-            outline = pg.PlotCurveItem(
-                t[part],
-                p.fit_baseline + shape,
-                pen=pg.mkPen(INTEGRATION_COLOR, width=1, style=Qt.PenStyle.DashLine),
-            )
-            outline.setZValue(-1)
-            self._add(outline)
-        if not starts:
-            return
-        self._add(
-            pg.PlotDataItem(
-                _pairs(starts, stops), _pairs(bases, bases), connect="pairs", pen=pen
-            )
-        )
-        self._add(
-            pg.PlotDataItem(
-                _pairs(rts, rts),
-                _pairs(bases, tops),
-                connect="pairs",
-                pen=pg.mkPen("k", width=0.5),
-            )
-        )
-        self._add(
-            pg.ScatterPlotItem(
-                np.concatenate([starts, stops]),
-                np.concatenate([bases, bases]),
-                symbol="|",
-                size=20,
-                pen=pg.mkPen(INTEGRATION_COLOR, width=1.5),
-            )
-        )
-
-    def _draw_ips(
-        self, t: np.ndarray, y: np.ndarray, peaks
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Baseline, bounds and apex line of the peaks with ips; their areas and baselines below the apex (NaN without ips)."""
-        rt = peaks["rt_s"].to_numpy(dtype=float)
-        start, stop = integration_bounds(peaks, t)
-        valid = np.isfinite(start) & np.isfinite(stop)
-        areas = np.full(len(peaks), np.nan)
-        y_base = np.full(len(peaks), np.nan)
-        if not valid.any():
-            return areas, y_base
-        rt, start, stop = rt[valid], start[valid], stop[valid]
-        y_start, y_stop, y_apex = (
-            np.interp(start, t, y),
-            np.interp(stop, t, y),
-            np.interp(rt, t, y),
-        )
-        y_base[valid] = y_start + (y_stop - y_start) * (rt - start) / np.where(
-            stop > start, stop - start, 1
-        )
-        areas[valid] = [peak_area(t, y, a, b) for a, b in zip(start, stop)]
-
-        self._add(
-            pg.PlotDataItem(
-                _pairs(start, stop),
-                _pairs(y_start, y_stop),
-                connect="pairs",
-                pen=pg.mkPen("r", width=1),
-            )
-        )
-        self._add(
-            pg.PlotDataItem(
-                _pairs(rt, rt),
-                _pairs(y_base[valid], y_apex),
-                connect="pairs",
-                pen=pg.mkPen("k", width=0.5),
-            )
-        )
-        self._add(
-            pg.ScatterPlotItem(
-                np.concatenate([start, stop]),
-                np.concatenate([y_start, y_stop]),
-                symbol="|",
-                size=20,
-                pen=pg.mkPen("r", width=1.5),
-            )
-        )
-        return areas, y_base
-
-    def _draw_fits(self, t: np.ndarray, peaks, color, selected=()) -> None:
-        """Fitted peaks of one mass, filled between the baseline and the peak, in the color of the mass."""
-        for p, part, shape in fitted_shapes(t, peaks, FIT_VISIBLE):
-            tt = t[part]
-            base = np.full(len(tt), p.fit_baseline)
-            alpha = (
-                FIT_ALPHA_SELECTED
-                if not pd.isna(p.compound_idx) and p.compound_idx in selected
-                else FIT_ALPHA
-            )
-            fill_color = pg.mkColor(color)
-            fill_color.setAlpha(alpha)
-            lower = pg.PlotCurveItem(tt, base)
-            upper = pg.PlotCurveItem(tt, base + shape, pen=pg.mkPen(color, width=1))
-            fill = pg.FillBetweenItem(lower, upper, brush=pg.mkBrush(fill_color))
-            for item in (fill, upper):
-                item.setZValue(-2)
-                self._add(item)
-
     def _on_apex_clicked(self, item, points, ev=None) -> None:
         if not len(points) or self.selection.measurement_id is None:
             return
@@ -724,76 +597,3 @@ class ChromatogramPanel(BasePanel):
         span = max(top - bottom, 1.0)
         self.plot.setXRange(x0, x1, padding=0)
         self.plot.setYRange(bottom - 0.35 * span, top + 0.05 * span, padding=0)
-
-
-class RelativeChromatogramPanel(BasePanel):
-    """The curves of a chromatogram panel, each scaled to the main mass in the visible window.
-
-    Follows its source panel (x axis linked, same overlays), not the selection.
-    """
-
-    title = "Relative chromatograms"
-    watches: set[str] = set()
-
-    def __init__(self, source: ChromatogramPanel, parent=None) -> None:
-        super().__init__(source.data, source.selection, parent)
-        self.source = source
-        self._main: Curve | None = None
-        self._overlays: list[Curve] = []
-        self._items: list = []
-
-        self.plot = make_plot()
-        self.plot.setXLink(source.plot)
-        self.curve = self.plot.plot(pen=pg.mkPen("k", width=1))
-        self.curve.setClipToView(True)
-        self.curve.setZValue(1)
-        source.add_masses_menu(self.plot)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.plot)
-
-        self._rescale_timer = QTimer(self)
-        self._rescale_timer.setSingleShot(True)
-        self._rescale_timer.setInterval(RESCALE_DELAY_MS)
-        self._rescale_timer.timeout.connect(self.rescale)
-        source.plot.sigXRangeChanged.connect(lambda *_: self._rescale_timer.start())
-        source.curves_changed.connect(self._on_curves_changed)
-
-    def _on_curves_changed(self, main: Curve | None, overlays: list[Curve]) -> None:
-        self._main, self._overlays = main, overlays
-        self.invalidate()
-
-    def redraw(self) -> None:
-        for item in self._items:
-            self.plot.removeItem(item)
-        self._items = []
-        if self._main is None:
-            self.curve.clear()
-            return
-        self.curve.setData(self._main.t, self._main.y)
-        self._items = [add_curve(self.plot, c.t, c.y, c.color) for c in self._overlays]
-        self.rescale()
-
-    def rescale(self) -> None:
-        """Scale each overlay to the range of the main mass in the visible window."""
-        if self._main is None:
-            return
-        if not self.isVisible():
-            self._outdated = True  # the window may have changed: rescaled when shown
-            return
-        x0, x1 = self.plot.viewRange()[0]
-        t, y = self._main.t, self._main.y
-        window = (t >= x0) & (t <= x1)
-        if not window.any():
-            return
-        main_min, main_max = float(y[window].min()), float(y[window].max())
-        for item, curve in zip(self._items, self._overlays):
-            w = (curve.t >= x0) & (curve.t <= x1)
-            if not w.any():
-                continue
-            lo, hi = curve.y[w].min(), curve.y[w].max()
-            factor = (main_max - main_min) / (hi - lo) if hi > lo else 0.0
-            item.setData(curve.t, main_min + (curve.y - lo) * factor)
-        span = max(main_max - main_min, 1.0)
-        self.plot.setYRange(main_min - 0.05 * span, main_max + 0.05 * span, padding=0)

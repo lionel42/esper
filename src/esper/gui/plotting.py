@@ -49,8 +49,9 @@ def set_x_axis(plot: pg.PlotWidget, time: bool) -> None:
     plot.setAxisItems({"bottom": axis})
 
 
-def time_values(df: pd.DataFrame) -> np.ndarray:
-    """Acquisition time as seconds since epoch, for a DateAxisItem."""
-    return ((df["acq_datetime"] - pd.Timestamp(0)) / pd.Timedelta(seconds=1)).to_numpy(
+def time_values(df: pd.DataFrame, column: str = "acq_datetime") -> np.ndarray:
+    """A time column (default: the acquisition time) as seconds since epoch, for a
+    DateAxisItem."""
+    return ((df[column] - pd.Timestamp(0)) / pd.Timedelta(seconds=1)).to_numpy(
         dtype=float
     )

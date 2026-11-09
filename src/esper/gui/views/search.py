@@ -17,16 +17,14 @@ from PySide6.QtWidgets import (
 
 from esper.gui.data import EsperData
 from esper.gui.panels.search_plot import (
-    ALL,
     WINDOWS,
-    X_OPTIONS,
     Y_OPTIONS,
     SearchPlotPanel,
     SearchQuery,
 )
 from esper.gui.selection import Selection
 from esper.gui.views.base import BaseView
-from esper.gui.widgets import StepCombo
+from esper.gui.widgets import RuntypeBox
 
 # Half width of the window filled from the selection
 SELECTION_HALF_WINDOW = {"rt": 5.0, "ri": 5.0}
@@ -88,9 +86,9 @@ class SearchView(BaseView):
         self.add_toolbar(search_row)
 
         # Display row
-        self.runtype_box = StepCombo("Runtype:", editable=False, min_width=90)
+        self.runtype_box = RuntypeBox()
         self.x_combo = QComboBox()
-        self.x_combo.addItems(X_OPTIONS)
+        self.x_combo.addItems(SearchPlotPanel.x_options())
         self.y_combo = QComboBox()
         self.y_combo.addItems(list(Y_OPTIONS))
         self.all_masses = QCheckBox("only runs with all masses")
@@ -139,9 +137,7 @@ class SearchView(BaseView):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if self.runtype_box.combo.count() == 0:
-            self.runtype_box.set_items(
-                [(ALL, ALL)] + [(t, t) for t in self.data.sample_types()], ALL
-            )
+            self.runtype_box.fill(self.data.sample_types())
         sel = self.selection
         if sel.measurement_id is not None and sel.compound_idx is not None:
             if self._filled_from != (sel.measurement_id, sel.compound_idx):
@@ -195,13 +191,8 @@ class SearchView(BaseView):
         self.lo_edit.setText(f"{centre - half:.1f}")
         self.hi_edit.setText(f"{centre + half:.1f}")
 
-        peaks = self.data.compound_peaks(sel.measurement_id, sel.compound_idx)
-        masses = peaks.sort_values("prominence", ascending=False)[
-            "mass"
-        ].drop_duplicates()
-        self.masses_edit.setText(
-            ", ".join(str(m) for m in masses.head(SELECTION_N_MASSES))
-        )
+        masses = self.data.compound_masses(sel.measurement_id, sel.compound_idx)
+        self.masses_edit.setText(", ".join(str(m) for m in masses[:SELECTION_N_MASSES]))
         self.search()
 
     def search(self) -> None:

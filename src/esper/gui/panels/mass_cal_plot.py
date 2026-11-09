@@ -16,11 +16,11 @@ from PySide6.QtWidgets import QVBoxLayout
 
 from esper.gui.data import EsperData
 from esper.gui.panels.base import BasePanel
-from esper.gui.plotting import make_plot, set_x_axis
+from esper.gui.plotting import make_plot, set_x_axis, time_values
 from esper.gui.selection import Selection
 from esper.gui.settings import settings_manager
+from esper.gui.widgets import ALL
 
-ALL = "all"
 PARAMS = [f"p{k}" for k in range(1, 6)]
 UNITS = {"ppm": "ppm", "tof index": "tof"}
 X_OPTIONS = ["Time", "Measurement"]
@@ -210,9 +210,7 @@ class MassCalPlotPanel(_MassCalBase):
 
     def _x_values(self, df: pd.DataFrame) -> np.ndarray:
         if self.options["x"] == "Time":
-            return ((df["time"] - pd.Timestamp(0)) / pd.Timedelta(seconds=1)).to_numpy(
-                dtype=float
-            )
+            return time_values(df, "time")
         # Measurement: the points of a run spread over RUN_WIDTH, by rt
         rt_max = max(float(self.data.mass_cal_points["rt_s"].max()), 1.0)
         return (

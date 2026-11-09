@@ -44,7 +44,7 @@ class IdentificationDialog(QDialog):
             if isinstance(compound["alpinac_name"], str)
             else None
         )
-        alpinac_target = data.target_of(alpinac)
+        alpinac_target = data.target_index.target_of(alpinac)
         edited = isinstance(compound["identified_at"], str)
         current = (
             compound["main_name"] if isinstance(compound["main_name"], str) else None
@@ -60,7 +60,7 @@ class IdentificationDialog(QDialog):
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         # alpinac's library candidates first, then all the targets with their expected rt
         for _, candidate in data.candidates(measurement_id, compound_idx).iterrows():
-            name = data.main_name(candidate["candidate_name"])
+            name = data.target_index.main_name(candidate["candidate_name"])
             if name is not None:
                 score = _format(candidate["score"], "{:.3f}")
                 self.combo.addItem(

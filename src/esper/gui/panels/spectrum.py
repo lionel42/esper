@@ -12,19 +12,15 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFileDialog, QMessageBox, QVBoxLayout
 
 from esper.gui.data import EsperData
+from esper.gui.labels import combined_label, compound_label
 from esper.gui.library_loader import library_loader
 from esper.gui.panels.base import BasePanel
-from esper.gui.panels.chromatogram import (
-    TARGET_COLOR,
-    ChromatogramPanel,
-    Curve,
-    combined_label,
-    compound_label,
-)
+from esper.gui.panels.chromatogram import ChromatogramPanel, Curve
 from esper.gui.plotting import make_plot
 from esper.gui.references import current_reference
 from esper.gui.selection import Selection
 from esper.gui.settings import settings_manager
+from esper.gui.style import TARGET_COLOR
 from esper.libraries import write_jdx
 
 # Number of most intense masses labelled with their m/z
@@ -149,7 +145,11 @@ class SpectrumPanel(BasePanel):
         self._items = []
         self._masses = np.array([])
         sel = self.selection
-        expected = self.data.target_masses(sel.target) if sel.target is not None else []
+        expected = (
+            self.data.target_index.target_masses(sel.target)
+            if sel.target is not None
+            else []
+        )
         self._mark_expected(expected)
         if sel.measurement_id is None or sel.compound_idx is None:
             if sel.target is not None:

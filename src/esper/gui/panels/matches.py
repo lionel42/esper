@@ -90,17 +90,13 @@ class BestMatchesPanel(TablePanel):
         df = pd.DataFrame([vars(m) for m in matches])
         df["spectrum"] = df["library"] + "/" + df["name"]
         df.index = df["spectrum"]
+        targets = [self.data.target_index.target_of(name) for name in df["name"]]
+        # The target a spectrum stands for, when not its own name
         df["compound"] = [
-            target if (target := self.data.target_of(name)) not in (None, name) else ""
-            for name in df["name"]
+            t if t not in (None, name) else "" for t, name in zip(targets, df["name"])
         ]
-        targets = self.data.targets
-        df["ri"] = [
-            targets.at[t, "ri"]
-            if (t := self.data.target_of(name)) is not None
-            else np.nan
-            for name in df["name"]
-        ]
+        ri = self.data.targets["ri"]
+        df["ri"] = [ri.at[t] if t is not None else np.nan for t in targets]
         compound_ri = self.data.compounds(sel.measurement_id).at[
             sel.compound_idx, "retention_index"
         ]

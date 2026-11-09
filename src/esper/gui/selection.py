@@ -85,7 +85,7 @@ class Selection(QObject):
         self._set(
             measurement_id=measurement_id,
             candidate=candidate,
-            target=self.data.target_of(candidate),
+            target=self.data.target_index.target_of(candidate),
             **self._compound_values(measurement_id, idxs[0]),
             compound_idxs=idxs,
         )
@@ -97,7 +97,7 @@ class Selection(QObject):
             values = self._compound_values(measurement_id, compound_idx)
             values["candidate"] = self.data.candidate_of(measurement_id, compound_idx)
         else:
-            masses = self.data.target_masses(target)
+            masses = self.data.target_index.target_masses(target)
             rt = self.data.expected_rt(measurement_id, target)
             values = {
                 "compound_idx": None,
@@ -133,7 +133,7 @@ class Selection(QObject):
             measurement_id=measurement_id,
             compound_idx=compound_idx,
             candidate=candidate,
-            target=self.data.target_of(candidate),
+            target=self.data.target_index.target_of(candidate),
             mass=mass,
             rt=rt,
         )
@@ -160,7 +160,7 @@ class Selection(QObject):
         values = {
             "candidate": candidate,
             "compound_idx": None,
-            "target": self.data.target_of(candidate),
+            "target": self.data.target_index.target_of(candidate),
         }
         if self.measurement_id is not None:
             compound_idx = self.data.find_compound(self.measurement_id, candidate)
@@ -176,7 +176,10 @@ class Selection(QObject):
         values = {}
         if self.measurement_id is not None and self.compound_idx is not None:
             candidate = self.data.candidate_of(self.measurement_id, self.compound_idx)
-            values = {"candidate": candidate, "target": self.data.target_of(candidate)}
+            values = {
+                "candidate": candidate,
+                "target": self.data.target_index.target_of(candidate),
+            }
         changed = {k for k, v in values.items() if getattr(self, k) != v}
         for k in changed:
             setattr(self, k, values[k])

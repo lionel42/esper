@@ -83,6 +83,12 @@ ADDED_COLUMNS = {
         ("fit_area_u", "REAL"),
         ("fit_sn", "REAL"),  # signal to noise
     ],
+    "compound_identification": [
+        # Best library spectrum of the name given by hand, and its scores
+        ("spectrum_ref", "TEXT"),
+        ("score", "REAL"),
+        ("score_combined", "REAL"),
+    ],
     "target_ion": [
         # Library spectrum the ion was taken from (target without ions in the target
         # list, e.g. 'nist_CFC-12'), NULL: from the target list

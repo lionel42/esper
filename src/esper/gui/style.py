@@ -65,6 +65,8 @@ def runtype_colors(runtypes: list[str]) -> dict[str, str]:
 # Overlaid chromatograms, the main mass being black: a few (the qualifiers) get these colors,
 # more get colors sampled from magma, without its ends (near black: the main mass; near
 # white: the background)
+# Target: where it is expected, its qualifier ions
+TARGET_COLOR = "#008000"
 QUALIFIER_COLORS = ["#66c2a5", "#fc8d62", "#8da0cb", "#e78ac3", "#a6d854"]
 MAGMA_RANGE = (0.25, 0.8)
 

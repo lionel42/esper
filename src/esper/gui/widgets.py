@@ -97,3 +97,17 @@ class StepCombo(QWidget):
         text = self.combo.currentText().strip()
         if self.combo.findText(text) < 0:
             self.text_entered.emit(text)
+
+
+# Item of the runtype boxes: all the run types
+ALL = "all"
+
+
+class RuntypeBox(StepCombo):
+    """Run type filter of the plots across the measurements: ``ALL`` or a sample type."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__("Runtype:", editable=False, min_width=90, parent=parent)
+
+    def fill(self, sample_types: list[str], current: str = ALL) -> None:
+        self.set_items([(ALL, ALL)] + [(t, t) for t in sample_types], current)
