@@ -58,7 +58,11 @@ class ChromatogramStore:
         return self._frame(measurement_id)
 
     def series(self, measurement_id: int, column: str) -> pd.Series | None:
-        """One chromatogram; only that column of the file is read."""
+        """One chromatogram; only that column of the file is read.
+
+        Without its NaN: the masses measured only in some time windows (GCwerks
+        quadrupole, esper.gcwerks) are NaN outside them.
+        """
         key = (measurement_id, column)
         if key in self._series:
             self._series.move_to_end(key)
@@ -67,7 +71,7 @@ class ChromatogramStore:
             return None
         series = pd.read_parquet(self._path_of(measurement_id), columns=[column])[
             column
-        ]
+        ].dropna()
         self._series[key] = series
         if len(self._series) > self._cache_size:
             self._series.popitem(last=False)

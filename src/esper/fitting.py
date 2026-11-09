@@ -532,8 +532,11 @@ def is_fitted(con: sqlite3.Connection, measurement_id: int) -> bool:
 
 def to_fit(con: sqlite3.Connection, force: bool = False) -> list[tuple[int, str]]:
     """(measurement_id, name) of the measurements not fitted, or fitted by an older
-    FIT_VERSION (all of them if ``force``), by acquisition time."""
-    where = "" if force else "WHERE fit_version IS NULL OR fit_version < ?"
+    FIT_VERSION (all of them if ``force``), by acquisition time. The measurements of
+    GCwerks (chromatograms only, no peaks) are not fitted."""
+    where = "WHERE source_format IS NULL"
+    if not force:
+        where += " AND (fit_version IS NULL OR fit_version < ?)"
     return con.execute(
         f"SELECT measurement_id, name FROM measurement {where} ORDER BY acq_datetime, name",
         () if force else (FIT_VERSION,),

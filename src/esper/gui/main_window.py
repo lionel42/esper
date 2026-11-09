@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from importlib import resources
 from pathlib import Path
@@ -208,7 +209,26 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"{name} ({label})" if label else name)
 
 
+def _default_platform_theme() -> None:
+    """On GNOME, use the built-in GNOME theme of Qt unless QT_QPA_PLATFORMTHEME is set.
+
+    Qt picks its GTK3 theme on GNOME (also under the xdg-desktop-portal theme), which calls
+    gtk_init, and GTK3 aborts the process on Wayland with the newer GNOME schemas
+    (``GLib-GIO-ERROR: Settings schema 'org.gnome.settings-daemon.plugins.xsettings' does
+    not contain a key named 'antialiasing'``: the key was removed). The GNOME theme does
+    not load GTK.
+    """
+    desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+    if (
+        sys.platform.startswith("linux")
+        and "gnome" in desktop.split(":")
+        and not os.environ.get("QT_QPA_PLATFORMTHEME")
+    ):
+        os.environ["QT_QPA_PLATFORMTHEME"] = "gnome"
+
+
 def run(data_dir: Path | None = None) -> int:
+    _default_platform_theme()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("esper")
     # Matches the desktop entry (window grouping, Wayland icon)

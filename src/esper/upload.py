@@ -1,4 +1,5 @@
-"""Import .alpinac folders into an esper data directory."""
+"""Import .alpinac folders (or GCwerks chromatograms, :mod:`esper.gcwerks`) into an esper
+data directory."""
 
 from __future__ import annotations
 
@@ -136,15 +137,26 @@ def upload(
     force: bool = False,
     fit: bool = True,
     workers: int | None = None,
+    source_format: str = "auto",
 ) -> UploadSummary:
     """Import the .alpinac folders of ``source``, and fit their peaks (``esper.fitting``) if ``fit``.
 
     ``workers``: processes of the fit (None: the number of CPUs).
+    ``source_format``: 'alpinac', 'gcwerks' (the chromatograms of a GCwerks directory,
+    :mod:`esper.gcwerks`, not fitted) or 'auto': 'gcwerks' if ``source`` is in a GCwerks
+    directory.
     """
+    from esper import gcwerks
     from esper.fitting import fit_pool
 
     data_dir = Path(data_dir)
     summary = UploadSummary([], [], [], [])
+    if source_format == "auto":
+        source_format = "gcwerks" if gcwerks.is_gcwerks_source(source) else "alpinac"
+    if source_format == "gcwerks":
+        return gcwerks.upload(source, data_dir, summary, force=force)
+    if source_format != "alpinac":
+        raise ValueError(f"Unknown source format {source_format!r}")
     con = db.connect(data_dir, create=True)
     stack = contextlib.ExitStack()
     # The processes of the fits, for all the measurements (started at the first fit)

@@ -358,7 +358,7 @@ class ChromatogramPanel(BasePanel):
         for i, mass in enumerate(masses):
             if frame is not None:
                 column = "tic" if mass is TIC else str(mass)
-                series = frame[column] if column in frame else None
+                series = frame[column].dropna() if column in frame else None
             else:
                 series = self.data.chromatogram(sel.measurement_id, mass)
             if series is None:

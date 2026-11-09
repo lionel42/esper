@@ -49,7 +49,10 @@ ADDED_COLUMNS = {
         (
             "acq_start_source",
             "TEXT",
-        ),  # 'h5': read in the h5 file; 'name': to the minute
+        ),  # 'h5': read in the h5 file; 'name': to the minute; 'gcwerks': its file, to the s
+        # Where the measurement comes from: NULL: a .alpinac folder; 'gcwerks': a GCwerks
+        # chromatogram file (esper.gcwerks, chromatograms only: not fitted)
+        ("source_format", "TEXT"),
     ],
     "mass_cal": [
         ("source_file", "TEXT"),  # the calibration file read
@@ -116,8 +119,8 @@ CREATE TABLE IF NOT EXISTS measurement (
     n_peaks             INTEGER,
     n_compounds         INTEGER,
     chromatogram_file   TEXT,                   -- relative to the data directory
-    source_dir          TEXT NOT NULL,          -- the .alpinac folder
-    source_mtime        REAL NOT NULL,          -- mtime of pipeline.nc, to detect reprocessing
+    source_dir          TEXT NOT NULL,          -- the .alpinac folder (the file for gcwerks)
+    source_mtime        REAL NOT NULL,          -- mtime of pipeline.nc (or the file), to detect reprocessing
     source_size         INTEGER NOT NULL,
     imported_at         TEXT NOT NULL
 );

@@ -21,6 +21,25 @@ esper gui /path/to/esper/data                               # open the GUI
 `upload --no-fit` imports without fitting; `-j N` (upload and fit) uses N processes for the
 fit (default: all CPUs, ~1 min per measurement with 10).
 
+### GCwerks chromatograms
+
+`esper upload` also imports the chromatograms of a GCwerks directory (e.g. a Medusa GC-MS),
+read with [gcwerks](https://github.com/lionel42/gcwerks) (`src/esper/gcwerks.py`):
+
+```
+esper upload /path/to/gcwerks/jungfraujoch-medusa /path/to/esper/data   # all the years
+esper upload /path/to/gcwerks/jungfraujoch-medusa/26 /path/to/esper/data
+```
+
+The source is recognised as GCwerks when it is in a directory with `config/gcwerks.conf`
+(`--format gcwerks|alpinac` to force it). The files `<yy>/chromatograms/channel0/<name>` (not the
+`tune` runs) are written as `chromatograms/<name>.parquet` (index rt, one column per unit mass and
+`tic`) and the measurement stored with `source_format = 'gcwerks'`, its start from the file
+(`acq_start_source = 'gcwerks'`, to the s). Only the chromatograms: no peaks, no fit (`esper fit`
+skips them). The quadrupole measures each mass only in its time windows: the column of a mass is
+NaN outside them (the GUI draws the measured scans only). The signal is as GCwerks stores it,
+baseline included. Unchanged files (same size and mtime) are skipped.
+
 ### Peak fit
 
 After the import, the peaks of each mass are fitted in the unit mass chromatograms with

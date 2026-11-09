@@ -25,6 +25,8 @@ dependencies = [
     "twutils @ git+https://github.com/lionel42/twutils.git",
     # Mass calibration: fit, files, plots (esper calibrate)
     "masscal @ git+https://github.com/lionel42/masscal.git",
+    # GCwerks chromatogram files (esper upload of a GCwerks directory, esper.gcwerks)
+    "gcwerks @ git+https://github.com/lionel42/gcwerks.git",
 ]
 
 [project.optional-dependencies]

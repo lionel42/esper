@@ -22,9 +22,9 @@ DATED_PIPELINE_GLOB = "pipeline_*.nc"
 # Unit mass chromatograms of a run: of esper chromatograms or of the legacy pipeline
 CHROMATOGRAM_FILENAME = "{name}.unit_mass_chromatos.parquet"
 
-# e.g. 241007.0423.air.1
+# e.g. 241007.0423.air.1, or without number (GCwerks: 260112.1907.tune)
 _NAME_RE = re.compile(
-    r"^(?P<date>\d{6})\.(?P<time>\d{4})\.(?P<type>[^.]+)\.(?P<number>\d+)$"
+    r"^(?P<date>\d{6})\.(?P<time>\d{4})\.(?P<type>[^.]+)(?:\.(?P<number>\d+))?$"
 )
 
 _RANKS = {1: "first", 2: "second", 3: "third"}
@@ -64,7 +64,7 @@ _COMPOUND_COLUMNS = {
 
 
 def parse_measurement_name(name: str) -> dict:
-    """Split 'YYMMDD.HHMM.<type>.<number>' into its parts (None if not matching)."""
+    """Split 'YYMMDD.HHMM.<type>[.<number>]' into its parts (None if not matching)."""
     m = _NAME_RE.match(name)
     if m is None:
         return {"acq_datetime": None, "sample_type": None, "sample_number": None}
@@ -72,7 +72,7 @@ def parse_measurement_name(name: str) -> dict:
     return {
         "acq_datetime": dt.isoformat(),
         "sample_type": m["type"],
-        "sample_number": int(m["number"]),
+        "sample_number": None if m["number"] is None else int(m["number"]),
     }
 
 

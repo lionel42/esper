@@ -28,6 +28,7 @@ def _upload(args: argparse.Namespace) -> int:
         force=args.force,
         fit=not args.no_fit,
         workers=args.workers,
+        source_format=args.format,
     )
     print(
         f"imported: {len(summary.imported)}, "
@@ -303,10 +304,15 @@ def main(argv: list[str] | None = None) -> int:
     p_gui.set_defaults(func=_gui)
 
     p_upload = sub.add_parser(
-        "upload", help="Import .alpinac folders into an esper data directory"
+        "upload",
+        help="Import .alpinac folders (or the chromatograms of a GCwerks directory) into "
+        "an esper data directory",
     )
     p_upload.add_argument(
-        "source", type=Path, help="a .alpinac folder or a directory containing some"
+        "source",
+        type=Path,
+        help="a .alpinac folder or a directory containing some; or a GCwerks directory, "
+        "one of its years (e.g. gcdir/26) or a chromatogram file",
     )
     p_upload.add_argument(
         "data_dir", type=Path, help="esper data directory (created if needed)"
@@ -319,6 +325,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_upload.add_argument(
         "-j", "--workers", type=int, help="processes of the fit (default: all CPUs)"
+    )
+    p_upload.add_argument(
+        "--format",
+        choices=["auto", "alpinac", "gcwerks"],
+        default="auto",
+        help="what source is (default: gcwerks if it is in a directory with "
+        "config/gcwerks.conf, else alpinac). GCwerks: only the chromatograms, not fitted",
     )
     p_upload.set_defaults(func=_upload)
 
