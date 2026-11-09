@@ -9,15 +9,46 @@ run_extraction_pipeline``), same dataset: ``peak`` variables (the ``find_peaks``
 ``compound_id``, ``is_max_of_cmp``) and ``compound`` variables (``peak_rt_mean`` / ``_std`` /
 ``_count``, ``prominences_sum``, ``start_ip_mean`` / ``_std``, ``stopp_ip_mean`` / ``_std``, ``mai_``).
 
+``fit_dataset``: the peaks of each mass fitted in its chromatogram (:func:`peaxart.fit_chromatogram`:
+Pap-Papai peaks by groups of overlapping peaks, starting at the detected rts; peaks added where the data
+show a coelution), on their own dimension ``fit`` (variables ``fit_*``; ``fit_peak``: the nearest detected
+peak). The ``peak`` / ``compound`` variables are not changed.
+
     chromatograms = esper.chromatograms.read_chromatograms("run.alpinac/run.unit_mass_chromatos.parquet")
     ds = esper.deconvolution.legacy_dataset(chromatograms)
+    ds = esper.deconvolution.fit_dataset(ds, chromatograms)
 """
 
 from __future__ import annotations
 
+import json
+import os
+from concurrent.futures import Executor, ProcessPoolExecutor
+from contextlib import contextmanager
+from dataclasses import asdict
+
+import numpy as np
 import pandas as pd
 import peaxart as px
 import xarray as xr
+
+FIT_CONFIG = px.ChromatogramFitConfig()
+"""Default fit of the chromatograms (also of ``esper.fitting``)."""
+# dataset variable -> column of px.fit_chromatogram
+FIT_VARIABLES = {
+    "fit_rt": "rt",
+    "fit_rt_u": "rt_u",
+    "fit_height": "height",
+    "fit_height_u": "height_u",
+    "fit_sigma": "rt_sigma",
+    "fit_tailing": "rt_tailing",
+    "fit_baseline": "baseline",
+    "fit_area": "area",
+    "fit_area_u": "area_u",
+    "fit_sn": "sn",
+    "fit_signal_height": "signal_height",
+    "fit_signal_prominence": "signal_prominence",
+}
 
 
 def chromatogram_masses(chromatograms: pd.DataFrame) -> list[str]:
@@ -47,4 +78,85 @@ def legacy_dataset(chromatograms: pd.DataFrame, rt_start: float = 0.0, rt_stopp:
     )
 
 
-__all__ = ["chromatogram_masses", "legacy_dataset"]
+
+
+# --- fit of the chromatograms ------------------------------------------------------------
+
+
+@contextmanager
+def fit_pool(workers: int | None = None):
+    """Processes for the fits of several chromatograms or runs; None if ``workers`` is 1."""
+    workers = workers or os.cpu_count() or 1
+    if workers == 1:
+        yield None
+        return
+    with ProcessPoolExecutor(workers) as pool:
+        yield pool
+
+
+def _fit_task(args) -> pd.DataFrame:
+    t, y, rt, start, stop, config = args
+    return px.fit_chromatogram(t, y, rt, start, stop, config)
+
+
+def fit_chromatograms(t: np.ndarray, tasks: list[tuple], config: px.ChromatogramFitConfig | None = None,
+                      workers: int | None = None, pool: Executor | None = None) -> list[pd.DataFrame]:
+    """:func:`peaxart.fit_chromatogram` of several chromatograms of a run, in parallel.
+
+    :param tasks: (y, rt, start, stop) of each chromatogram (its values and its detected peaks).
+    :param pool: processes (:func:`fit_pool`), else ``workers`` processes are started (None: the number
+        of CPUs, 1: in this process).
+    :return: the fitted peaks of each task, in order.
+    """
+    config = config or FIT_CONFIG
+    args = [(t, *task, config) for task in tasks]
+    if pool is not None and len(args) > 1:
+        return list(pool.map(_fit_task, args))
+    if len(args) > 1 and (workers or os.cpu_count() or 1) > 1:
+        with fit_pool(min(workers or os.cpu_count() or 1, len(args))) as own:
+            return list(own.map(_fit_task, args))
+    return [_fit_task(a) for a in args]
+
+
+def fit_dataset(ds: xr.Dataset, chromatograms: pd.DataFrame, config: px.ChromatogramFitConfig | None = None,
+                workers: int | None = None, pool: Executor | None = None) -> xr.Dataset:
+    """Add the fit of the detected peaks (``legacy_dataset``) to the dataset, on the dimension ``fit``.
+
+    Variables: ``fit_peak`` (the nearest detected peak, ``peak`` coordinate) and :data:`FIT_VARIABLES` (rt,
+    sigma in s, standard Gaussian convention: the areas are true areas); attributes ``fit_config`` (json)
+    and ``fit_n_warnings``.
+
+    :param chromatograms: the chromatograms the peaks were detected in (columns as ``mass_of_peak``).
+    """
+    config = config or FIT_CONFIG
+    peaks = pd.DataFrame({
+        "mass": ds["mass_of_peak"].values, "rt": ds["peak_rt"].values,
+        "start": ds["start_ip"].values, "stop": ds["stopp_ip"].values,
+    }, index=ds["peak"].values)
+    t = chromatograms.index.to_numpy(dtype=float)
+    columns = {str(c): c for c in chromatograms.columns}
+    groups = [(mass, group) for mass, group in peaks.groupby("mass") if f"{mass:g}" in columns]
+    groups.sort(key=lambda g: -len(g[1]))  # largest first, for the load balance
+    tasks = [(chromatograms[columns[f"{mass:g}"]].to_numpy(dtype=float), g["rt"].to_numpy(), g["start"].to_numpy(),
+              g["stop"].to_numpy()) for mass, g in groups]
+    results = fit_chromatograms(t, tasks, config, workers, pool)
+    parts = []
+    for (_, group), fitted in zip(groups, results, strict=True):
+        if len(fitted):
+            parts.append(fitted.assign(peak=group.index.to_numpy()[fitted["peak"].to_numpy(dtype=int)]))
+    fitted = (pd.concat(parts, ignore_index=True) if parts
+              else pd.DataFrame(columns=["peak", *FIT_VARIABLES.values()]))
+    fitted = fitted.sort_values(["peak", "rt"], ignore_index=True)
+    out = ds.drop_vars([v for v in ("fit_peak", *FIT_VARIABLES) if v in ds], errors="ignore")
+    if "fit" in out.dims:
+        out = out.drop_dims("fit")
+    out = out.assign(
+        {"fit_peak": ("fit", fitted["peak"].to_numpy(dtype=np.int64))}
+        | {name: ("fit", fitted[column].to_numpy(dtype=float)) for name, column in FIT_VARIABLES.items()})
+    out.attrs["fit_config"] = json.dumps(asdict(config))
+    out.attrs["fit_n_warnings"] = int(sum(r.attrs.get("n_warnings", 0) for r in results))
+    return out
+
+
+__all__ = ["FIT_CONFIG", "FIT_VARIABLES", "chromatogram_masses", "fit_chromatograms", "fit_dataset", "fit_pool",
+           "legacy_dataset"]

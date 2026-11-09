@@ -1,10 +1,11 @@
 """Chromatographic fit of the peaks found by the extraction (alpinac), with peaxart.
 
 The peaks of each mass are fitted in its unit mass chromatogram with Pap-Papai
-peaks and a constant baseline (``peaxart.Fit``, standard Gaussian convention:
-the areas are true areas), by groups of overlapping peaks. The fit starts at the
-rts of the extraction and adds peaks where the data show a coelution (peaxart's
-extra-peak search).
+peaks and a constant baseline (``peaxart.fit_chromatogram``, standard Gaussian
+convention: the areas are true areas), by groups of overlapping peaks. The fit
+starts at the rts of the extraction and adds peaks where the data show a coelution
+(peaxart's extra-peak search). The fit itself is the one of the processing
+(``esper.deconvolution``); here it becomes the peak table of the database.
 
 The fit improves the extraction: the peak table becomes the peaks of the fit.
 Each fitted peak goes to the nearest extraction peak of its group:
@@ -33,36 +34,28 @@ The values of the extraction that the fit replaces are kept (``extraction_peak``
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
-import warnings
-from concurrent.futures import Executor, ProcessPoolExecutor
-from contextlib import contextmanager
+from concurrent.futures import Executor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import peaxart as px
 
 from esper import db
+from esper.deconvolution import FIT_CONFIG, fit_chromatograms, fit_pool  # noqa: F401 (fit_pool: used from here)
 
 logger = logging.getLogger(__name__)
 
 # Increase when the fit changes (2: prominence and height of the fitted signal,
 # extraction kept)
 FIT_VERSION = 2
-# Gaussian convention of peaxart's peak shapes
-CONVENTION = "standard"
-# Iteration limit of each fit: the few fits that do not converge (weak, unresolved
-# peaks) would otherwise take most of the time
-MAX_ITERATIONS = 100
-# Extent of a peak for the groups of overlapping peaks, in half widths at half
-# maximum (of each side) from the apex, longer on the tail side
-FRONT_HWHM = 6.0
-TAIL_HWHM = 8.0
-# Half widths of the extraction are clipped to this range [s]
-HWHM_RANGE_S = (0.3, 10.0)
+# Gaussian convention of peaxart's peak shapes, and the half widths of the extraction
+# are clipped to this range [s] (peaxart.ChromatogramFitConfig, esper.deconvolution.FIT_CONFIG)
+CONVENTION = FIT_CONFIG.convention
+HWHM_RANGE_S = FIT_CONFIG.hwhm_range
 # A fitted peak outside the half maximum crossings of its extraction peak still takes
 # its row within this many half widths (of each side), if no other is within them
 MATCH_HWHM = 2.0
@@ -87,19 +80,6 @@ FIT_COLUMNS = {
 FITTED_COLUMNS = ["peak_idx", *FIT_COLUMNS, "signal_height", "signal_prominence"]
 
 
-def fit_method():
-    from peaxart import Fit
-    from peaxart.config import ExtractionConfig
-
-    return Fit(
-        ExtractionConfig(
-            convention=CONVENTION,
-            legacy_numerics=False,
-            rt_max_iterations=MAX_ITERATIONS,
-        )
-    )
-
-
 def peak_shape(t: np.ndarray, peak) -> np.ndarray:
     """Signal of a fitted peak above its baseline (``fit_*`` columns of a peak row)."""
     from peaxart.shapes import chromato
@@ -115,60 +95,24 @@ def peak_shape(t: np.ndarray, peak) -> np.ndarray:
 
 
 def peak_groups(peaks: pd.DataFrame) -> list[tuple[pd.DataFrame, float, float]]:
-    """Groups of overlapping peaks of one mass, with the rt range fitted [s]."""
-    peaks = peaks.sort_values("rt_s")
-    rt = peaks["rt_s"].to_numpy(dtype=float)
-    front = np.clip(rt - peaks["start_s"].to_numpy(dtype=float), *HWHM_RANGE_S)
-    tail = np.clip(peaks["stop_s"].to_numpy(dtype=float) - rt, *HWHM_RANGE_S)
-    # A half width not given by the extraction (NaN after the clip): the smallest
-    front, tail = (
-        np.nan_to_num(front, nan=HWHM_RANGE_S[0]),
-        np.nan_to_num(tail, nan=HWHM_RANGE_S[0]),
+    """Groups of overlapping peaks of one mass, with the rt range fitted [s]
+    (``peaxart.overlapping_groups``)."""
+    groups = px.overlapping_groups(
+        peaks["rt_s"].to_numpy(dtype=float),
+        peaks["start_s"].to_numpy(dtype=float),
+        peaks["stop_s"].to_numpy(dtype=float),
+        FIT_CONFIG,
     )
-    lo, hi = rt - FRONT_HWHM * front, rt + TAIL_HWHM * tail
-    # Connected intervals, swept by their start (a broad peak can start before the
-    # narrow ones eluting before it)
-    order = np.argsort(lo, kind="stable")
-    groups = []
-    members, end = [], -np.inf
-    for i in order:
-        if members and lo[i] >= end:
-            groups.append(members)
-            members = []
-        members.append(i)
-        end = max(end, hi[i]) if len(members) > 1 else hi[i]
-    if members:
-        groups.append(members)
-    return [
-        (peaks.iloc[sorted(g)], float(lo[g].min()), float(hi[g].max())) for g in groups
-    ]
+    return [(peaks.iloc[members], lo, hi) for members, lo, hi in groups]
 
 
-def signal_peaks(t: np.ndarray, fitted: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-    """Height and prominence of fitted peaks of one group, on the fitted signal.
-
-    The fitted signal is the baseline plus all the fitted peaks of the group; the
-    height is its value at the apex, the prominence is scipy's (``find_peaks``, as
-    the extraction). A shoulder (apex not a local maximum) has none by scipy's
-    definition: it gets its prominence alone, its fitted height above the baseline.
-    """
-    from scipy.signal import peak_prominences
-
-    signal = fitted["fit_baseline"].iloc[0] + sum(
-        np.nan_to_num(peak_shape(t, p)) for p in fitted.itertuples()
+def _as_fitted(fitted: pd.DataFrame, peaks: pd.DataFrame) -> pd.DataFrame:
+    """``peaxart.fit_chromatogram`` peaks of one mass as FITTED_COLUMNS (``peaks``: as fitted)."""
+    out = fitted.rename(
+        columns={v: k for k, v in FIT_COLUMNS.items()} | {"peak": "peak_idx"}
     )
-    rt = fitted["fit_rt_s"].to_numpy(dtype=float)
-    nearest = np.abs(t[None, :] - rt[:, None]).argmin(axis=1)
-    # The apex falls between samples: the highest of the nearest one and its neighbours
-    apex = np.array(
-        [max(i - 1, 0) + int(np.argmax(signal[max(i - 1, 0) : i + 2])) for i in nearest]
-    )
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")  # PeakPropertyWarning: a prominence is 0
-        prominence = peak_prominences(signal, apex)[0]
-    shoulder = prominence <= 0
-    prominence[shoulder] = fitted["fit_height"].to_numpy(dtype=float)[shoulder]
-    return signal[apex], prominence
+    out["peak_idx"] = peaks.index.to_numpy()[fitted["peak"].to_numpy(dtype=int)]
+    return out[FITTED_COLUMNS]
 
 
 def fit_mass(
@@ -177,47 +121,19 @@ def fit_mass(
     """Fitted peaks of one mass, and the number of warnings of the fits.
 
     Columns: ``peak_idx`` (the nearest extraction peak), the ``fit_*`` columns and
-    ``signal_height`` / ``signal_prominence`` (``signal_peaks``).
+    ``signal_height`` / ``signal_prominence`` (``peaxart.fit_chromatogram``).
     """
-    method = fit_method()
-    rows = []
-    n_warnings = 0
-    for group, lo, hi in peak_groups(peaks):
-        inside = (t >= lo) & (t <= hi)
-        if inside.sum() < 10:
-            continue
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            fitted = method.integrate(t[inside], y[inside], rt=group["rt_s"].to_numpy())
-        n_warnings += len(caught)
-        if fitted.empty:
-            continue
-        rt = group["rt_s"].to_numpy(dtype=float)
-        nearest = np.abs(fitted["rt"].to_numpy()[:, None] - rt[None, :]).argmin(axis=1)
-        fitted = fitted.rename(columns={v: k for k, v in FIT_COLUMNS.items()})
-        fitted["peak_idx"] = group.index.to_numpy()[nearest]
-        fitted["signal_height"], fitted["signal_prominence"] = signal_peaks(
-            t[inside], fitted
-        )
-        rows.append(fitted[FITTED_COLUMNS])
-    if not rows:
-        return pd.DataFrame(columns=FITTED_COLUMNS), n_warnings
-    return pd.concat(rows, ignore_index=True), n_warnings
+    (fitted,) = fit_chromatograms(t, [_task(y, peaks)], FIT_CONFIG, workers=1)
+    return _as_fitted(fitted, peaks), fitted.attrs.get("n_warnings", 0)
 
 
-def _fit_mass_task(args) -> tuple[pd.DataFrame, int]:
-    return fit_mass(*args)
-
-
-@contextmanager
-def fit_pool(workers: int | None = None):
-    """Processes for the fits of several measurements (``fit_peaks``); None if ``workers`` is 1."""
-    workers = workers or os.cpu_count() or 1
-    if workers == 1:
-        yield None
-        return
-    with ProcessPoolExecutor(workers) as pool:
-        yield pool
+def _task(y: np.ndarray, peaks: pd.DataFrame) -> tuple:
+    return (
+        y,
+        peaks["rt_s"].to_numpy(dtype=float),
+        peaks["start_s"].to_numpy(dtype=float),
+        peaks["stop_s"].to_numpy(dtype=float),
+    )
 
 
 def fit_peaks(
@@ -234,29 +150,25 @@ def fit_peaks(
     The number of warnings of the fits is in ``attrs["n_warnings"]``.
     """
     t = frame.index.to_numpy(dtype=float)
-    tasks = [
-        (t, frame[str(mass)].to_numpy(dtype=float), group)
+    groups = [
+        (frame[str(mass)].to_numpy(dtype=float), group)
         for mass, group in peaks.groupby("mass")
         if str(mass) in frame
     ]
     # Largest first, for the load balance
-    tasks.sort(key=lambda task: -len(task[2]))
-
-    def run(pool):
-        if pool is None or len(tasks) < 2:
-            return [_fit_mass_task(task) for task in tasks]
-        return list(pool.map(_fit_mass_task, tasks))
-
-    if pool is None and len(tasks) > 1:
-        with fit_pool(min(workers or os.cpu_count() or 1, len(tasks))) as own:
-            results = run(own)
-    else:
-        results = run(pool)
-    n_warnings = sum(n for _, n in results)
-    results = [r for r, _ in results if not r.empty]
+    groups.sort(key=lambda g: -len(g[1]))
+    results = fit_chromatograms(
+        t, [_task(y, group) for y, group in groups], FIT_CONFIG, workers, pool
+    )
+    n_warnings = sum(r.attrs.get("n_warnings", 0) for r in results)
+    parts = [
+        _as_fitted(fitted, group)
+        for (_, group), fitted in zip(groups, results, strict=True)
+        if not fitted.empty
+    ]
     out = (
-        pd.concat(results, ignore_index=True)
-        if results
+        pd.concat(parts, ignore_index=True)
+        if parts
         else pd.DataFrame(columns=FITTED_COLUMNS)
     )
     out.attrs["n_warnings"] = n_warnings
