@@ -44,8 +44,9 @@ def test_fit_dataset():
     ds = legacy_dataset(chromatograms)
     fitted = fit_dataset(ds, chromatograms, workers=1)
     assert fitted["peak"].equals(ds["peak"]) and fitted["compound_id"].equals(ds["compound_id"])
-    assert set(fitted.data_vars) - set(ds.data_vars) == {"fit_peak", *FIT_VARIABLES}
-    assert all(fitted[v].dims == ("fit",) for v in ("fit_peak", *FIT_VARIABLES))
+    assert set(fitted.data_vars) - set(ds.data_vars) == {"fit_peak", "fit_mass", "fit_added", *FIT_VARIABLES}
+    assert all(fitted[v].dims == ("fit",) for v in ("fit_peak", "fit_mass", "fit_added", *FIT_VARIABLES))
+    np.testing.assert_array_equal(fitted["fit_mass"].values, ds["mass_of_peak"].values[fitted["fit_peak"].values])
     # linked to detected peaks of the same mass
     mass = ds["mass_of_peak"].values[fitted["fit_peak"].values]
     np.testing.assert_allclose(fitted["fit_rt"].values[mass == 69], [1740, 1745], atol=0.1)

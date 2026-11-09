@@ -107,11 +107,18 @@ def peak_groups(peaks: pd.DataFrame) -> list[tuple[pd.DataFrame, float, float]]:
 
 
 def _as_fitted(fitted: pd.DataFrame, peaks: pd.DataFrame) -> pd.DataFrame:
-    """``peaxart.fit_chromatogram`` peaks of one mass as FITTED_COLUMNS (``peaks``: as fitted)."""
+    """``peaxart.fit_chromatogram`` peaks of one mass as FITTED_COLUMNS (``peaks``: as fitted).
+
+    A fitted peak whose group has only peaks the detection missed (``peak`` -1) goes to the
+    nearest extraction peak of the mass: it becomes a new peak (``fitted_peak_table``).
+    """
     out = fitted.rename(
         columns={v: k for k, v in FIT_COLUMNS.items()} | {"peak": "peak_idx"}
     )
-    out["peak_idx"] = peaks.index.to_numpy()[fitted["peak"].to_numpy(dtype=int)]
+    index = fitted["peak"].to_numpy(dtype=int)
+    rt = peaks["rt_s"].to_numpy(dtype=float)
+    nearest = np.abs(fitted["rt"].to_numpy(dtype=float)[:, None] - rt[None, :]).argmin(axis=1)
+    out["peak_idx"] = peaks.index.to_numpy()[np.where(index >= 0, index, nearest)]
     return out[FITTED_COLUMNS]
 
 

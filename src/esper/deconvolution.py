@@ -10,9 +10,10 @@ run_extraction_pipeline``), same dataset: ``peak`` variables (the ``find_peaks``
 ``_count``, ``prominences_sum``, ``start_ip_mean`` / ``_std``, ``stopp_ip_mean`` / ``_std``, ``mai_``).
 
 ``fit_dataset``: the peaks of each mass fitted in its chromatogram (:func:`peaxart.fit_chromatogram`:
-Pap-Papai peaks by groups of overlapping peaks, starting at the detected rts; peaks added where the data
-show a coelution), on their own dimension ``fit`` (variables ``fit_*``; ``fit_peak``: the nearest detected
-peak). The ``peak`` / ``compound`` variables are not changed.
+Pap-Papai peaks by groups of overlapping peaks, starting at the detected rts and at the narrow peaks the
+detection missed; peaks added where the data show a coelution), on their own dimension ``fit`` (variables
+``fit_*``; ``fit_peak``: the nearest detected peak, -1 if none in the group; ``fit_added``: started from a
+peak the detection missed). The ``peak`` / ``compound`` variables are not changed.
 
     chromatograms = esper.chromatograms.read_chromatograms("run.alpinac/run.unit_mass_chromatos.parquet")
     ds = esper.deconvolution.legacy_dataset(chromatograms)
@@ -122,39 +123,49 @@ def fit_dataset(ds: xr.Dataset, chromatograms: pd.DataFrame, config: px.Chromato
                 workers: int | None = None, pool: Executor | None = None) -> xr.Dataset:
     """Add the fit of the detected peaks (``legacy_dataset``) to the dataset, on the dimension ``fit``.
 
-    Variables: ``fit_peak`` (the nearest detected peak, ``peak`` coordinate) and :data:`FIT_VARIABLES` (rt,
-    sigma in s, standard Gaussian convention: the areas are true areas); attributes ``fit_config`` (json)
-    and ``fit_n_warnings``.
+    Variables: ``fit_mass``, ``fit_peak`` (the nearest detected peak of its group, ``peak`` coordinate; -1 if
+    the group has only peaks the detection missed), ``fit_added`` (started from a peak the detection missed:
+    :func:`peaxart.added_seeds`) and :data:`FIT_VARIABLES` (rt, sigma in s, standard Gaussian convention: the
+    areas are true areas); attributes ``fit_config`` (json), ``fit_n_warnings`` and ``fit_n_added_seeds``.
+    All the chromatograms are fitted, also those without detected peaks (``tic`` left out).
 
     :param chromatograms: the chromatograms the peaks were detected in (columns as ``mass_of_peak``).
     """
     config = config or FIT_CONFIG
     peaks = pd.DataFrame({
-        "mass": ds["mass_of_peak"].values, "rt": ds["peak_rt"].values,
-        "start": ds["start_ip"].values, "stop": ds["stopp_ip"].values,
+        "mass": ds["mass_of_peak"].values, "rt": ds["peak_rt"].values, "start": ds["start_ip"].values,
+        "stop": ds["stopp_ip"].values,
     }, index=ds["peak"].values)
     t = chromatograms.index.to_numpy(dtype=float)
-    columns = {str(c): c for c in chromatograms.columns}
-    groups = [(mass, group) for mass, group in peaks.groupby("mass") if f"{mass:g}" in columns]
+    by_mass = {f"{mass:g}": group for mass, group in peaks.groupby("mass")}
+    empty = peaks.iloc[:0]
+    groups = [(column, by_mass.get(str(column), empty)) for column in chromatogram_masses(chromatograms)]
     groups.sort(key=lambda g: -len(g[1]))  # largest first, for the load balance
-    tasks = [(chromatograms[columns[f"{mass:g}"]].to_numpy(dtype=float), g["rt"].to_numpy(), g["start"].to_numpy(),
-              g["stop"].to_numpy()) for mass, g in groups]
+    tasks = [(chromatograms[column].to_numpy(dtype=float), g["rt"].to_numpy(), g["start"].to_numpy(),
+              g["stop"].to_numpy()) for column, g in groups]
     results = fit_chromatograms(t, tasks, config, workers, pool)
     parts = []
-    for (_, group), fitted in zip(groups, results, strict=True):
+    for (column, group), fitted in zip(groups, results, strict=True):
         if len(fitted):
-            parts.append(fitted.assign(peak=group.index.to_numpy()[fitted["peak"].to_numpy(dtype=int)]))
+            index = fitted["peak"].to_numpy(dtype=int)
+            peak = np.where(index >= 0, group.index.to_numpy()[np.maximum(index, 0)] if len(group) else -1, -1)
+            parts.append(fitted.assign(peak=peak, mass=float(column)))
     fitted = (pd.concat(parts, ignore_index=True) if parts
-              else pd.DataFrame(columns=["peak", *FIT_VARIABLES.values()]))
-    fitted = fitted.sort_values(["peak", "rt"], ignore_index=True)
-    out = ds.drop_vars([v for v in ("fit_peak", *FIT_VARIABLES) if v in ds], errors="ignore")
+              else pd.DataFrame(columns=["peak", "mass", "added", *FIT_VARIABLES.values()]))
+    fitted = fitted.sort_values(["mass", "rt"], ignore_index=True)
+    out = ds.drop_vars([v for v in ("fit_peak", "fit_mass", "fit_added", *FIT_VARIABLES) if v in ds],
+                       errors="ignore")
     if "fit" in out.dims:
         out = out.drop_dims("fit")
+    masses = fitted["mass"].to_numpy(dtype=float)
     out = out.assign(
-        {"fit_peak": ("fit", fitted["peak"].to_numpy(dtype=np.int64))}
+        {"fit_mass": ("fit", masses.astype(np.int64) if np.all(masses == np.round(masses)) else masses),
+         "fit_peak": ("fit", fitted["peak"].to_numpy(dtype=np.int64)),
+         "fit_added": ("fit", fitted["added"].to_numpy(dtype=bool))}
         | {name: ("fit", fitted[column].to_numpy(dtype=float)) for name, column in FIT_VARIABLES.items()})
     out.attrs["fit_config"] = json.dumps(asdict(config))
     out.attrs["fit_n_warnings"] = int(sum(r.attrs.get("n_warnings", 0) for r in results))
+    out.attrs["fit_n_added_seeds"] = int(sum(r.attrs.get("n_added_seeds", 0) for r in results))
     return out
 
 
