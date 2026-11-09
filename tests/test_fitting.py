@@ -207,7 +207,11 @@ def test_fitted_peak_just_outside_the_crossings_takes_the_row():
     assert on_85.index[0] == 0
     assert on_85["source"].iloc[0] == SOURCE_EXTRACTION
     assert on_85["fit_rt_s"].iloc[0] == pytest.approx(RT_A, abs=0.1)
-    assert len(on_85) == 1
+    near = on_85[(on_85["fit_rt_s"] - RT_A).abs() < 3]
+    assert len(near) == 1
+    # the other peaks of m/z 85 (not given as extracted here) are found by the added seeds: new rows
+    others = on_85.drop(near.index)
+    assert (others["source"] == SOURCE_FIT).all()
 
 
 def test_peak_groups_sorted_by_their_start():
