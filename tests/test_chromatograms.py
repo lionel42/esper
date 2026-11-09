@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-import peaxart
+import peaxart as px
 import pytest
 import twutils
 from conftest import CAL, RT_APEX, S_PER_BIN, STEP_EJECTION, STEP_EMISSION, write_h5
@@ -41,7 +41,7 @@ def test_same_as_peaxart_in_memory(result, h5_file):
     run = twutils.TofFile(h5_file)
     intensity, _ = run.read()
     mz = tof_to_mass(np.arange(run.n_points), CAL, "power")  # the calibration is the same at every rt
-    expected = peaxart.unit_mass_chromatograms(intensity, mz, [68, 69, 70, 100])
+    expected = px.unit_mass_chromatograms(intensity, mz, [68, 69, 70, 100])
     np.testing.assert_allclose(result.chromatograms.drop(columns="tic").to_numpy(), expected, rtol=1e-6, atol=1e-6)
     end = unit_mass_chromatograms(h5_file, masses=[68, 69, 70, 100], mass_axis="end")
     np.testing.assert_allclose(end.chromatograms.to_numpy(), result.chromatograms.to_numpy(), rtol=1e-9)

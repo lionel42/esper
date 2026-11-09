@@ -16,7 +16,7 @@ run_extraction_pipeline``), same dataset: ``peak`` variables (the ``find_peaks``
 from __future__ import annotations
 
 import pandas as pd
-import peaxart
+import peaxart as px
 import xarray as xr
 
 
@@ -26,7 +26,7 @@ def chromatogram_masses(chromatograms: pd.DataFrame) -> list[str]:
 
 
 def legacy_dataset(chromatograms: pd.DataFrame, rt_start: float = 0.0, rt_stopp: float | None = None,
-                   config: peaxart.LegacyDeconvolutionConfig | None = None) -> xr.Dataset:
+                   config: px.LegacyDeconvolutionConfig | None = None) -> xr.Dataset:
     """Peaks and compounds of the legacy extraction (:func:`peaxart.legacy_deconvolution`), as the
     legacy ``run_extraction_pipeline`` dataset.
 
@@ -37,7 +37,7 @@ def legacy_dataset(chromatograms: pd.DataFrame, rt_start: float = 0.0, rt_stopp:
     columns = chromatogram_masses(chromatograms)
     masses = [int(c) if float(c).is_integer() else float(c) for c in columns]
     rt = chromatograms.index.to_numpy(dtype=float)
-    compounds, peaks = peaxart.legacy_deconvolution(chromatograms[columns].to_numpy(), rt, masses, config)
+    compounds, peaks = px.legacy_deconvolution(chromatograms[columns].to_numpy(), rt, masses, config)
     peaks = peaks.rename(columns={"mass": "mass_of_peak"})
     return xr.Dataset(
         {col: ("peak", peaks[col].to_numpy()) for col in peaks.columns}

@@ -44,7 +44,7 @@ from typing import Literal
 
 import numpy as np
 import pandas as pd
-import peaxart
+import peaxart as px
 from masscal import MassCalibration
 from peaxart import StepConfig
 from twutils import TofFile, calibration_for
@@ -163,7 +163,7 @@ def acquisition_cuts(file: TofFile, sums: np.ndarray, rt: np.ndarray, scans: sli
     start = scans.start or 0
     steps = [scan - start for name, scan, _, _ in changes if name == EMISSION_TARGET]
     switches = [(name, scan - start, old, new) for name, scan, old, new in changes if name in EJECTION]
-    cuts, summary = peaxart.step_cuts(sums, rt, steps, switches, [float(m) for m in masses], config)
+    cuts, summary = px.step_cuts(sums, rt, steps, switches, [float(m) for m in masses], config)
     return cuts, {"emission": summary["steps"], "ejection": summary["switches"]}
 
 
@@ -179,7 +179,7 @@ def unit_mass_chromatograms(
     rt_stop: float | None = None,
     mass_axis: MassAxis = "drift",
     steps: StepConfig | None = DEFAULT_STEPS,
-    config: peaxart.UnitMassConfig | None = None,
+    config: px.UnitMassConfig | None = None,
     ionisation: Ionisation = "EI",
     keep_raw: bool = True,
     block: int = 600,
@@ -207,7 +207,7 @@ def unit_mass_chromatograms(
         calibration = calibration_for(file, segments, ionisation)
     elif not isinstance(calibration, MassCalibration):
         calibration = calibration_for(file, segments, ionisation, mc_file=calibration)
-    config = config or peaxart.UnitMassConfig()
+    config = config or px.UnitMassConfig()
     if mass_axis not in ("drift", "end"):
         raise ValueError(f"mass_axis: 'drift' or 'end', not {mass_axis!r}")
     masses = np.asarray(default_masses(file, calibration) if masses is None else masses, dtype=float)
@@ -215,7 +215,7 @@ def unit_mass_chromatograms(
     scans = file.scan_range(*file.rt_range(rt_start, rt_stop))
     if mass_axis == "end":
         mz = calibration.mz(float(file.time_axis[-1]), np.arange(file.n_points))
-        bounds = peaxart.mass_bounds(mz, masses, config.d_m)
+        bounds = px.mass_bounds(mz, masses, config.d_m)
         tof_start, tof_stop = int(bounds.min()), int(bounds.max())
     else:
         edges = _drift_bounds(calibration, file.time_axis[scans], masses, config.d_m)  # all scans: cheap
@@ -228,7 +228,7 @@ def unit_mass_chromatograms(
                 block_bounds = bounds - tof_start
             else:
                 block_bounds = _drift_bounds(calibration, rt, masses, config.d_m) - tof_start
-            parts.append(peaxart.unit_mass_sums(data, block_bounds))
+            parts.append(px.unit_mass_sums(data, block_bounds))
             rts.append(rt)
     sums = np.concatenate(parts) if parts else np.zeros((0, len(masses)))
     rt = np.concatenate(rts) if rts else np.zeros(0)
@@ -242,7 +242,7 @@ def unit_mass_chromatograms(
     else:
         cuts, step_summary = (acquisition_cuts(file, sums, rt, scans, masses, steps) if steps is not None
                               else (None, {}))
-        corrected, baseline = peaxart.remove_baseline(sums, config.baseline, return_baseline=True, cuts=cuts)
+        corrected, baseline = px.remove_baseline(sums, config.baseline, return_baseline=True, cuts=cuts)
 
     def frame(values, dtype=float):
         table = pd.DataFrame(values.astype(dtype), index=pd.Index(rt, name="rt"), columns=columns)
@@ -277,7 +277,7 @@ def _provenance(file: TofFile, calibration: MassCalibration, segments, mass_axis
         "config": asdict(config),
         "steps": None if steps is None else {"config": asdict(steps), **step_summary},
         "versions": {"esper": esper.__version__, "twutils": twutils.__version__,
-                     "peaxart": peaxart.__version__, "masscal": masscal.__version__},
+                     "peaxart": px.__version__, "masscal": masscal.__version__},
         "created": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
 

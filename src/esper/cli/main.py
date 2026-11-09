@@ -221,7 +221,7 @@ def _plot_calibration(args: argparse.Namespace) -> int:
 
 
 def _chromatograms(args: argparse.Namespace) -> int:
-    import peaxart
+    import peaxart as px
 
     from esper.chromatograms import DEFAULT_STEPS, chromatograms_to_file
 
@@ -233,11 +233,11 @@ def _chromatograms(args: argparse.Namespace) -> int:
     baseline = {"method": None if args.no_baseline else "arpls"}
     baseline |= {} if args.lam is None else {"lam": args.lam}
     baseline = (
-        peaxart.BaselineConfig.legacy(**baseline)
+        px.BaselineConfig.legacy(**baseline)
         if args.legacy
-        else peaxart.BaselineConfig(**baseline)
+        else px.BaselineConfig(**baseline)
     )
-    config = peaxart.UnitMassConfig(d_m=args.d_m, baseline=baseline)
+    config = px.UnitMassConfig(d_m=args.d_m, baseline=baseline)
     failed = 0
     for path in files:
         try:
@@ -483,9 +483,9 @@ def main(argv: list[str] | None = None) -> int:
     p_plot.add_argument("--show", action="store_true", help="show the plots")
     p_plot.set_defaults(func=_plot_calibration)
 
-    import peaxart
+    import peaxart as px
 
-    default_um = peaxart.UnitMassConfig()
+    default_um = px.UnitMassConfig()
     p_chrom = sub.add_parser(
         "chromatograms",
         help="Unit mass chromatograms of h5 files (summed, baseline removed)",
@@ -541,7 +541,7 @@ def main(argv: list[str] | None = None) -> int:
         "--lam",
         type=float,
         help=f"arPLS smoothness (default {default_um.baseline.lam:g}, "
-        f"--legacy {peaxart.BaselineConfig.legacy().lam:g})",
+        f"--legacy {px.BaselineConfig.legacy().lam:g})",
     )
     p_chrom.add_argument(
         "--no-baseline", action="store_true", help="do not remove the baseline"
