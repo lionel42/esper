@@ -50,8 +50,9 @@ from esper.deconvolution import FIT_CONFIG, fit_chromatograms, fit_pool  # noqa:
 logger = logging.getLogger(__name__)
 
 # Increase when the fit changes (2: prominence and height of the fitted signal,
-# extraction kept)
-FIT_VERSION = 2
+# extraction kept; 3: peaks added by the seeds, groups split at valleys, the peak
+# function of FIT_CONFIG (EMG), fit_rt_s / fit_height its apex)
+FIT_VERSION = 3
 # Gaussian convention of peaxart's peak shapes, and the half widths of the extraction
 # are clipped to this range [s] (peaxart.ChromatogramFitConfig, esper.deconvolution.FIT_CONFIG)
 CONVENTION = FIT_CONFIG.convention
@@ -75,22 +76,28 @@ FIT_COLUMNS = {
     "fit_area": "area",
     "fit_area_u": "area_u",
     "fit_sn": "sn",
+    "fit_shape_rt_s": "shape_rt",
+    "fit_shape_height": "shape_height",
 }
+# Name of the peak function of the fitted rows (peaxart.shapes.SHAPES)
+FIT_SHAPE_COLUMN = "fit_shape"
 # Columns of fit_mass / fit_peaks
 FITTED_COLUMNS = ["peak_idx", *FIT_COLUMNS, "signal_height", "signal_prominence"]
 
 
 def peak_shape(t: np.ndarray, peak) -> np.ndarray:
-    """Signal of a fitted peak above its baseline (``fit_*`` columns of a peak row)."""
-    from peaxart.shapes import chromato
-
-    return chromato(
+    """Signal of a fitted peak above its baseline (``fit_*`` columns of a peak row), with its
+    peak function (``fit_shape``; rows fitted before it: Pap-Papai, its apex = its parameters)."""
+    name = getattr(peak, FIT_SHAPE_COLUMN, None)
+    shape = px.shapes.peak_shape(name if isinstance(name, str) else "pap_papai", CONVENTION)
+    location = getattr(peak, "fit_shape_rt_s", np.nan)
+    amplitude = getattr(peak, "fit_shape_height", np.nan)
+    return shape.value(
         t,
-        peak.fit_height,
-        peak.fit_rt_s,
+        peak.fit_height if pd.isna(amplitude) else amplitude,
+        peak.fit_rt_s if pd.isna(location) else location,
         peak.fit_sigma_s,
         peak.fit_tailing,
-        CONVENTION,
     )
 
 
@@ -360,6 +367,9 @@ def fitted_peak_table(peaks: pd.DataFrame, fitted: pd.DataFrame) -> pd.DataFrame
             mass = peaks.at[row["peak_idx"], "mass"]
             new_rows.append({"peak_idx": next_idx, "mass": mass, **values})
             next_idx += 1
+    table[FIT_SHAPE_COLUMN] = np.where(
+        table["fit_rt_s"].notna(), FIT_CONFIG.peak_shape, None
+    )
     if new_rows:
         new = pd.DataFrame(new_rows).set_index("peak_idx")
         new["compound_idx"] = new["compound_idx"].astype("Int64")

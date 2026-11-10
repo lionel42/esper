@@ -60,6 +60,20 @@ SIGNAL = {
 }
 
 
+@pytest.fixture(autouse=True, scope="module")
+def pap_papai_fit():
+    """The synthetic peaks are Pap-Papai peaks (``chromato``): fitted with that function (the default,
+    the EMG, is chosen on real data; these tests are about the peak table, not the peak function).
+    Module scope: before the module-scoped ``table``."""
+    import peaxart as px
+
+    from esper import fitting
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(fitting, "FIT_CONFIG", px.ChromatogramFitConfig(peak_shape="pap_papai"))
+        yield
+
+
 def chromatograms(noise: float = 30.0) -> pd.DataFrame:
     t = T0 + np.arange(0, 200, DT)
     rng = np.random.default_rng(0)
@@ -206,7 +220,9 @@ def test_fitted_peak_just_outside_the_crossings_takes_the_row():
     on_85 = table[table["mass"] == 85].sort_values("fit_rt_s")
     assert on_85.index[0] == 0
     assert on_85["source"].iloc[0] == SOURCE_EXTRACTION
-    assert on_85["fit_rt_s"].iloc[0] == pytest.approx(RT_A, abs=0.1)
+    # the fit may move a peak by 3 scans (0.5 s) from its start (RT_A - 0.6 here): it stops at that
+    # bound, 0.1 s before the true apex (exactly at the edge of a 0.1 s tolerance: up to the last bits)
+    assert on_85["fit_rt_s"].iloc[0] == pytest.approx(RT_A, abs=0.15)
     near = on_85[(on_85["fit_rt_s"] - RT_A).abs() < 3]
     assert len(near) == 1
     # the other peaks of m/z 85 (not given as extracted here) are found by the added seeds: new rows

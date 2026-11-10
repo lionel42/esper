@@ -43,6 +43,8 @@ FIT_VARIABLES = {
     "fit_height_u": "height_u",
     "fit_sigma": "rt_sigma",
     "fit_tailing": "rt_tailing",
+    "fit_shape_rt": "shape_rt",
+    "fit_shape_height": "shape_height",
     "fit_baseline": "baseline",
     "fit_area": "area",
     "fit_area_u": "area_u",
@@ -122,6 +124,10 @@ def fit_chromatograms(t: np.ndarray, tasks: list[tuple], config: px.Chromatogram
 def fit_dataset(ds: xr.Dataset, chromatograms: pd.DataFrame, config: px.ChromatogramFitConfig | None = None,
                 workers: int | None = None, pool: Executor | None = None) -> xr.Dataset:
     """Add the fit of the detected peaks (``legacy_dataset``) to the dataset, on the dimension ``fit``.
+
+    The peak function is ``config.peak_shape`` (default EMG): ``fit_rt`` / ``fit_height`` are its apex,
+    ``fit_shape_rt``, ``fit_shape_height``, ``fit_sigma``, ``fit_tailing`` its parameters
+    (:func:`peaxart.shapes.peak_shape`; ``attrs["fit_config"]``).
 
     Variables: ``fit_mass``, ``fit_peak`` (the nearest detected peak of its group, ``peak`` coordinate; -1 if
     the group has only peaks the detection missed), ``fit_added`` (started from a peak the detection missed:

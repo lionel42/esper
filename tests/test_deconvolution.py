@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import peaxart as px
+import pytest
 
 from esper.deconvolution import legacy_dataset
 
@@ -42,7 +44,8 @@ def test_fit_dataset():
     alone = chromato(rt, 500.0, 1770.0, 1.4, 0.3)
     chromatograms = pd.DataFrame({"69": 5 + coelution, "70": 5 + alone}, index=pd.Index(rt, name="rt"))
     ds = legacy_dataset(chromatograms)
-    fitted = fit_dataset(ds, chromatograms, workers=1)
+    pap = px.ChromatogramFitConfig(peak_shape="pap_papai")  # the data are Pap-Papai peaks
+    fitted = fit_dataset(ds, chromatograms, pap, workers=1)
     assert fitted["peak"].equals(ds["peak"]) and fitted["compound_id"].equals(ds["compound_id"])
     assert set(fitted.data_vars) - set(ds.data_vars) == {"fit_peak", "fit_mass", "fit_added", *FIT_VARIABLES}
     assert all(fitted[v].dims == ("fit",) for v in ("fit_peak", "fit_mass", "fit_added", *FIT_VARIABLES))
@@ -52,6 +55,33 @@ def test_fit_dataset():
     np.testing.assert_allclose(fitted["fit_rt"].values[mass == 69], [1740, 1745], atol=0.1)
     np.testing.assert_allclose(fitted["fit_rt"].values[mass == 70], [1770], atol=0.1)
     np.testing.assert_allclose(fitted["fit_height"].values, [1000, 600, 500], rtol=0.01)
-    assert json.loads(fitted.attrs["fit_config"])["convention"] == "standard"
+    assert json.loads(fitted.attrs["fit_config"])["peak_shape"] == "pap_papai"
+    np.testing.assert_allclose(fitted["fit_shape_rt"].values, fitted["fit_rt"].values)  # Pap-Papai: the apex
     # fitted again: replaced, not added
-    assert fit_dataset(fitted, chromatograms, workers=1).sizes["fit"] == 3
+    assert fit_dataset(fitted, chromatograms, pap, workers=1).sizes["fit"] == 3
+
+
+def test_fit_dataset_emg():
+    """The default peak function, the EMG: fit_rt / fit_height are the apex, fit_shape_* its parameters, from
+    which esper.fitting.peak_shape draws it again (GUI)."""
+    from types import SimpleNamespace
+
+    from esper.deconvolution import FIT_CONFIG, fit_dataset
+    from esper.fitting import peak_shape
+
+    assert FIT_CONFIG.peak_shape == "emg"
+    shape = px.shapes.peak_shape("emg")
+    rt = np.arange(1700.0, 1800.0, 1 / 6)
+    y = 5 + shape.value(rt, 1e4, 1740.0, 1.2, 1.5) + np.random.default_rng(0).normal(0, 3, len(rt))
+    chromatograms = pd.DataFrame({"69": y}, index=pd.Index(rt, name="rt"))
+    fitted = fit_dataset(legacy_dataset(chromatograms), chromatograms, workers=1)
+    assert fitted.sizes["fit"] == 1
+    apex_rt, apex_height = shape.apex(1e4, 1740.0, 1.2, 1.5)
+    assert fitted["fit_rt"].item() == pytest.approx(apex_rt, abs=0.05)
+    assert fitted["fit_height"].item() == pytest.approx(apex_height, rel=0.01)
+    assert fitted["fit_shape_rt"].item() == pytest.approx(1740.0, abs=0.1)
+    row = SimpleNamespace(fit_shape="emg", fit_shape_rt_s=fitted["fit_shape_rt"].item(),
+                          fit_shape_height=fitted["fit_shape_height"].item(), fit_rt_s=fitted["fit_rt"].item(),
+                          fit_height=fitted["fit_height"].item(), fit_sigma_s=fitted["fit_sigma"].item(),
+                          fit_tailing=fitted["fit_tailing"].item())
+    np.testing.assert_allclose(peak_shape(rt, row) + fitted["fit_baseline"].item(), y, atol=15)
