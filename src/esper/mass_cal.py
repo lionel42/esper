@@ -96,7 +96,7 @@ def read_run(folder: Path, name: str) -> RunCalibration:
     import twutils
     from masscal import MassCalibration
 
-    from esper.alpinac import parse_measurement_name
+    from esper.sources import parse_measurement_name
 
     folder = Path(folder)
     warnings = []

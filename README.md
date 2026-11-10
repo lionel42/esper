@@ -12,33 +12,51 @@ pip install -e .
 ## Usage
 
 ```
+esper upload /path/to/alpinac/results /path/to/esper/data --instrument tofwerk  # first upload
 esper upload /path/to/alpinac/results /path/to/esper/data   # import / update, and fit the peaks
 esper fit /path/to/esper/data                               # fit the measurements not fitted yet
 esper targets /shared/data/substances.xlsx /path/to/esper/data  # import the target compounds
 esper gui /path/to/esper/data                               # open the GUI
 ```
 
-`upload --no-fit` imports without fitting; `-j N` (upload and fit) uses N processes for the
+A data directory holds the runs of one instrument, declared in its `esper.yaml`
+(`instrument: tofwerk` or `gcwerks`, see [Data sources](#data-sources)): give it with
+`--instrument` to the first upload, which writes it there. `upload --no-fit` imports without fitting; `-j N` (upload and fit) uses N processes for the
 fit (default: all CPUs, ~1 min per measurement with 10).
 
-### GCwerks chromatograms
+### Data sources
 
-`esper upload` also imports the chromatograms of a GCwerks directory (e.g. a Medusa GC-MS),
-read with [gcwerks](https://github.com/lionel42/gcwerks) (`src/esper/gcwerks.py`):
+Each instrument is a module of `src/esper/sources/` that finds the runs of a source path and
+reads them (`find_runs`, `read`, `refresh`; see `esper/sources/__init__.py`); `esper.upload`
+stores what they read. The measurement table keeps the `instrument` of each run and where its
+peaks come from (`peak_source`); only the peaks of alpinac are fitted.
+
+| instrument | runs | peaks |
+|---|---|---|
+| `tofwerk` | `<run>.alpinac` folders: the alpinac extraction, the chromatograms of `esper chromatograms`, the mass calibration and the h5 file next to the folder | `alpinac`, fitted |
+| `gcwerks` | `<yy>/chromatograms/channel0/<run>` of a GCwerks directory | none (chromatograms only) |
+
+Data directories made before the instrument was declared are `tofwerk`: their first upload
+declares it. A data directory refuses runs of another instrument.
+
+#### GCwerks chromatograms
+
+The chromatograms of a GCwerks directory (e.g. a Medusa GC-MS), read with
+[gcwerks](https://github.com/lionel42/gcwerks) (`src/esper/sources/gcwerks.py`):
 
 ```
-esper upload /path/to/gcwerks/jungfraujoch-medusa /path/to/esper/data   # all the years
-esper upload /path/to/gcwerks/jungfraujoch-medusa/26 /path/to/esper/data
+esper upload /path/to/gcwerks/jungfraujoch-medusa /path/to/esper/data --instrument gcwerks  # all the years
+esper upload /path/to/gcwerks/jungfraujoch-medusa/26 /path/to/esper/data   # one year
 ```
 
-The source is recognised as GCwerks when it is in a directory with `config/gcwerks.conf`
-(`--format gcwerks|alpinac` to force it). The files `<yy>/chromatograms/channel0/<name>` (not the
-`tune` runs) are written as `chromatograms/<name>.parquet` (index rt, one column per unit mass and
-`tic`) and the measurement stored with `source_format = 'gcwerks'`, its start from the file
-(`acq_start_source = 'gcwerks'`, to the s). Only the chromatograms: no peaks, no fit (`esper fit`
-skips them). The quadrupole measures each mass only in its time windows: the column of a mass is
-NaN outside them (the GUI draws the measured scans only). The signal is as GCwerks stores it,
-baseline included. Unchanged files (same size and mtime) are skipped.
+The source can be the GCwerks directory, a year, its `chromatograms` folder or one file. The
+files `<yy>/chromatograms/channel0/<name>` (not the `tune` runs) are written as
+`chromatograms/<name>.parquet` (index rt, one column per unit mass and `tic`), the start of the
+run from the file (`acq_start_source = 'gcwerks'`, to the s). Only the chromatograms: no peaks,
+no fit (`peak_source` NULL). The quadrupole measures each mass only in its time windows: the
+column of a mass is NaN outside them (the GUI draws the measured scans only). The signal is as
+GCwerks stores it, baseline included. Unchanged files (same size and mtime) are skipped. The
+files written before ~April 2012 (an older layout) cannot be read yet.
 
 ### Peak fit
 
@@ -162,7 +180,7 @@ the hicolor theme) and the `esper` command to the PATH (`bin/esper`), in `/usr/l
 `--desktop-shortcut` also puts the icon on your desktop (with sudo: on the desktop of the
 user who ran sudo). `--uninstall` removes it all.
 
-`upload` accepts a single `.alpinac` folder or a directory searched recursively.
+`upload` (tofwerk) accepts a single `.alpinac` folder or a directory searched recursively.
 Measurements whose `pipeline.nc` did not change are skipped (`--force` to reimport).
 
 `targets` replaces all the target compounds of the database. The source is read by a loader
@@ -278,7 +296,7 @@ baseline over ±3 half widths at half maximum, limited to the prominence bases o
 
 ```
 <data_dir>/
-    esper.yaml      (optional)
+    esper.yaml      instrument (written by the first upload), optional database path
     esper.sqlite
     chromatograms/<measurement>.parquet
     chromatograms/<measurement>.raw.parquet        (esper chromatograms only)
@@ -293,9 +311,11 @@ baselines are next to it (`esper.chromatograms.read_chromatograms(path, "raw")`)
 
 The database can live elsewhere, e.g. on a faster disk than the chromatograms: put an
 `esper.yaml` in the data directory with the path of the database (absolute, `~/...`, or
-relative to the data directory):
+relative to the data directory), and the instrument of its runs (written by the first
+`upload --instrument`):
 
 ```yaml
+instrument: tofwerk
 database: /home/me/Data/esper/esper.sqlite
 ```
 

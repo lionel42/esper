@@ -1,4 +1,5 @@
-"""Import of the chromatograms of a GCwerks directory (esper.gcwerks)."""
+"""Import of the chromatograms of a GCwerks directory (esper.sources.gcwerks), and the
+instrument of a data directory (esper.sources)."""
 
 from __future__ import annotations
 
@@ -8,10 +9,15 @@ import pytest
 from gcwerks.io import chromatogram as gc_chromatogram
 from gcwerks.io.chromatogram import Chromatogram, IonChromatogram
 
-from esper import db, gcwerks
-from esper.alpinac import parse_measurement_name
+from esper import db
 from esper.fitting import to_fit
 from esper.gui.chromatogram_store import ChromatogramStore
+from esper.sources import (
+    InstrumentError,
+    declared_instrument,
+    gcwerks,
+    parse_measurement_name,
+)
 from esper.upload import upload
 
 START = pd.Timestamp("2026-01-12 21:14:05")
@@ -86,12 +92,14 @@ def test_upload(tmp_path, monkeypatch):
     monkeypatch.setattr(gc_chromatogram, "read_chromatogram", lambda path: _chromatogram())
     data_dir = tmp_path / "esper"
 
-    summary = upload(root, data_dir)
+    summary = upload(root, data_dir, instrument="gcwerks")
+    assert declared_instrument(data_dir) == "gcwerks"
     assert summary.imported == ["260112.2114.air.7", "260112.2224.air.7"]
     con = db.connect(data_dir)
     row = con.execute(
         "SELECT sample_type, sample_number, rt_start_s, rt_stop_s, n_peaks, acq_start,"
-        " acq_start_source, source_format, chromatogram_file FROM measurement WHERE name = ?",
+        " acq_start_source, instrument, peak_source, chromatogram_file FROM measurement"
+        " WHERE name = ?",
         ("260112.2114.air.7",),
     ).fetchone()
     assert row == (
@@ -103,6 +111,7 @@ def test_upload(tmp_path, monkeypatch):
         "2026-01-12T21:14:05.000",
         "gcwerks",
         "gcwerks",
+        None,
         "chromatograms/260112.2114.air.7.parquet",
     )
     # chromatograms only: not fitted
@@ -124,12 +133,50 @@ def test_unreadable_file_fails(tmp_path, monkeypatch):
         raise ValueError("old format")
 
     monkeypatch.setattr(gc_chromatogram, "read_chromatogram", read)
-    summary = upload(root, tmp_path / "esper")
+    summary = upload(root, tmp_path / "esper", instrument="gcwerks")
     assert summary.imported == []
     assert [name for name, _ in summary.failed] == ["110101.0000.air.7"]
 
 
-@pytest.mark.parametrize("source_format", ["alpinac", "gcwerks"])
-def test_forced_format(tmp_path, source_format):
-    summary = upload(tmp_path, tmp_path / "esper", fit=False, source_format=source_format)
-    assert summary.imported == []
+def test_new_data_dir_needs_an_instrument(tmp_path):
+    with pytest.raises(InstrumentError, match="--instrument"):
+        upload(tmp_path / "runs", tmp_path / "esper")
+
+
+def test_gcwerks_source_needs_a_declared_instrument(tmp_path):
+    root = _gcdir(tmp_path, [])
+    data_dir = tmp_path / "esper"
+    db.connect(data_dir, create=True).close()  # existing data directory, undeclared
+    with pytest.raises(InstrumentError, match="--instrument gcwerks"):
+        upload(root, data_dir)
+
+
+def test_legacy_data_dir_is_tofwerk(tmp_path):
+    data_dir = tmp_path / "esper"
+    data_dir.mkdir()
+    (data_dir / "esper.yaml").write_text("# shared\ndatabase: esper.sqlite")
+    db.connect(data_dir, create=True).close()
+    upload(tmp_path / "runs", data_dir, fit=False)
+    assert declared_instrument(data_dir) == "tofwerk"
+    # the other lines kept
+    assert (data_dir / "esper.yaml").read_text().startswith("# shared\ndatabase: esper.sqlite\n")
+    assert db.db_path(data_dir) == data_dir / "esper.sqlite"
+
+
+def test_other_instrument_is_refused(tmp_path):
+    data_dir = tmp_path / "esper"
+    upload(tmp_path / "runs", data_dir, fit=False, instrument="tofwerk")
+    with pytest.raises(InstrumentError, match="has the runs of tofwerk"):
+        upload(tmp_path / "runs", data_dir, instrument="gcwerks")
+    # declared: no need to give it again
+    upload(tmp_path / "runs", data_dir, fit=False)
+
+
+def test_measurements_of_another_instrument_are_refused(tmp_path, monkeypatch):
+    root = _gcdir(tmp_path, ["260112.2114.air.7"])
+    monkeypatch.setattr(gc_chromatogram, "read_chromatogram", lambda path: _chromatogram())
+    data_dir = tmp_path / "esper"
+    upload(root, data_dir, instrument="gcwerks")
+    (data_dir / "esper.yaml").write_text("instrument: tofwerk\n")
+    with pytest.raises(InstrumentError, match="measurements of gcwerks"):
+        upload(tmp_path / "runs", data_dir)

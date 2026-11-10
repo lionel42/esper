@@ -140,10 +140,14 @@ def test_steps_of_the_acquisition(tmp_path):
 def test_upload_copies(result, tmp_path):
     """Upload: the chromatograms copied with their raw sums and baselines; parts of an earlier
     import removed when the new source has none (legacy pipeline)."""
-    from types import SimpleNamespace
-
     from esper.alpinac import find_chromatograms
-    from esper.upload import _copy_chromatograms
+    from esper.sources import MeasurementImport, Run
+    from esper.upload import store_chromatograms
+
+    def store(chromatogram_file):
+        run = Run(name, folder, None)
+        imported = MeasurementImport(run, "tofwerk", "alpinac", chromatogram_file=chromatogram_file)
+        return store_chromatograms(imported, data_dir)
 
     name = "241007.0423.air.1"
     folder = tmp_path / "upload" / f"{name}.alpinac"
@@ -156,7 +160,7 @@ def test_upload_copies(result, tmp_path):
     result.chromatograms.to_parquet(legacy)
 
     data_dir = tmp_path / "data"
-    stored = _copy_chromatograms(SimpleNamespace(name=name, chromatogram_file=new), data_dir)
+    stored = store(new)
     assert stored == f"chromatograms/{name}.parquet"
     copy = data_dir / stored
     for part in ("corrected", "raw", "baseline"):
@@ -164,6 +168,6 @@ def test_upload_copies(result, tmp_path):
                                       read_chromatograms(new, part).to_numpy())
     assert provenance(read_chromatograms(copy))["segments"] == [0, 1]
     # back to the legacy file: no raw sums or baselines left from the earlier copy
-    _copy_chromatograms(SimpleNamespace(name=name, chromatogram_file=legacy), data_dir)
+    store(legacy)
     assert not part_path(copy, "raw").exists() and not part_path(copy, "baseline").exists()
-    assert _copy_chromatograms(SimpleNamespace(name=name, chromatogram_file=None), data_dir) is None
+    assert store(None) is None

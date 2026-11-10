@@ -1,5 +1,4 @@
-"""Import .alpinac folders (or GCwerks chromatograms, :mod:`esper.gcwerks`) into an esper
-data directory."""
+"""Import the runs of an instrument (:mod:`esper.sources`) into an esper data directory."""
 
 from __future__ import annotations
 
@@ -12,15 +11,12 @@ from datetime import datetime
 from pathlib import Path
 
 from esper import db, mass_cal
-from esper.alpinac import (
-    ALPINAC_SUFFIX,
-    DATED_PIPELINE_GLOB,
-    PIPELINE_FILENAME,
-    AlpinacResult,
-    find_pipeline,
-    is_complete,
+from esper.sources import (
+    InstrumentError,
+    MeasurementImport,
+    get_source,
     parse_measurement_name,
-    read_alpinac_folder,
+    resolve_instrument,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,21 +32,13 @@ class UploadSummary:
     fit_failed: list[tuple[str, str]] = field(default_factory=list)
 
 
-def find_alpinac_folders(source: Path) -> list[Path]:
-    """The source can be a .alpinac folder or a directory containing some."""
-    source = Path(source)
-    if source.name.endswith(ALPINAC_SUFFIX):
-        return [source]
-    return sorted(p for p in source.rglob(f"*{ALPINAC_SUFFIX}") if p.is_dir())
-
-
-def _is_unchanged(con: sqlite3.Connection, name: str, pipeline_file: Path) -> bool:
+def _is_unchanged(con: sqlite3.Connection, name: str, file: Path) -> bool:
     row = con.execute(
         "SELECT source_mtime, source_size FROM measurement WHERE name = ?", (name,)
     ).fetchone()
     if row is None:
         return False
-    stat = pipeline_file.stat()
+    stat = file.stat()
     return row == (stat.st_mtime, stat.st_size)
 
 
@@ -65,70 +53,110 @@ def _copy_if_changed(source: Path, target: Path) -> None:
         shutil.copy2(source, target)
 
 
-def _copy_chromatograms(result: AlpinacResult, data_dir: Path) -> str | None:
-    """Copy the chromatograms to ``chromatograms/<name>.parquet``, with the raw sums and
-    the baselines of ``esper chromatograms`` next to them (``<name>.raw.parquet``,
-    ``<name>.baseline.parquet``, :func:`esper.chromatograms.part_path`) when written
-    (not by the legacy pipeline).
+def store_chromatograms(imported: MeasurementImport, data_dir: Path) -> str | None:
+    """Write the chromatograms to ``chromatograms/<name>.parquet``.
+
+    A ``chromatogram_file`` is copied, with the raw sums and the baselines of ``esper
+    chromatograms`` next to it (``<name>.raw.parquet``, ``<name>.baseline.parquet``,
+    :func:`esper.chromatograms.part_path`) when written (not by the legacy pipeline); a
+    ``chromatogram_frame`` is written.
 
     :return: the path of the chromatograms, relative to the data directory (stored).
     """
     from esper.chromatograms import part_path
 
-    if result.chromatogram_file is None:
+    source, frame = imported.chromatogram_file, imported.chromatogram_frame
+    if source is None and frame is None:
         return None
-    target = db.chromatograms_dir(data_dir) / f"{result.name}.parquet"
+    target = db.chromatograms_dir(data_dir) / f"{imported.name}.parquet"
     target.parent.mkdir(parents=True, exist_ok=True)
-    _copy_if_changed(result.chromatogram_file, target)
+    if frame is not None:
+        frame.to_parquet(target, compression="zstd")
+    else:
+        _copy_if_changed(source, target)
     for part in ("raw", "baseline"):
-        source, copy = part_path(result.chromatogram_file, part), part_path(target, part)
-        if source.is_file():
-            _copy_if_changed(source, copy)
+        part_source, copy = (
+            None if source is None else part_path(source, part),
+            part_path(target, part),
+        )
+        if part_source is not None and part_source.is_file():
+            _copy_if_changed(part_source, copy)
         else:  # e.g. legacy chromatograms now: not the parts of an earlier import
             copy.unlink(missing_ok=True)
     return str(target.relative_to(data_dir))
 
 
-def store_result(
-    con: sqlite3.Connection, result: AlpinacResult, chromatogram_file: str | None
+def _none_if_nan(value):
+    return None if value is None or value != value else value
+
+
+def store_measurement(
+    con: sqlite3.Connection, imported: MeasurementImport, chromatogram_file: str | None
 ) -> int:
     """Replace the measurement in the database (single transaction), returns its id."""
-    stat = result.pipeline_file.stat()
+    run = imported.run
+    stat = run.file.stat()
+    tables = {
+        "compound": imported.compounds,
+        "compound_candidate": imported.candidates,
+        "peak": imported.peaks,
+    }
+    start = imported.acq_start
     with con:
-        con.execute("DELETE FROM measurement WHERE name = ?", (result.name,))
+        con.execute("DELETE FROM measurement WHERE name = ?", (run.name,))
         cur = con.execute(
             """
             INSERT INTO measurement (
                 name, acq_datetime, sample_type, sample_number,
                 rt_start_s, rt_stop_s, cleaning, n_peaks, n_compounds,
-                chromatogram_file, source_dir, source_mtime, source_size, imported_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                chromatogram_file, source_dir, source_mtime, source_size, imported_at,
+                acq_start, acq_start_source, instrument, peak_source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                result.name,
-                *parse_measurement_name(result.name).values(),
-                result.attrs["rt_start_s"],
-                result.attrs["rt_stop_s"],
-                result.attrs["cleaning"],
-                len(result.peaks),
-                len(result.compounds),
+                run.name,
+                *parse_measurement_name(run.name).values(),
+                _none_if_nan(imported.rt_start_s),
+                _none_if_nan(imported.rt_stop_s),
+                imported.cleaning,
+                0 if imported.peaks is None else len(imported.peaks),
+                0 if imported.compounds is None else len(imported.compounds),
                 chromatogram_file,
-                str(result.folder.resolve()),
+                str(Path(run.path).resolve()),
                 stat.st_mtime,
                 stat.st_size,
                 datetime.now().isoformat(timespec="seconds"),
+                None if start is None else start.isoformat(timespec="milliseconds"),
+                imported.acq_start_source if start is not None else None,
+                imported.instrument,
+                imported.peak_source,
             ),
         )
         mid = cur.lastrowid
 
-        mass_cal.store(con, mid, result.run)
-
-        db.insert(con, "compound", result.compounds.assign(measurement_id=mid))
-        db.insert(
-            con, "compound_candidate", result.candidates.assign(measurement_id=mid)
-        )
-        db.insert(con, "peak", result.peaks.assign(measurement_id=mid))
+        if imported.calibration is not None:
+            # Also the start of the acquisition, if there is a calibration
+            mass_cal.store(con, mid, imported.calibration)
+        for table, df in tables.items():
+            if df is not None:
+                db.insert(con, table, df.assign(measurement_id=mid))
     return mid
+
+
+def check_instrument(con: sqlite3.Connection, instrument: str, data_dir: Path) -> None:
+    """The measurements of the database are of ``instrument``."""
+    others = [
+        row[0]
+        for row in con.execute(
+            "SELECT DISTINCT instrument FROM measurement WHERE instrument != ?",
+            (instrument,),
+        )
+    ]
+    if others:
+        raise InstrumentError(
+            f"{data_dir} is declared for {instrument} but has measurements of"
+            f" {', '.join(others)}"
+        )
 
 
 def upload(
@@ -137,62 +165,62 @@ def upload(
     force: bool = False,
     fit: bool = True,
     workers: int | None = None,
-    source_format: str = "auto",
+    instrument: str | None = None,
 ) -> UploadSummary:
-    """Import the .alpinac folders of ``source``, and fit their peaks (``esper.fitting``) if ``fit``.
+    """Import the runs of ``source``, and fit their peaks (``esper.fitting``) if ``fit``.
 
+    ``instrument``: of the runs; the one declared in the esper.yaml of the data directory,
+    declared there if not yet (:func:`esper.sources.resolve_instrument`).
     ``workers``: processes of the fit (None: the number of CPUs).
-    ``source_format``: 'alpinac', 'gcwerks' (the chromatograms of a GCwerks directory,
-    :mod:`esper.gcwerks`, not fitted) or 'auto': 'gcwerks' if ``source`` is in a GCwerks
-    directory.
     """
-    from esper import gcwerks
-    from esper.fitting import fit_pool
-
     data_dir = Path(data_dir)
+    instrument = resolve_instrument(data_dir, instrument, source)
+    instrument_source = get_source(instrument)
+    # The fit (and its dependencies) only for the instruments with peaks
+    if fit and instrument_source.PEAK_SOURCE is not None:
+        from esper.fitting import FITTED_PEAK_SOURCES, fit_pool
+
+        fit = instrument_source.PEAK_SOURCE in FITTED_PEAK_SOURCES
+    else:
+        fit = False
     summary = UploadSummary([], [], [], [])
-    if source_format == "auto":
-        source_format = "gcwerks" if gcwerks.is_gcwerks_source(source) else "alpinac"
-    if source_format == "gcwerks":
-        return gcwerks.upload(source, data_dir, summary, force=force)
-    if source_format != "alpinac":
-        raise ValueError(f"Unknown source format {source_format!r}")
     con = db.connect(data_dir, create=True)
     stack = contextlib.ExitStack()
-    # The processes of the fits, for all the measurements (started at the first fit)
-    pool = stack.enter_context(fit_pool(workers)) if fit else None
     try:
-        for folder in find_alpinac_folders(source):
-            name = folder.name.removesuffix(ALPINAC_SUFFIX)
-            if not is_complete(folder):
-                logger.warning(
-                    f"{name}: no {PIPELINE_FILENAME} or {DATED_PIPELINE_GLOB}, skipped"
-                )
+        check_instrument(con, instrument, data_dir)
+        runs = instrument_source.find_runs(source)
+        logger.info(f"{len(runs)} runs of {instrument} in {source}")
+        # The processes of the fits, for all the measurements (started at the first fit)
+        pool = stack.enter_context(fit_pool(workers)) if fit else None
+        for run in runs:
+            name = run.name
+            if run.file is None:
+                logger.warning(f"{name}: not complete, skipped")
                 summary.skipped_incomplete.append(name)
                 continue
-            if not force and _is_unchanged(con, name, find_pipeline(folder)):
-                logger.info(f"{name}: unchanged, skipped")
+            if not force and _is_unchanged(con, name, run.file):
+                logger.debug(f"{name}: unchanged, skipped")
                 summary.skipped_unchanged.append(name)
-                # The calibration may have been made again (esper calibrate)
                 try:
-                    mass_cal.refresh(con, name, folder)
+                    instrument_source.refresh(con, run)
                 except Exception as e:
-                    logger.exception(f"{name}: mass calibration failed")
-                    summary.failed.append((name, f"mass calibration: {e!r}"))
+                    logger.exception(f"{name}: refresh failed")
+                    summary.failed.append((name, f"refresh: {e!r}"))
                 continue
             try:
-                result = read_alpinac_folder(folder)
-                for w in result.warnings:
+                imported = instrument_source.read(run)
+                for w in imported.warnings:
                     logger.warning(f"{name}: {w}")
-                chromatogram_file = _copy_chromatograms(result, data_dir)
-                mid = store_result(con, result, chromatogram_file)
+                chromatogram_file = store_chromatograms(imported, data_dir)
+                mid = store_measurement(con, imported, chromatogram_file)
             except Exception as e:
-                logger.exception(f"{name}: import failed")
+                logger.debug(f"{name}: import failed", exc_info=True)
+                logger.warning(f"{name}: import failed: {e!r}")
                 summary.failed.append((name, repr(e)))
                 continue
-            logger.info(
-                f"{name}: {len(result.peaks)} peaks, {len(result.compounds)} compounds"
-            )
+            n_peaks = 0 if imported.peaks is None else len(imported.peaks)
+            n_compounds = 0 if imported.compounds is None else len(imported.compounds)
+            logger.info(f"{name}: {n_peaks} peaks, {n_compounds} compounds")
             summary.imported.append(name)
             if fit:
                 _fit(con, name, mid, data_dir, pool, summary)

@@ -3,7 +3,8 @@
 An esper data directory looks like::
 
     <data_dir>/
-        esper.yaml                  # optional, "database: <path>": where the database is
+        esper.yaml                  # "instrument: tofwerk|gcwerks" (esper.sources); optional
+                                    # "database: <path>": where the database is
         esper.sqlite                # the database, unless esper.yaml says otherwise
         chromatograms/
             <measurement>.parquet   # unit mass chromatograms (index: rt [s], columns: masses + 'tic')
@@ -50,9 +51,11 @@ ADDED_COLUMNS = {
             "acq_start_source",
             "TEXT",
         ),  # 'h5': read in the h5 file; 'name': to the minute; 'gcwerks': its file, to the s
-        # Where the measurement comes from: NULL: a .alpinac folder; 'gcwerks': a GCwerks
-        # chromatogram file (esper.gcwerks, chromatograms only: not fitted)
-        ("source_format", "TEXT"),
+        # Instrument of the run (esper.sources: 'tofwerk', 'gcwerks'), and where its peaks
+        # come from ('alpinac'; NULL: no peaks, e.g. GCwerks chromatograms only). The
+        # defaults are those of the measurements imported before these columns.
+        ("instrument", "TEXT NOT NULL DEFAULT 'tofwerk'"),
+        ("peak_source", "TEXT DEFAULT 'alpinac'"),
     ],
     "mass_cal": [
         ("source_file", "TEXT"),  # the calibration file read

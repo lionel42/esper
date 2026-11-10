@@ -1,4 +1,4 @@
-"""Import the chromatograms of a GCwerks directory into an esper data directory.
+"""Runs of a GCwerks directory: their chromatograms (instrument ``gcwerks``).
 
 A GCwerks directory (e.g. a Medusa GC-MS) has one folder per year with the
 mass-spectrometer chromatograms of each run::
@@ -10,7 +10,7 @@ mass-spectrometer chromatograms of each run::
 The files are read with the `gcwerks <https://github.com/lionel42/gcwerks>`_ package and
 written as esper chromatograms (``chromatograms/<name>.parquet``: index ``rt`` [s], one
 column per unit mass and ``tic``). Only the chromatograms are imported: no peaks, no
-compounds (the measurements have ``source_format = 'gcwerks'`` and are not fitted).
+compounds (``peak_source`` NULL: not fitted).
 
 The quadrupole measures each mass only in its time windows (SIM): a mass column is NaN
 outside them. The signal is as GCwerks stores it, baseline included.
@@ -22,25 +22,21 @@ import json
 import logging
 import re
 import sqlite3
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
-from esper import db
-from esper.alpinac import parse_measurement_name
+from esper.sources import GCWERKS, MeasurementImport, Run
 
 if TYPE_CHECKING:
     from gcwerks.io.chromatogram import Chromatogram
 
-    from esper.upload import UploadSummary
-
 logger = logging.getLogger(__name__)
 
-# measurement.source_format
-SOURCE_FORMAT = "gcwerks"
+INSTRUMENT = GCWERKS
+PEAK_SOURCE = None  # chromatograms only
 # measurement.acq_start_source: the start written in the chromatogram file (to the s)
 START_FILE = "gcwerks"
 
@@ -128,55 +124,15 @@ def chromatogram_frame(chromatogram: Chromatogram) -> tuple[pd.DataFrame, list[s
     return frame, warnings
 
 
-def _store(
-    con: sqlite3.Connection,
-    name: str,
-    path: Path,
-    chromatogram: Chromatogram,
-    chromatogram_file: str,
-) -> int:
-    """Replace the measurement in the database (single transaction), returns its id."""
-    stat = path.stat()
-    times = chromatogram.times
-    start = pd.Timestamp(chromatogram.start)
-    with con:
-        con.execute("DELETE FROM measurement WHERE name = ?", (name,))
-        cur = con.execute(
-            """
-            INSERT INTO measurement (
-                name, acq_datetime, sample_type, sample_number,
-                rt_start_s, rt_stop_s, cleaning, n_peaks, n_compounds,
-                chromatogram_file, source_dir, source_mtime, source_size, imported_at,
-                acq_start, acq_start_source, source_format
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                name,
-                *parse_measurement_name(name).values(),
-                float(times[0]) if len(times) else None,
-                float(times[-1]) if len(times) else None,
-                None,
-                0,
-                0,
-                chromatogram_file,
-                str(path.resolve()),
-                stat.st_mtime,
-                stat.st_size,
-                datetime.now().isoformat(timespec="seconds"),
-                start.isoformat(timespec="milliseconds"),
-                START_FILE,
-                SOURCE_FORMAT,
-            ),
-        )
-    return cur.lastrowid
+def find_runs(source: Path) -> list[Run]:
+    """The runs of :func:`find_chromatogram_files`."""
+    return [Run(path.name, path, path) for path in find_chromatogram_files(source)]
 
 
-def import_file(con: sqlite3.Connection, path: Path, data_dir: Path) -> list[str]:
-    """Import one chromatogram file, returns the warnings."""
+def read(run: Run) -> MeasurementImport:
     from gcwerks.io.chromatogram import read_chromatogram
 
-    path = Path(path)
-    name = path.name
+    path = Path(run.path)
     chromatogram = read_chromatogram(path)
     if not len(chromatogram.times):
         raise ValueError("no scans")
@@ -184,41 +140,19 @@ def import_file(con: sqlite3.Connection, path: Path, data_dir: Path) -> list[str
     frame.attrs[PROVENANCE] = json.dumps(
         {"file": str(path.resolve()), "start": str(chromatogram.start)}
     )
-    target = db.chromatograms_dir(data_dir) / f"{name}.parquet"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(target, compression="zstd")
-    _store(con, name, path, chromatogram, str(target.relative_to(data_dir)))
-    return warnings
+    times = chromatogram.times
+    return MeasurementImport(
+        run=run,
+        instrument=INSTRUMENT,
+        peak_source=PEAK_SOURCE,
+        rt_start_s=float(times[0]),
+        rt_stop_s=float(times[-1]),
+        chromatogram_frame=frame,
+        acq_start=pd.Timestamp(chromatogram.start).to_pydatetime(),
+        acq_start_source=START_FILE,
+        warnings=warnings,
+    )
 
 
-def upload(
-    source: Path, data_dir: Path, summary: UploadSummary, force: bool = False
-) -> UploadSummary:
-    """Import the chromatograms of ``source`` (see :func:`find_chromatogram_files`)."""
-    from esper.upload import _is_unchanged
-
-    data_dir = Path(data_dir)
-    files = find_chromatogram_files(source)
-    logger.info(f"{len(files)} GCwerks chromatogram files in {source}")
-    con = db.connect(data_dir, create=True)
-    try:
-        for path in files:
-            name = path.name
-            if not force and _is_unchanged(con, name, path):
-                logger.debug(f"{name}: unchanged, skipped")
-                summary.skipped_unchanged.append(name)
-                continue
-            try:
-                warnings = import_file(con, path, data_dir)
-            except Exception as e:
-                logger.debug(f"{name}: import failed", exc_info=True)
-                logger.warning(f"{name}: import failed: {e}")
-                summary.failed.append((name, repr(e)))
-                continue
-            for w in warnings:
-                logger.warning(f"{name}: {w}")
-            logger.info(f"{name}: imported")
-            summary.imported.append(name)
-    finally:
-        con.close()
-    return summary
+def refresh(con: sqlite3.Connection, run: Run) -> None:
+    """Nothing changes without changing the file."""

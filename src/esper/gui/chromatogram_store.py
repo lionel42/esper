@@ -61,7 +61,7 @@ class ChromatogramStore:
         """One chromatogram; only that column of the file is read.
 
         Without its NaN: the masses measured only in some time windows (GCwerks
-        quadrupole, esper.gcwerks) are NaN outside them.
+        quadrupole, esper.sources.gcwerks) are NaN outside them.
         """
         key = (measurement_id, column)
         if key in self._series:

@@ -449,11 +449,16 @@ def is_fitted(con: sqlite3.Connection, measurement_id: int) -> bool:
     return fit_version(con, measurement_id) is not None
 
 
+# Peak sources (measurement.peak_source) whose peaks are fitted: the extraction of alpinac
+FITTED_PEAK_SOURCES = ("alpinac",)
+
+
 def to_fit(con: sqlite3.Connection, force: bool = False) -> list[tuple[int, str]]:
     """(measurement_id, name) of the measurements not fitted, or fitted by an older
-    FIT_VERSION (all of them if ``force``), by acquisition time. The measurements of
-    GCwerks (chromatograms only, no peaks) are not fitted."""
-    where = "WHERE source_format IS NULL"
+    FIT_VERSION (all of them if ``force``), by acquisition time. Only the measurements
+    whose peak source is in FITTED_PEAK_SOURCES (not e.g. the GCwerks chromatograms)."""
+    sources = ", ".join(f"'{s}'" for s in FITTED_PEAK_SOURCES)
+    where = f"WHERE peak_source IN ({sources})"
     if not force:
         where += " AND (fit_version IS NULL OR fit_version < ?)"
     return con.execute(

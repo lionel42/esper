@@ -20,16 +20,21 @@ def _gui(args: argparse.Namespace) -> int:
 
 
 def _upload(args: argparse.Namespace) -> int:
+    from esper.sources import InstrumentError
     from esper.upload import upload
 
-    summary = upload(
-        args.source,
-        args.data_dir,
-        force=args.force,
-        fit=not args.no_fit,
-        workers=args.workers,
-        source_format=args.format,
-    )
+    try:
+        summary = upload(
+            args.source,
+            args.data_dir,
+            force=args.force,
+            fit=not args.no_fit,
+            workers=args.workers,
+            instrument=args.instrument,
+        )
+    except InstrumentError as e:
+        print(e, file=sys.stderr)
+        return 2
     print(
         f"imported: {len(summary.imported)}, "
         f"unchanged: {len(summary.skipped_unchanged)}, "
@@ -290,6 +295,8 @@ def _install(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from esper.sources import INSTRUMENTS
+
     parser = argparse.ArgumentParser(prog="esper")
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -305,8 +312,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p_upload = sub.add_parser(
         "upload",
-        help="Import .alpinac folders (or the chromatograms of a GCwerks directory) into "
-        "an esper data directory",
+        help="Import the runs of an instrument into an esper data directory: .alpinac "
+        "folders (tofwerk) or the chromatograms of a GCwerks directory (gcwerks)",
     )
     p_upload.add_argument(
         "source",
@@ -327,11 +334,10 @@ def main(argv: list[str] | None = None) -> int:
         "-j", "--workers", type=int, help="processes of the fit (default: all CPUs)"
     )
     p_upload.add_argument(
-        "--format",
-        choices=["auto", "alpinac", "gcwerks"],
-        default="auto",
-        help="what source is (default: gcwerks if it is in a directory with "
-        "config/gcwerks.conf, else alpinac). GCwerks: only the chromatograms, not fitted",
+        "--instrument",
+        choices=INSTRUMENTS,
+        help="instrument of the runs, declared in the esper.yaml of a new data directory "
+        "(then optional, must be the same). gcwerks: only the chromatograms, not fitted",
     )
     p_upload.set_defaults(func=_upload)
 
