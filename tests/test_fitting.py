@@ -5,9 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
+from peaxart.shapes import peak_shape as shape_of
 
 from esper import db
-from esper.deconvolution import FIT_CONFIG
 from esper.fitting import (
     FIT_COLUMNS,
     FIT_VERSION,
@@ -27,13 +27,15 @@ from esper.fitting import (
 DT = 1 / 6
 SIGMA = 1.4
 TAILING = 0.3
-# The synthetic peaks have the shape of the fit (peaxart.ChromatogramFitConfig.peak_shape)
-SHAPE = FIT_CONFIG.shape()
+# The synthetic peaks are Pap-Papai peaks, fitted with that function (pap_papai_fit)
+FIT_SHAPE = "pap_papai"
+SHAPE = shape_of(FIT_SHAPE)
 # Around 1800 s, where peaxart expects peaks of this width (ExtractionConfig.rt_sigma_at)
 T0 = 1700.0
-# Two coeluting compounds 5 s apart (FWHM 3.4 s), each alone on one mass. Closer, the
+# Two coeluting compounds 5 s apart (FWHM 3.3 s), each alone on one mass. Closer, the
 # default fit of peaxart (exponentially modified Gaussians, tail up to 3 sigma) can give
-# the tail of A the peak of B (4.5 s: B at 60 % of its area, the baseline at a quarter)
+# the tail of A the peak of B (EMG peaks 4.5 s apart: B at 60 % of its area, the baseline
+# at a quarter)
 RT_A, RT_B = T0 + 100.0, T0 + 105.0
 # Compounds of the extraction: A, B, the unresolved peak of both (C), and E, whose
 # only peak is a coelution of two unknown compounds
@@ -76,7 +78,7 @@ def peak(t: np.ndarray, height: float, rt: float) -> np.ndarray:
     return SHAPE.value(t, amplitude, location, SIGMA, TAILING)
 @pytest.fixture(autouse=True, scope="module")
 def pap_papai_fit():
-    """The synthetic peaks are Pap-Papai peaks (``chromato``): fitted with that function (the default,
+    """The synthetic peaks are Pap-Papai peaks (``SHAPE``): fitted with that function (the default,
     the EMG, is chosen on real data; these tests are about the peak table, not the peak function).
     Module scope: before the module-scoped ``table``."""
     import peaxart as px
@@ -84,7 +86,7 @@ def pap_papai_fit():
     from esper import fitting
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(fitting, "FIT_CONFIG", px.ChromatogramFitConfig(peak_shape="pap_papai"))
+        mp.setattr(fitting, "FIT_CONFIG", px.ChromatogramFitConfig(peak_shape=FIT_SHAPE))
         yield
 
 
@@ -249,7 +251,7 @@ def test_fitted_peak_just_outside_the_crossings_takes_the_row():
 def test_peak_shape_of_the_stored_fits(table):
     t = T0 + np.arange(80, 120, DT)
     p = table.loc[0]  # m/z 85 at RT_A
-    assert p["fit_shape"] == FIT_CONFIG.peak_shape
+    assert p["fit_shape"] == FIT_SHAPE
     shape = peak_shape(t, p)
     # its apex: fit_rt_s and fit_height
     assert t[shape.argmax()] == pytest.approx(p["fit_rt_s"], abs=DT)
@@ -335,7 +337,7 @@ def test_fit_measurement(tmp_path):
         FIT_VERSION,
     )
     assert to_fit(con) == []
-    assert set(stored["fit_shape"].dropna()) == {FIT_CONFIG.peak_shape}
+    assert set(stored["fit_shape"].dropna()) == {FIT_SHAPE}
     # the extraction values replaced by the fit are kept: the split peaks (4, 5) and
     # the peaks whose is_max_of_cmp changed, and the compounds changed
     kept = pd.read_sql("SELECT * FROM extraction_peak", con, index_col="peak_idx")

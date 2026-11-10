@@ -79,8 +79,6 @@ ADDED_COLUMNS = {
     "peak": [
         # 'extraction': found by alpinac; 'fit': split or added by the fit (esper.fitting)
         ("source", "TEXT NOT NULL DEFAULT 'extraction'"),
-        # Chromatographic fit (peaxart, peak function fit_shape on a constant baseline),
-        # NULL: not fitted. rt and height: of the apex
         # Chromatographic fit (peaxart, peak function fit_shape on a constant baseline), NULL: not fitted.
         # fit_rt_s / fit_height: the apex; fit_shape_rt_s, fit_shape_height, fit_sigma_s, fit_tailing: the
         # parameters of the function (peaxart.shapes; NULL fit_shape: Pap-Papai, whose apex they are)
@@ -95,12 +93,6 @@ ADDED_COLUMNS = {
         ("fit_area", "REAL"),  # [counts * s]
         ("fit_area_u", "REAL"),
         ("fit_sn", "REAL"),  # signal to noise
-        # Peak function of the fit (peaxart.shapes.SHAPES: 'emg', 'pap_papai'; NULL:
-        # 'pap_papai', fits of esper.fitting.FIT_VERSION 1, 2), and its location and
-        # amplitude (NULL: the apex, as for Pap-Papai)
-        ("fit_shape", "TEXT"),
-        ("fit_shape_rt_s", "REAL"),
-        ("fit_shape_height", "REAL"),
         ("fit_shape", "TEXT"),  # name of the peak function ('emg', 'pap_papai'), peaxart.shapes.SHAPES
         ("fit_shape_rt_s", "REAL"),  # its location
         ("fit_shape_height", "REAL"),  # its amplitude

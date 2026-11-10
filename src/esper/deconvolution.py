@@ -49,9 +49,6 @@ FIT_VARIABLES = {
     "fit_area": "area",
     "fit_area_u": "area_u",
     "fit_sn": "sn",
-    # location and amplitude of the peak function (attribute fit_config: its peak_shape); rt, height: the apex
-    "fit_shape_rt": "shape_rt",
-    "fit_shape_height": "shape_height",
     "fit_signal_height": "signal_height",
     "fit_signal_prominence": "signal_prominence",
 }

@@ -35,13 +35,12 @@ def test_fit_dataset():
     """The fit on its own dimension, linked to the detected peaks; the peak / compound part unchanged."""
     import json
 
-    from esper.deconvolution import FIT_CONFIG, FIT_VARIABLES, fit_dataset
+    from esper.deconvolution import FIT_VARIABLES, fit_dataset
 
-    shape = FIT_CONFIG.shape()  # the peaks have the shape of the fit
-    apex_rt, apex_height = shape.apex(1.0, 0.0, 1.4, 0.3)
+    shape = px.shapes.peak_shape("pap_papai")
 
-    def peak(t, height, rt):  # of apex height at rt
-        return shape.value(t, height / apex_height, rt - apex_rt, 1.4, 0.3)
+    def peak(t, height, rt):  # Pap-Papai: the apex at rt, of that height
+        return shape.value(t, height, rt, 1.4, 0.3)
 
     rt = np.arange(1700.0, 1800.0, 1 / 6)
     coelution = peak(rt, 1000.0, 1740.0) + peak(rt, 600.0, 1745.0)
@@ -59,9 +58,7 @@ def test_fit_dataset():
     np.testing.assert_allclose(fitted["fit_rt"].values[mass == 69], [1740, 1745], atol=0.1)
     np.testing.assert_allclose(fitted["fit_rt"].values[mass == 70], [1770], atol=0.1)
     np.testing.assert_allclose(fitted["fit_height"].values, [1000, 600, 500], rtol=0.01)
-    # the apex, and the parameters of the peak function
-    config = json.loads(fitted.attrs["fit_config"])
-    assert config["convention"] == "standard" and config["peak_shape"] == FIT_CONFIG.peak_shape
+    assert json.loads(fitted.attrs["fit_config"])["convention"] == "standard"
     assert json.loads(fitted.attrs["fit_config"])["peak_shape"] == "pap_papai"
     np.testing.assert_allclose(fitted["fit_shape_rt"].values, fitted["fit_rt"].values)  # Pap-Papai: the apex
     # fitted again: replaced, not added
