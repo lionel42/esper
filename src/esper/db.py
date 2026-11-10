@@ -392,6 +392,54 @@ def read_config(data_dir: Path) -> dict:
     return config
 
 
+def add_config_entries(
+    data_dir: Path, key: str, entries: dict, comment: str = ""
+) -> None:
+    """Add ``entries`` to the mapping ``key`` of the esper.yaml of a data directory (created
+    if needed), its other lines and comments kept: after the last line of a block mapping
+    ``key:``, else as a new block at the end. ``comment``: on each added line.
+
+    Raises ValueError if ``key`` is not a block mapping (e.g. ``key: {a: b}``) or if an
+    entry is already there.
+    """
+    path = Path(data_dir) / CONFIG_FILENAME
+    config = read_config(data_dir)
+    current = config.get(key)
+    if current is not None and not isinstance(current, dict):
+        raise ValueError(f"{path}: {key} is not a mapping")
+    repeated = sorted(set(entries) & set(current or {}))
+    if repeated:
+        raise ValueError(f"{path}: already in {key}: {', '.join(map(str, repeated))}")
+    suffix = f"  # {comment}" if comment else ""
+    added = [
+        f"  {yaml.safe_dump({name: value}, default_flow_style=True, width=1000)[1:-2]}"
+        f"{suffix}"
+        for name, value in entries.items()
+    ]
+    lines = path.read_text().splitlines() if path.is_file() else []
+    start = next(
+        (i for i, line in enumerate(lines) if line.rstrip() == f"{key}:"), None
+    )
+    if start is None:
+        if key in config:  # e.g. a flow mapping on one line
+            raise ValueError(
+                f"{path}: {key} must be a block mapping ('{key}:' then one entry per line)"
+            )
+        lines += [f"{key}:", *added]
+    else:
+        end = start + 1  # after the indented lines (and comments) of the block
+        while end < len(lines) and (not lines[end].strip() or lines[end][0] in " \t#"):
+            end += 1
+        while end > start + 1 and not lines[end - 1].strip():
+            end -= 1
+        lines[end:end] = added
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n")
+    written = read_config(data_dir).get(key) or {}
+    if any(k not in written or written[k] != v for k, v in entries.items()):
+        raise ValueError(f"{path}: the entries added to {key} do not read back")
+
+
 def db_path(data_dir: Path) -> Path:
     """The database of a data directory: ``database`` of its esper.yaml, or esper.sqlite in it.
 

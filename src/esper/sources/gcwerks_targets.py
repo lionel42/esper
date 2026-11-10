@@ -25,7 +25,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from esper.targets import ION_COLUMNS, RT_COLUMNS, TARGET_COLUMNS, TargetError, Targets
+from esper.targets import (
+    ION_COLUMNS,
+    RT_COLUMNS,
+    TARGET_COLUMNS,
+    TargetError,
+    Targets,
+    UnresolvedNamesError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,11 +106,14 @@ def resolve_names(peakid: pd.DataFrame, resolver: NameResolver) -> pd.DataFrame:
     resolved = {name: resolver(name) for name in peakid["name"].unique()}
     unresolved = sorted(n for n, t in resolved.items() if t is _UNRESOLVED)
     if unresolved:
-        raise TargetError(
+        raise UnresolvedNamesError(
             f"{len(unresolved)} peakid names are not peak.list names, nor openghg-defs names"
             f" of one: {', '.join(unresolved)}. Map each to its peak.list name, or to null"
             f" if it is not a target, in the {ALIASES_KEY} of the esper.yaml"
-            " (e.g. 'aliases: {CH2F2: HFC-32, O2: null}')"
+            " (e.g. 'aliases: {CH2F2: HFC-32, O2: null}'; esper upload --add-aliases"
+            " adds them as null)",
+            unresolved,
+            ALIASES_KEY,
         )
     lines = peakid.assign(target=peakid["name"].map(resolved))
     lines = lines[lines["target"].notna()]

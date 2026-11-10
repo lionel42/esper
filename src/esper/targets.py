@@ -46,6 +46,18 @@ RT_COLUMNS = ["name", "valid_from", "rt_s", "window_s"]
 
 class TargetError(ValueError):
     """The targets of a source cannot be read (e.g. names that match no target)."""
+
+
+class UnresolvedNamesError(TargetError):
+    """Names of a source that match no target: ``names``, to map in the ``key`` mapping of
+    the esper.yaml (e.g. ``aliases``)."""
+
+    def __init__(self, message: str, names: list[str], key: str) -> None:
+        super().__init__(message)
+        self.names = names
+        self.key = key
+
+
 # Ions of a target without ions in the target list: the largest masses of its
 # reference spectrum (as many as the ions of the Excel list)
 N_SPECTRUM_IONS = 8

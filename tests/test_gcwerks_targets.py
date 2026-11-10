@@ -169,3 +169,50 @@ def test_target_lists_are_not_versioned():
         == index.target_masses("CFC-12")
     )
     assert not index.has_rts("CFC-12")
+
+
+def test_upload_adds_the_unresolved_names_to_the_esper_yaml(tmp_path):
+    from esper.upload import upload
+
+    root = _gcdir(tmp_path)
+    (root / "config" / "gcwerks.conf").write_text("")
+    data_dir = tmp_path / "esper"
+    with pytest.raises(TargetError, match="--add-aliases"):
+        upload(root, data_dir, instrument="gcwerks")
+    # one name mapped by hand: only the other one added, after it
+    config = data_dir / "esper.yaml"
+    config.write_text(
+        "instrument: gcwerks\n# names of the peakid\naliases:\n  CH2F2: HFC-32\n\n"
+        "database: esper.sqlite\n"
+    )
+    summary = upload(root, data_dir, add_aliases=True)
+    assert summary.added_aliases == ["O2"]
+    text = config.read_text()
+    assert text.startswith(
+        "instrument: gcwerks\n# names of the peakid\naliases:\n  CH2F2: HFC-32\n  O2: null"
+    )
+    assert text.endswith("\n\ndatabase: esper.sqlite\n")
+    assert db.read_config(data_dir)["aliases"] == ALIASES
+    con = db.connect(data_dir)
+    assert con.execute("SELECT count(*) FROM target").fetchone() == (4,)
+    con.close()
+    # resolved now: nothing more to add
+    assert upload(root, data_dir, add_aliases=True).added_aliases == []
+
+
+def test_add_config_entries(tmp_path):
+    db.add_config_entries(tmp_path, "aliases", {"1,2-DCA": None, "O2": "Kr"}, "check")
+    assert (tmp_path / "esper.yaml").read_text() == (
+        "aliases:\n  '1,2-DCA': null  # check\n  O2: Kr  # check\n"
+    )
+    db.add_config_entries(tmp_path, "aliases", {"N2": None})
+    assert db.read_config(tmp_path)["aliases"] == {
+        "1,2-DCA": None,
+        "O2": "Kr",
+        "N2": None,
+    }
+    with pytest.raises(ValueError, match="already in aliases: O2"):
+        db.add_config_entries(tmp_path, "aliases", {"O2": None})
+    (tmp_path / "esper.yaml").write_text("aliases: {O2: null}\n")
+    with pytest.raises(ValueError, match="block mapping"):
+        db.add_config_entries(tmp_path, "aliases", {"N2": None})

@@ -32,6 +32,7 @@ def _upload(args: argparse.Namespace) -> int:
             fit=not args.no_fit,
             workers=args.workers,
             instrument=args.instrument,
+            add_aliases=args.add_aliases,
         )
     except (InstrumentError, TargetError) as e:
         print(e, file=sys.stderr)
@@ -43,6 +44,12 @@ def _upload(args: argparse.Namespace) -> int:
         f"failed: {len(summary.failed)}, "
         f"fit failed: {len(summary.fit_failed)}"
     )
+    if summary.added_aliases:
+        print(
+            f"{len(summary.added_aliases)} names added to the aliases of"
+            f" {args.data_dir / 'esper.yaml'} as not targets (null): map those that are"
+            f" targets to their peak.list name: {', '.join(summary.added_aliases)}"
+        )
     for name, error in summary.failed:
         print(f"  FAILED {name}: {error}", file=sys.stderr)
     for name, error in summary.fit_failed:
@@ -339,6 +346,13 @@ def main(argv: list[str] | None = None) -> int:
         choices=INSTRUMENTS,
         help="instrument of the runs, declared in the esper.yaml of a new data directory "
         "(then optional, must be the same). gcwerks: only the chromatograms, not fitted",
+    )
+    p_upload.add_argument(
+        "--add-aliases",
+        action="store_true",
+        help="gcwerks: add the peakid names that match no peak.list name to the aliases "
+        "of the esper.yaml, as not targets (null; map the targets among them to their "
+        "peak.list name), instead of stopping",
     )
     p_upload.set_defaults(func=_upload)
 

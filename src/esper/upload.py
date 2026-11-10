@@ -30,6 +30,8 @@ class UploadSummary:
     failed: list[tuple[str, str]]
     # Imported, but the fit failed
     fit_failed: list[tuple[str, str]] = field(default_factory=list)
+    # Names of the targets of the instrument added to the esper.yaml (add_aliases)
+    added_aliases: list[str] = field(default_factory=list)
 
 
 def _is_unchanged(con: sqlite3.Connection, name: str, file: Path) -> bool:
@@ -159,19 +161,47 @@ def check_instrument(con: sqlite3.Connection, instrument: str, data_dir: Path) -
         )
 
 
-def _store_targets(
-    con: sqlite3.Connection, instrument_source, source: Path, data_dir: Path
-):
-    """Replace the targets by those of the instrument (e.g. the GCwerks peak list)."""
-    from esper.targets import store_targets
+# Comment of the names added to the esper.yaml by ``add_aliases``
+ADDED_ALIAS_COMMENT = "added by esper upload: not a target, or map to its name"
 
-    targets = instrument_source.read_targets(source, db.read_config(data_dir))
+
+def _store_targets(
+    con: sqlite3.Connection,
+    instrument_source,
+    source: Path,
+    data_dir: Path,
+    add_aliases: bool = False,
+) -> list[str]:
+    """Replace the targets by those of the instrument (e.g. the GCwerks peak list).
+
+    ``add_aliases``: the names that match no target are added to the esper.yaml as not
+    targets (null), see ``upload``. Returns them.
+    """
+    from esper.targets import UnresolvedNamesError, store_targets
+
+    added = []
+    try:
+        targets = instrument_source.read_targets(source, db.read_config(data_dir))
+    except UnresolvedNamesError as e:
+        if not add_aliases:
+            raise
+        db.add_config_entries(
+            data_dir, e.key, dict.fromkeys(e.names), ADDED_ALIAS_COMMENT
+        )
+        added = e.names
+        logger.warning(
+            f"{len(added)} names added to the {e.key} of"
+            f" {Path(data_dir) / db.CONFIG_FILENAME} as not targets (null):"
+            f" {', '.join(added)}"
+        )
+        targets = instrument_source.read_targets(source, db.read_config(data_dir))
     targets.check()
     store_targets(con, targets, str(Path(source).resolve()))
     logger.info(
         f"targets: {len(targets.table)}, {targets.rts['name'].nunique()} with retention"
         f" times ({len(targets.rts)} versions), {targets.ions['name'].nunique()} with ions"
     )
+    return added
 
 
 def upload(
@@ -181,12 +211,16 @@ def upload(
     fit: bool = True,
     workers: int | None = None,
     instrument: str | None = None,
+    add_aliases: bool = False,
 ) -> UploadSummary:
     """Import the runs of ``source``, and fit their peaks (``esper.fitting``) if ``fit``.
 
     ``instrument``: of the runs; the one declared in the esper.yaml of the data directory,
     declared there if not yet (:func:`esper.sources.resolve_instrument`).
     ``workers``: processes of the fit (None: the number of CPUs).
+    ``add_aliases``: the names of the instrument's targets that match none (GCwerks peakid
+    names) are added to the esper.yaml as not targets (null, to map by hand), instead of
+    stopping the upload.
     """
     data_dir = Path(data_dir)
     instrument = resolve_instrument(data_dir, instrument, source)
@@ -204,7 +238,9 @@ def upload(
     try:
         check_instrument(con, instrument, data_dir)
         if hasattr(instrument_source, "read_targets"):
-            _store_targets(con, instrument_source, source, data_dir)
+            summary.added_aliases = _store_targets(
+                con, instrument_source, source, data_dir, add_aliases
+            )
         runs = instrument_source.find_runs(source)
         logger.info(f"{len(runs)} runs of {instrument} in {source}")
         # The processes of the fits, for all the measurements (started at the first fit)

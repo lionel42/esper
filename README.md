@@ -79,6 +79,10 @@ aliases:          # peakid name: peak.list name (null: not a target)
   O2: null
 ```
 
+`esper upload --add-aliases` adds these names to the `aliases` as `null` (each line commented
+"added by esper upload") and goes on with the upload: map those that are targets to their
+`peak.list` name, the next upload reads the targets again.
+
 In the GUI, the expected rt, window and ions of a target in a run are those of the version in
 effect at the time of the run (from its name); the targets of a target list (`esper targets`)
 are found from their retention index as before.
