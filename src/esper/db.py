@@ -81,6 +81,9 @@ ADDED_COLUMNS = {
         ("source", "TEXT NOT NULL DEFAULT 'extraction'"),
         # Chromatographic fit (peaxart, peak function fit_shape on a constant baseline),
         # NULL: not fitted. rt and height: of the apex
+        # Chromatographic fit (peaxart, peak function fit_shape on a constant baseline), NULL: not fitted.
+        # fit_rt_s / fit_height: the apex; fit_shape_rt_s, fit_shape_height, fit_sigma_s, fit_tailing: the
+        # parameters of the function (peaxart.shapes; NULL fit_shape: Pap-Papai, whose apex they are)
         ("fit_rt_s", "REAL"),
         ("fit_rt_u_s", "REAL"),  # uncertainty (1 sigma)
         ("fit_height", "REAL"),  # above the baseline [counts]
@@ -98,6 +101,9 @@ ADDED_COLUMNS = {
         ("fit_shape", "TEXT"),
         ("fit_shape_rt_s", "REAL"),
         ("fit_shape_height", "REAL"),
+        ("fit_shape", "TEXT"),  # name of the peak function ('emg', 'pap_papai'), peaxart.shapes.SHAPES
+        ("fit_shape_rt_s", "REAL"),  # its location
+        ("fit_shape_height", "REAL"),  # its amplitude
     ],
     "compound_identification": [
         # Best library spectrum of the name given by hand, and its scores

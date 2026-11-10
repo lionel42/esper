@@ -86,6 +86,8 @@ FIT_COLUMNS = {
     "fit_shape_rt_s": "shape_rt",
     "fit_shape_height": "shape_height",
 }
+# Name of the peak function of the fitted rows (peaxart.shapes.SHAPES)
+FIT_SHAPE_COLUMN = "fit_shape"
 # Columns of fit_mass / fit_peaks
 FITTED_COLUMNS = ["peak_idx", *FIT_COLUMNS, "signal_height", "signal_prominence"]
 
@@ -380,6 +382,9 @@ def fitted_peak_table(peaks: pd.DataFrame, fitted: pd.DataFrame) -> pd.DataFrame
             mass = peaks.at[row["peak_idx"], "mass"]
             new_rows.append({"peak_idx": next_idx, "mass": mass, **values})
             next_idx += 1
+    table[FIT_SHAPE_COLUMN] = np.where(
+        table["fit_rt_s"].notna(), FIT_CONFIG.peak_shape, None
+    )
     if new_rows:
         new = pd.DataFrame(new_rows).set_index("peak_idx")
         new["compound_idx"] = new["compound_idx"].astype("Int64")

@@ -392,7 +392,9 @@ class EsperData:
                 df[column] = np.nan
         # A column all NULL (e.g. the extraction columns when the fit split every peak)
         # is read as objects
-        numeric = [c for c in df.columns if c not in ("source", "compound_idx")]
+        numeric = [
+            c for c in df.columns if c not in ("source", "compound_idx", "fit_shape")
+        ]
         df[numeric] = df[numeric].apply(pd.to_numeric)
         return df
 
