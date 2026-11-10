@@ -10,7 +10,7 @@ run_extraction_pipeline``), same dataset: ``peak`` variables (the ``find_peaks``
 ``_count``, ``prominences_sum``, ``start_ip_mean`` / ``_std``, ``stopp_ip_mean`` / ``_std``, ``mai_``).
 
 ``fit_dataset``: the peaks of each mass fitted in its chromatogram (:func:`peaxart.fit_chromatogram`:
-Pap-Papai peaks by groups of overlapping peaks, starting at the detected rts and at the narrow peaks the
+peaks of ``ChromatogramFitConfig.peak_shape``, exponentially modified Gaussians by default, by groups of overlapping peaks, starting at the detected rts and at the narrow peaks the
 detection missed; peaks added where the data show a coelution), on their own dimension ``fit`` (variables
 ``fit_*``; ``fit_peak``: the nearest detected peak, -1 if none in the group; ``fit_added``: started from a
 peak the detection missed). The ``peak`` / ``compound`` variables are not changed.
@@ -47,6 +47,9 @@ FIT_VARIABLES = {
     "fit_area": "area",
     "fit_area_u": "area_u",
     "fit_sn": "sn",
+    # location and amplitude of the peak function (attribute fit_config: its peak_shape); rt, height: the apex
+    "fit_shape_rt": "shape_rt",
+    "fit_shape_height": "shape_height",
     "fit_signal_height": "signal_height",
     "fit_signal_prominence": "signal_prominence",
 }

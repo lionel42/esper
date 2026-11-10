@@ -33,13 +33,17 @@ def test_fit_dataset():
     """The fit on its own dimension, linked to the detected peaks; the peak / compound part unchanged."""
     import json
 
-    from peaxart.shapes import chromato
+    from esper.deconvolution import FIT_CONFIG, FIT_VARIABLES, fit_dataset
 
-    from esper.deconvolution import FIT_VARIABLES, fit_dataset
+    shape = FIT_CONFIG.shape()  # the peaks have the shape of the fit
+    apex_rt, apex_height = shape.apex(1.0, 0.0, 1.4, 0.3)
+
+    def peak(t, height, rt):  # of apex height at rt
+        return shape.value(t, height / apex_height, rt - apex_rt, 1.4, 0.3)
 
     rt = np.arange(1700.0, 1800.0, 1 / 6)
-    coelution = chromato(rt, 1000.0, 1740.0, 1.4, 0.3) + chromato(rt, 600.0, 1745.0, 1.4, 0.3)
-    alone = chromato(rt, 500.0, 1770.0, 1.4, 0.3)
+    coelution = peak(rt, 1000.0, 1740.0) + peak(rt, 600.0, 1745.0)
+    alone = peak(rt, 500.0, 1770.0)
     chromatograms = pd.DataFrame({"69": 5 + coelution, "70": 5 + alone}, index=pd.Index(rt, name="rt"))
     ds = legacy_dataset(chromatograms)
     fitted = fit_dataset(ds, chromatograms, workers=1)
@@ -52,6 +56,9 @@ def test_fit_dataset():
     np.testing.assert_allclose(fitted["fit_rt"].values[mass == 69], [1740, 1745], atol=0.1)
     np.testing.assert_allclose(fitted["fit_rt"].values[mass == 70], [1770], atol=0.1)
     np.testing.assert_allclose(fitted["fit_height"].values, [1000, 600, 500], rtol=0.01)
-    assert json.loads(fitted.attrs["fit_config"])["convention"] == "standard"
+    # the apex, and the parameters of the peak function
+    np.testing.assert_allclose(fitted["fit_shape_rt"].values, np.array([1740, 1745, 1770]) - apex_rt, atol=0.1)
+    config = json.loads(fitted.attrs["fit_config"])
+    assert config["convention"] == "standard" and config["peak_shape"] == FIT_CONFIG.peak_shape
     # fitted again: replaced, not added
     assert fit_dataset(fitted, chromatograms, workers=1).sizes["fit"] == 3

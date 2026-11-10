@@ -156,3 +156,17 @@ def read(run: Run) -> MeasurementImport:
 
 def refresh(con: sqlite3.Connection, run: Run) -> None:
     """Nothing changes without changing the file."""
+
+
+def read_targets(source: Path, config: dict):
+    """The targets of the GCwerks directory of ``source``
+    (:func:`esper.sources.gcwerks_targets.read_targets`, with the aliases of the
+    esper.yaml ``config``)."""
+    from esper.sources.gcwerks_targets import ALIASES_KEY
+    from esper.sources.gcwerks_targets import read_targets as read
+    from esper.targets import TargetError
+
+    root = gcwerks_root(source)
+    if root is None:
+        raise TargetError(f"{source} is not in a GCwerks directory (no {CONFIG_FILE})")
+    return read(root, config.get(ALIASES_KEY), DEFAULT_CHANNEL)

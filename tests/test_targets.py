@@ -14,7 +14,7 @@ def _targets() -> Targets:
         columns=TARGET_COLUMNS,
     )
     ions = pd.DataFrame(
-        [("CFC-12", 0, "CF2Cl+", 84.966, 85, None)], columns=ION_COLUMNS
+        [("CFC-12", None, 0, "CF2Cl+", 84.966, 85, None)], columns=ION_COLUMNS
     )
     return Targets(table, ions, aliases={"R134a": "HFC-134a"})
 

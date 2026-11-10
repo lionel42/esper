@@ -5,9 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
-from peaxart.shapes import chromato, chromato_area
 
 from esper import db
+from esper.deconvolution import FIT_CONFIG
 from esper.fitting import (
     FIT_COLUMNS,
     FIT_VERSION,
@@ -20,32 +20,36 @@ from esper.fitting import (
     fitted_peak_table,
     match_compounds,
     peak_groups,
+    peak_shape,
     to_fit,
 )
 
 DT = 1 / 6
 SIGMA = 1.4
 TAILING = 0.3
+# The synthetic peaks have the shape of the fit (peaxart.ChromatogramFitConfig.peak_shape)
+SHAPE = FIT_CONFIG.shape()
 # Around 1800 s, where peaxart expects peaks of this width (ExtractionConfig.rt_sigma_at)
 T0 = 1700.0
-# Two coeluting compounds 3.2 s apart, each alone on one mass (2- and 3-methylhexane
-# are 2.9 s apart: the fit of these synthetic peaks then finds a biased local minimum)
-RT_A, RT_B = T0 + 100.0, T0 + 103.2
+# Two coeluting compounds 5 s apart (FWHM 3.4 s), each alone on one mass. Closer, the
+# default fit of peaxart (exponentially modified Gaussians, tail up to 3 sigma) can give
+# the tail of A the peak of B (4.5 s: B at 60 % of its area, the baseline at a quarter)
+RT_A, RT_B = T0 + 100.0, T0 + 105.0
 # Compounds of the extraction: A, B, the unresolved peak of both (C), and E, whose
 # only peak is a coelution of two unknown compounds
 A, B, C, E = 1, 2, 3, 4
 
 # Extraction peaks: (peak_idx, compound_idx, mass, rt, start, stop) [s]
 EXTRACTION = [
-    (0, A, 85, RT_A, T0 + 98.4, T0 + 101.9),
-    (1, A, 84, RT_A, T0 + 98.4, T0 + 101.9),
-    (2, B, 70, RT_B, T0 + 101.6, T0 + 105.1),
-    (3, B, 71, RT_B, T0 + 101.6, T0 + 105.1),
-    # both: split by the fit. Started between the two (from some other starts, the
-    # fit of peaxart ends 0.3 s off, with the areas split -26/+32 %)
-    (4, C, 43, T0 + 101.6, T0 + 98.4, T0 + 105.1),
+    (0, A, 85, RT_A, RT_A - 1.6, RT_A + 1.9),
+    (1, A, 84, RT_A, RT_A - 1.6, RT_A + 1.9),
+    (2, B, 70, RT_B, RT_B - 1.6, RT_B + 1.9),
+    (3, B, 71, RT_B, RT_B - 1.6, RT_B + 1.9),
+    # both: split by the fit. At the apex of the larger one, as the extraction finds
+    # it (started between the two, the fit keeps one broad peak)
+    (4, C, 43, RT_A, RT_A - 1.6, RT_B + 1.9),
     # two unknown compounds: split, no compound
-    (5, E, 31, T0 + 141.5, T0 + 138.4, T0 + 144.8),
+    (5, E, 31, T0 + 140.0, T0 + 138.4, T0 + 146.9),
 ]
 # m/z 85 has a peak not extracted at this rt
 NOT_EXTRACTED = T0 + 112.0
@@ -56,8 +60,20 @@ SIGNAL = {
     70: [(8e4, RT_B)],
     71: [(6e4, RT_B)],
     43: [(1e5, RT_A), (8e4, RT_B)],
-    31: [(5e4, T0 + 140.0), (5e4, T0 + 142.9)],
+    31: [(5e4, T0 + 140.0), (5e4, T0 + 145.0)],
 }
+
+
+def _amplitude(height: float, rt: float) -> tuple[float, float]:
+    """(amplitude, location) of the shape of a peak of this apex height and rt."""
+    apex_rt, apex_height = SHAPE.apex(1.0, 0.0, SIGMA, TAILING)
+    return height / apex_height, rt - apex_rt
+
+
+def peak(t: np.ndarray, height: float, rt: float) -> np.ndarray:
+    """A peak of apex ``height`` at ``rt`` (s)."""
+    amplitude, location = _amplitude(height, rt)
+    return SHAPE.value(t, amplitude, location, SIGMA, TAILING)
 
 
 def chromatograms(noise: float = 30.0) -> pd.DataFrame:
@@ -65,7 +81,7 @@ def chromatograms(noise: float = 30.0) -> pd.DataFrame:
     rng = np.random.default_rng(0)
     columns = {
         str(mass): 500.0
-        + sum(chromato(t, h, rt, SIGMA, TAILING) for h, rt in peaks)
+        + sum(peak(t, h, rt) for h, rt in peaks)
         + rng.normal(0, noise, len(t))
         for mass, peaks in SIGNAL.items()
     }
@@ -92,7 +108,8 @@ def table() -> pd.DataFrame:
 
 
 def area(height: float) -> float:
-    return chromato_area(height, SIGMA, TAILING)
+    """Area of a peak of apex ``height``."""
+    return SHAPE.area(_amplitude(height, 0.0)[0], SIGMA, TAILING)
 
 
 def test_peaks_fitted_as_extracted(table):
@@ -175,12 +192,12 @@ def test_compound_shapes_weighted_by_height():
 def test_prominence_of_the_pieces_is_scipys(table):
     on_43 = table[table["mass"] == 43].sort_values("fit_rt_s")
     a, b = on_43.iloc[0], on_43.iloc[1]
-    # A is a local maximum of the fitted signal: scipy's prominence, from the
-    # baseline, includes the tail of B under its apex (more than A alone)
-    assert a["prominence"] > a["fit_height"]
+    # Both are local maxima of the fitted signal: scipy's prominences. A, the higher,
+    # from the baseline; B from the valley between them, less than its fitted height
+    # (a shoulder, without a local maximum, gets its height alone:
+    # peaxart.deconvolution.fitted_signal_peaks)
     assert a["prominence"] == pytest.approx(a["height"] - a["fit_baseline"], rel=0.01)
-    # B is a shoulder (no local maximum, as seen by the extraction): its height alone
-    assert b["prominence"] == b["fit_height"]
+    assert 0 < b["prominence"] < b["fit_height"]
     # heights: the fitted signal at the apex, above zero as find_peaks
     assert (on_43["height"] > on_43["fit_baseline"] + on_43["fit_height"]).all()
 
@@ -200,7 +217,8 @@ def test_fitted_peak_just_outside_the_crossings_takes_the_row():
     # The half maximum crossings of the extraction are narrow on the tail side: the
     # fitted apex is 0.2 s beyond them, it is still the same peak
     peaks = extraction_peaks().loc[[0]]
-    peaks["rt_s"] = RT_A - 0.6
+    # (the fit moves a peak by up to 3 scans, 0.5 s, from its start)
+    peaks["rt_s"] = RT_A - 0.4
     peaks["stop_s"] = RT_A - 0.2
     table = fitted_peak_table(peaks, fit_peaks(chromatograms(), peaks, workers=1))
     on_85 = table[table["mass"] == 85].sort_values("fit_rt_s")
@@ -212,6 +230,28 @@ def test_fitted_peak_just_outside_the_crossings_takes_the_row():
     # the other peaks of m/z 85 (not given as extracted here) are found by the added seeds: new rows
     others = on_85.drop(near.index)
     assert (others["source"] == SOURCE_FIT).all()
+
+
+def test_peak_shape_of_the_stored_fits(table):
+    t = T0 + np.arange(80, 120, DT)
+    p = table.loc[0]  # m/z 85 at RT_A
+    assert p["fit_shape"] == FIT_CONFIG.peak_shape
+    shape = peak_shape(t, p)
+    # its apex: fit_rt_s and fit_height
+    assert t[shape.argmax()] == pytest.approx(p["fit_rt_s"], abs=DT)
+    assert shape.max() == pytest.approx(p["fit_height"], rel=1e-3)
+    # the fits of FIT_VERSION 2: Pap-Papai, without the shape columns
+    from peaxart.shapes import chromato
+
+    legacy = p.drop(["fit_shape", "fit_shape_rt_s", "fit_shape_height"])
+    np.testing.assert_allclose(
+        peak_shape(t, legacy),
+        chromato(t, p["fit_height"], p["fit_rt_s"], p["fit_sigma_s"], p["fit_tailing"]),
+    )
+    # ... or with them NULL (read from the database)
+    null = p.copy()
+    null[["fit_shape", "fit_shape_rt_s", "fit_shape_height"]] = [None, np.nan, np.nan]
+    np.testing.assert_allclose(peak_shape(t, null), peak_shape(t, legacy))
 
 
 def test_peak_groups_sorted_by_their_start():
@@ -281,6 +321,7 @@ def test_fit_measurement(tmp_path):
         FIT_VERSION,
     )
     assert to_fit(con) == []
+    assert set(stored["fit_shape"].dropna()) == {FIT_CONFIG.peak_shape}
     # the extraction values replaced by the fit are kept: the split peaks (4, 5) and
     # the peaks whose is_max_of_cmp changed, and the compounds changed
     kept = pd.read_sql("SELECT * FROM extraction_peak", con, index_col="peak_idx")

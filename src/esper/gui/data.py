@@ -528,16 +528,20 @@ class EsperData:
     @cached_property
     def target_index(self) -> TargetIndex:
         """The targets and their aliases (empty if none were imported)."""
+        targets = self._query_or_empty("SELECT * FROM target", ["name", "rt_ref_s", "ri"])
+        if self._has_table("target"):  # numbers also when all NULL (GCwerks: no RI)
+            targets = self._numeric(targets, "target")
         return TargetIndex(
-            self._query_or_empty(
-                "SELECT * FROM target", ["name", "rt_ref_s", "ri"]
-            ).set_index("name"),
+            targets.set_index("name"),
             self._query_or_empty(
                 "SELECT * FROM target_ion ORDER BY name, rank",
                 ["name", "rank", "ion", "exact_mass", "mass", "spectrum_ref"],
             ),
             self._query_or_empty(
                 "SELECT alias, name FROM target_alias", ["alias", "name"]
+            ),
+            self._query_or_empty(
+                "SELECT * FROM target_rt", ["name", "valid_from", "rt_s", "window_s"]
             ),
         )
 
@@ -577,14 +581,51 @@ class EsperData:
             return np.full(rt.shape, np.nan)
         return interp_extrapolate(rt, anchors_rt, anchors_ri)
 
+    def measurement_time(self, measurement_id: int | None):
+        """When the run was made (from its name), to find the version of the targets that
+        applies to it (``target_rt``, ``target_ion``); None: unknown."""
+        if measurement_id is None or measurement_id not in self.measurements.index:
+            return None
+        time = self.measurements.at[measurement_id, "acq_datetime"]
+        return None if pd.isna(time) else time
+
+    def target_masses(self, measurement_id: int | None, target: str | None) -> list[int]:
+        """Expected unit masses of a target in a measurement (the version of its time; the
+        latest without measurement), main ion first."""
+        return self.target_index.masses_at(target, self.measurement_time(measurement_id))
+
+    def target_window(self, measurement_id: int, target: str) -> tuple[float, float] | None:
+        """(start, stop) of the identification window of the target in the measurement
+        (GCwerks peakid), None if it has none."""
+        found = self.target_index.rt_at(target, self.measurement_time(measurement_id))
+        if found is None or not np.isfinite(found[1]):
+            return None
+        rt, window = found
+        return rt - window / 2, rt + window / 2
+
     def expected_rt(self, measurement_id: int, target: str) -> float | None:
-        """rt where the target should elute in the measurement, from its retention index."""
+        """rt where the target should elute in the measurement: given for the time of the
+        measurement (GCwerks peakid), else from its retention index."""
         if target not in self.targets.index:
             return None
+        if self.target_index.has_rts(target):
+            found = self.target_index.rt_at(target, self.measurement_time(measurement_id))
+            return None if found is None else found[0]
         rt = float(
             self.expected_rts(measurement_id, [self.targets.at[target, "ri"]])[0]
         )
         return rt if np.isfinite(rt) else None
+
+    def expected_target_rts(self, measurement_id: int) -> np.ndarray:
+        """``expected_rt`` of all the targets (``targets`` order), NaN if unknown."""
+        targets = self.targets
+        rts = self.expected_rts(measurement_id, targets["ri"].to_numpy(dtype=float))
+        time = self.measurement_time(measurement_id)
+        for i, target in enumerate(targets.index):
+            if self.target_index.has_rts(target):
+                found = self.target_index.rt_at(target, time)
+                rts[i] = np.nan if found is None else found[0]
+        return rts
 
     def find_target(self, measurement_id: int, target: str) -> int | None:
         """Compound of the measurement identified as the target (or one of its aliases)."""

@@ -97,7 +97,7 @@ class Selection(QObject):
             values = self._compound_values(measurement_id, compound_idx)
             values["candidate"] = self.data.candidate_of(measurement_id, compound_idx)
         else:
-            masses = self.data.target_index.target_masses(target)
+            masses = self.data.target_masses(measurement_id, target)
             rt = self.data.expected_rt(measurement_id, target)
             values = {
                 "compound_idx": None,

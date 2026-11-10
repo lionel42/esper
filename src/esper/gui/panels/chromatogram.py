@@ -67,6 +67,14 @@ INTEGRATION_TEXTS = {
 }
 
 
+def _shape_text(p) -> str:
+    """Width and tail of a fitted peak: EMG (tail: tau / sigma) or Pap-Papai (tail: a)."""
+    shape = getattr(p, "fit_shape", None)
+    if shape == "emg":
+        return f"EMG σ = {p.fit_sigma_s:.2f}, τ/σ = {p.fit_tailing:.2f}"
+    return f"σ = {p.fit_sigma_s:.2f}, tail = {p.fit_tailing:.2f}"
+
+
 @dataclass
 class Curve:
     mass: int | None  # None: TIC
@@ -247,7 +255,7 @@ class ChromatogramPanel(BasePanel):
             masses.extend(self._peaking_masses())
         # Expected ions of the target; always when the target is not found in the measurement
         if sel.target is not None and ("target" in checked or sel.compound_idx is None):
-            masses.extend(self.data.target_index.target_masses(sel.target))
+            masses.extend(self.data.target_masses(sel.measurement_id, sel.target))
         if "tic" in checked:
             masses.append(TIC)
         return [m for m in dict.fromkeys(masses) if m != sel.mass]
@@ -414,7 +422,7 @@ class ChromatogramPanel(BasePanel):
         if sel.target is not None:
             target = self.data.targets.loc[sel.target]
             expected_rt = self.data.expected_rt(sel.measurement_id, sel.target)
-            masses = self.data.target_index.target_masses(sel.target)
+            masses = self.data.target_masses(sel.measurement_id, sel.target)
             lines += [
                 (
                     "target",
@@ -438,13 +446,26 @@ class ChromatogramPanel(BasePanel):
         )
 
     def _mark_target(self) -> None:
-        """Dashed line where the selected target is expected."""
+        """Dashed line where the selected target is expected, and its identification
+        window if it has one (GCwerks peakid)."""
         sel = self.selection
         if sel.target is None:
             return
         rt = self.data.expected_rt(sel.measurement_id, sel.target)
         if rt is None:
             return
+        window = self.data.target_window(sel.measurement_id, sel.target)
+        if window is not None:
+            color = pg.mkColor(TARGET_COLOR)
+            color.setAlpha(40)
+            region = pg.LinearRegionItem(
+                values=window,
+                movable=False,
+                brush=pg.mkBrush(color),
+                pen=pg.mkPen(None),
+            )
+            region.setZValue(-10)
+            self._add(region)
         line = pg.InfiniteLine(
             pos=rt,
             angle=90,
@@ -557,7 +578,7 @@ class ChromatogramPanel(BasePanel):
             compound,
             f"H = {p.height:.0f}",
             area,
-            f"σ = {p.fit_sigma_s:.2f}, tail = {p.fit_tailing:.2f}",
+            _shape_text(p),
             f"S/N = {p.fit_sn:.0f}",
         ]
 

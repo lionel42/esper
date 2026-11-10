@@ -27,14 +27,16 @@ CHROMATOGRAMS_DIRNAME = "chromatograms"
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 # Versions that are upgraded by creating the missing tables and columns (3: the area
-# columns of an unreleased version, kept)
-COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5)
+# columns of an unreleased version, kept); 6: target_ion rebuilt with valid_from in its key
+COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5, 6)
 # Oldest SCHEMA_VERSION of esper that can still use a database of this version, stored in
 # the database so that older esper versions know whether they can use it. A schema change
 # that only adds tables or nullable columns keeps it, a breaking change sets it to SCHEMA_VERSION.
 MIN_READER_VERSION = 4  # 4: the peaks split by the fit have no extraction bounds
+# (6 keeps it: older versions read the targets of the target lists as before; the
+# versioned ions of the GCwerks targets look to them like several ions per rank)
 # MIN_READER_VERSION of the schema versions written before schema_info existed
 LEGACY_MIN_READER_VERSIONS = {3: 2}  # 3 only adds nullable columns
 
@@ -77,17 +79,25 @@ ADDED_COLUMNS = {
     "peak": [
         # 'extraction': found by alpinac; 'fit': split or added by the fit (esper.fitting)
         ("source", "TEXT NOT NULL DEFAULT 'extraction'"),
-        # Chromatographic fit (peaxart, Pap-Papai peak on a constant baseline), NULL: not fitted
+        # Chromatographic fit (peaxart, peak function fit_shape on a constant baseline),
+        # NULL: not fitted. rt and height: of the apex
         ("fit_rt_s", "REAL"),
         ("fit_rt_u_s", "REAL"),  # uncertainty (1 sigma)
         ("fit_height", "REAL"),  # above the baseline [counts]
         ("fit_height_u", "REAL"),
-        ("fit_sigma_s", "REAL"),  # width (standard deviation for a Gaussian)
-        ("fit_tailing", "REAL"),  # tailing (0: Gaussian)
+        ("fit_sigma_s", "REAL"),  # width (standard deviation of the Gaussian)
+        # tail parameter (0: Gaussian): Pap-Papai a in ]0, 2[; EMG tau / sigma
+        ("fit_tailing", "REAL"),
         ("fit_baseline", "REAL"),  # [counts]
         ("fit_area", "REAL"),  # [counts * s]
         ("fit_area_u", "REAL"),
         ("fit_sn", "REAL"),  # signal to noise
+        # Peak function of the fit (peaxart.shapes.SHAPES: 'emg', 'pap_papai'; NULL:
+        # 'pap_papai', fits of esper.fitting.FIT_VERSION 1, 2), and its location and
+        # amplitude (NULL: the apex, as for Pap-Papai)
+        ("fit_shape", "TEXT"),
+        ("fit_shape_rt_s", "REAL"),
+        ("fit_shape_height", "REAL"),
     ],
     "compound_identification": [
         # Best library spectrum of the name given by hand, and its scores
@@ -101,6 +111,21 @@ ADDED_COLUMNS = {
         ("spectrum_ref", "TEXT"),
     ],
 }
+
+TARGET_ION = """
+-- Ions expected in the spectrum of a target, by decreasing importance. Versioned for
+-- the instruments whose identification changes over time (GCwerks peakid): the ions of
+-- a target are those of its latest valid_from before the run; NULL: always (target lists)
+CREATE TABLE IF NOT EXISTS target_ion (
+    name                TEXT REFERENCES target ON DELETE CASCADE,
+    valid_from          TEXT,                   -- ISO, as measurement.acq_datetime
+    rank                INTEGER,                -- 0: main (quantification) ion
+    ion                 TEXT,                   -- e.g. 'CF2Cl+'
+    exact_mass          REAL,
+    mass                INTEGER,                -- unit mass
+    PRIMARY KEY (name, valid_from, rank)
+);
+"""
 
 SCHEMA_INFO = """
 CREATE TABLE IF NOT EXISTS schema_info (
@@ -304,14 +329,15 @@ CREATE TABLE IF NOT EXISTS target (
     smiles              TEXT
 );
 
--- Ions expected in the spectrum of a target, by decreasing importance
-CREATE TABLE IF NOT EXISTS target_ion (
+{TARGET_ION}
+-- Expected retention time of a target in the runs from valid_from on (GCwerks peakid;
+-- a row only when it changes). rt_s NULL: not identified from then on
+CREATE TABLE IF NOT EXISTS target_rt (
     name                TEXT REFERENCES target ON DELETE CASCADE,
-    rank                INTEGER,                -- 0: main (quantification) ion
-    ion                 TEXT,                   -- e.g. 'CF2Cl+'
-    exact_mass          REAL,
-    mass                INTEGER,                -- unit mass
-    PRIMARY KEY (name, rank)
+    valid_from          TEXT,                   -- ISO, as measurement.acq_datetime
+    rt_s                REAL,
+    window_s            REAL,                   -- full width of the identification window
+    PRIMARY KEY (name, valid_from)
 );
 
 -- Other names of a target (e.g. as used in the spectrum libraries)
@@ -348,6 +374,8 @@ LEFT JOIN compound_candidate cc
     AND cc.compound_idx = p.compound_idx
     AND cc.is_best = 1;
 """
+
+SCHEMA = SCHEMA.replace("{TARGET_ION}", TARGET_ION)
 
 
 def read_config(data_dir: Path) -> dict:
@@ -448,6 +476,7 @@ def _upgrade(con: sqlite3.Connection, path: Path, version: int) -> None:
         )
     # Views are created again: CREATE VIEW IF NOT EXISTS keeps an older definition
     con.execute("DROP VIEW IF EXISTS peak_full")
+    _rebuild_target_ion(con)
     con.executescript(SCHEMA + SCHEMA_INFO)
     add_columns(con)
     con.execute(
@@ -456,6 +485,31 @@ def _upgrade(con: sqlite3.Connection, path: Path, version: int) -> None:
     )
     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     con.commit()
+
+
+def _rebuild_target_ion(con: sqlite3.Connection) -> None:
+    """Add valid_from to the key of a target_ion of before version 6 (SQLite cannot change
+    a primary key in place): renamed, created again with its columns, rows copied. One
+    transaction: nothing changes if it fails."""
+    columns = table_columns(con, "target_ion")
+    if not columns or "valid_from" in columns:
+        return
+    con.commit()
+    con.execute("BEGIN")
+    try:
+        con.execute("ALTER TABLE target_ion RENAME TO target_ion_v5")
+        con.execute(TARGET_ION)
+        existing = set(table_columns(con, "target_ion"))
+        for name, sql_type in ADDED_COLUMNS.get("target_ion", []):
+            if name not in existing:
+                con.execute(f"ALTER TABLE target_ion ADD COLUMN {name} {sql_type}")
+        copied = ", ".join(columns)
+        con.execute(f"INSERT INTO target_ion ({copied}) SELECT {copied} FROM target_ion_v5")
+        con.execute("DROP TABLE target_ion_v5")
+        con.execute("COMMIT")
+    except BaseException:
+        con.execute("ROLLBACK")
+        raise
 
 
 def table_columns(con: sqlite3.Connection, table: str) -> list[str]:

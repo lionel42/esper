@@ -42,6 +42,7 @@ def _gcdir(tmp_path, names):
     root = tmp_path / "gcdir"
     (root / "config").mkdir(parents=True)
     (root / "config" / "gcwerks.conf").write_text("")
+    (root / "config" / "peak.list").write_text("CFC-12\n")
     for name in names:
         folder = root / name[:2] / "chromatograms" / "channel0"
         folder.mkdir(parents=True, exist_ok=True)
@@ -72,9 +73,13 @@ def test_find_chromatogram_files(tmp_path):
     root = _gcdir(tmp_path, names)
     expected = ["250101.0013.std.5", "260112.2114.air.7"]  # no tune file
     assert [p.name for p in gcwerks.find_chromatogram_files(root)] == expected
-    assert [p.name for p in gcwerks.find_chromatogram_files(root / "26")] == expected[1:]
+    assert [p.name for p in gcwerks.find_chromatogram_files(root / "26")] == expected[
+        1:
+    ]
     channel = root / "26" / "chromatograms" / "channel0"
-    assert [p.name for p in gcwerks.find_chromatogram_files(channel.parent)] == expected[1:]
+    assert [
+        p.name for p in gcwerks.find_chromatogram_files(channel.parent)
+    ] == expected[1:]
     assert gcwerks.gcwerks_root(channel) == root.resolve()
     assert not gcwerks.is_gcwerks_source(tmp_path)
 
@@ -89,7 +94,9 @@ def test_name_without_number():
 
 def test_upload(tmp_path, monkeypatch):
     root = _gcdir(tmp_path, ["260112.2114.air.7", "260112.2224.air.7"])
-    monkeypatch.setattr(gc_chromatogram, "read_chromatogram", lambda path: _chromatogram())
+    monkeypatch.setattr(
+        gc_chromatogram, "read_chromatogram", lambda path: _chromatogram()
+    )
     data_dir = tmp_path / "esper"
 
     summary = upload(root, data_dir, instrument="gcwerks")
@@ -159,7 +166,11 @@ def test_legacy_data_dir_is_tofwerk(tmp_path):
     upload(tmp_path / "runs", data_dir, fit=False)
     assert declared_instrument(data_dir) == "tofwerk"
     # the other lines kept
-    assert (data_dir / "esper.yaml").read_text().startswith("# shared\ndatabase: esper.sqlite\n")
+    assert (
+        (data_dir / "esper.yaml")
+        .read_text()
+        .startswith("# shared\ndatabase: esper.sqlite\n")
+    )
     assert db.db_path(data_dir) == data_dir / "esper.sqlite"
 
 
@@ -174,7 +185,9 @@ def test_other_instrument_is_refused(tmp_path):
 
 def test_measurements_of_another_instrument_are_refused(tmp_path, monkeypatch):
     root = _gcdir(tmp_path, ["260112.2114.air.7"])
-    monkeypatch.setattr(gc_chromatogram, "read_chromatogram", lambda path: _chromatogram())
+    monkeypatch.setattr(
+        gc_chromatogram, "read_chromatogram", lambda path: _chromatogram()
+    )
     data_dir = tmp_path / "esper"
     upload(root, data_dir, instrument="gcwerks")
     (data_dir / "esper.yaml").write_text("instrument: tofwerk\n")

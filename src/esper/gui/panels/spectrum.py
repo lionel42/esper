@@ -146,7 +146,7 @@ class SpectrumPanel(BasePanel):
         self._masses = np.array([])
         sel = self.selection
         expected = (
-            self.data.target_index.target_masses(sel.target)
+            self.data.target_masses(sel.measurement_id, sel.target)
             if sel.target is not None
             else []
         )

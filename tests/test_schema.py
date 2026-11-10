@@ -142,3 +142,30 @@ def test_upgrade_replaces_peak_full(tmp_path):
         assert _peak_full_count(con) == 2
     finally:
         con.close()
+
+
+def test_upgrade_adds_valid_from_to_target_ion(tmp_path):
+    """Version 5: target_ion keyed by (name, rank), rebuilt with valid_from, rows kept."""
+    con = sqlite3.connect(db.db_path(tmp_path))
+    con.executescript(
+        """
+        CREATE TABLE target (name TEXT PRIMARY KEY);
+        CREATE TABLE target_ion (name TEXT REFERENCES target ON DELETE CASCADE,
+            rank INTEGER, ion TEXT, exact_mass REAL, mass INTEGER, PRIMARY KEY (name, rank));
+        ALTER TABLE target_ion ADD COLUMN spectrum_ref TEXT;
+        INSERT INTO target VALUES ('CFC-12');
+        INSERT INTO target_ion VALUES ('CFC-12', 0, NULL, NULL, 85, 'nist_CFC-12');
+        PRAGMA user_version = 5;
+        """
+    )
+    con.close()
+    con = db.connect(tmp_path, create=True)
+    assert "valid_from" in db.table_columns(con, "target_ion")
+    assert con.execute("SELECT name, valid_from, rank, mass, spectrum_ref FROM target_ion").fetchall() == [
+        ("CFC-12", None, 0, 85, "nist_CFC-12")
+    ]
+    con.execute(
+        "INSERT INTO target_ion (name, valid_from, rank, mass) VALUES ('CFC-12', '2020-01-01T00:00:00', 0, 101)"
+    )
+    assert con.execute("SELECT count(*) FROM target_rt").fetchone() == (0,)
+    con.close()

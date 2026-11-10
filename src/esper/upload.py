@@ -159,6 +159,21 @@ def check_instrument(con: sqlite3.Connection, instrument: str, data_dir: Path) -
         )
 
 
+def _store_targets(
+    con: sqlite3.Connection, instrument_source, source: Path, data_dir: Path
+):
+    """Replace the targets by those of the instrument (e.g. the GCwerks peak list)."""
+    from esper.targets import store_targets
+
+    targets = instrument_source.read_targets(source, db.read_config(data_dir))
+    targets.check()
+    store_targets(con, targets, str(Path(source).resolve()))
+    logger.info(
+        f"targets: {len(targets.table)}, {targets.rts['name'].nunique()} with retention"
+        f" times ({len(targets.rts)} versions), {targets.ions['name'].nunique()} with ions"
+    )
+
+
 def upload(
     source: Path,
     data_dir: Path,
@@ -188,6 +203,8 @@ def upload(
     stack = contextlib.ExitStack()
     try:
         check_instrument(con, instrument, data_dir)
+        if hasattr(instrument_source, "read_targets"):
+            _store_targets(con, instrument_source, source, data_dir)
         runs = instrument_source.find_runs(source)
         logger.info(f"{len(runs)} runs of {instrument} in {source}")
         # The processes of the fits, for all the measurements (started at the first fit)

@@ -70,7 +70,7 @@ class IdentificationDialog(QDialog):
             self.combo.insertSeparator(self.combo.count())
         targets = data.targets.index.tolist()
         expected = (
-            data.expected_rts(measurement_id, data.targets["ri"].to_numpy(dtype=float))
+            data.expected_target_rts(measurement_id)
             if targets
             else []
         )

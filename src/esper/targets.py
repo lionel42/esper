@@ -38,8 +38,14 @@ TARGET_COLUMNS = [
     "smiles",
 ]
 # Columns of Targets.ions (spectrum_ref: the reference spectrum the ion comes from,
-# None if from the target list)
-ION_COLUMNS = ["name", "rank", "ion", "exact_mass", "mass", "spectrum_ref"]
+# None if from the target list; valid_from: from when the ions apply, None: always)
+ION_COLUMNS = ["name", "valid_from", "rank", "ion", "exact_mass", "mass", "spectrum_ref"]
+# Columns of Targets.rts: expected rt from valid_from on (rt_s None: not identified)
+RT_COLUMNS = ["name", "valid_from", "rt_s", "window_s"]
+
+
+class TargetError(ValueError):
+    """The targets of a source cannot be read (e.g. names that match no target)."""
 # Ions of a target without ions in the target list: the largest masses of its
 # reference spectrum (as many as the ions of the Excel list)
 N_SPECTRUM_IONS = 8
@@ -53,6 +59,11 @@ class Targets:
     - ``ions``: expected ions (``ION_COLUMNS``), rank 0 is the main ion (the
       quantification ion)
     - ``aliases``: other name -> target name
+    - ``rts``: expected retention times by version (``RT_COLUMNS``), for the
+      instruments that give them (GCwerks); empty for the target lists, whose
+      targets are found from their retention index
+
+    The versions (``valid_from``) are ISO times, as ``measurement.acq_datetime``.
     """
 
     table: pd.DataFrame
@@ -60,6 +71,7 @@ class Targets:
         default_factory=lambda: pd.DataFrame(columns=ION_COLUMNS)
     )
     aliases: dict[str, str] = field(default_factory=dict)
+    rts: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=RT_COLUMNS))
 
     def check(self) -> None:
         missing = set(TARGET_COLUMNS) - set(self.table.columns)
@@ -69,9 +81,10 @@ class Targets:
             raise ValueError(
                 f"Duplicated targets: {self.table.index[self.table.index.duplicated()].tolist()}"
             )
-        unknown = set(self.ions["name"]) - set(self.table.index)
-        if unknown:
-            raise ValueError(f"Ions of unknown targets: {sorted(unknown)[:10]}")
+        for what, df in (("Ions", self.ions), ("Retention times", self.rts)):
+            unknown = set(df["name"]) - set(self.table.index)
+            if unknown:
+                raise ValueError(f"{what} of unknown targets: {sorted(unknown)[:10]}")
 
 
 def interp_extrapolate(x, xp, fp) -> np.ndarray:
@@ -195,6 +208,7 @@ def load_excel(path: Path, ri_references: Path | None = None) -> Targets:
     )
     ions["mass"] = ions["exact_mass"].round().astype(int)
     ions["spectrum_ref"] = None
+    ions["valid_from"] = None
 
     aliases = {alias: name for alias, name in aliases.items() if name in table.index}
     return Targets(table=table, ions=ions[ION_COLUMNS], aliases=aliases)
@@ -255,7 +269,7 @@ def spectrum_ions(targets: Targets, libraries: list[Library]) -> pd.DataFrame:
         spectrum_ref, spectrum = found
         order = np.argsort(-spectrum.intensities, kind="stable")[:N_SPECTRUM_IONS]
         rows += [
-            (name, rank, None, None, int(spectrum.mz[i]), spectrum_ref)
+            (name, None, rank, None, None, int(spectrum.mz[i]), spectrum_ref)
             for rank, i in enumerate(order)
         ]
     return pd.DataFrame(rows, columns=ION_COLUMNS)
@@ -283,11 +297,11 @@ def store_targets(con: sqlite3.Connection, targets: Targets, source: str) -> Non
     """Replace all the targets of the database (single transaction)."""
     table = targets.table.reset_index()
     with con:
-        con.execute("DELETE FROM target_alias")
-        con.execute("DELETE FROM target_ion")
-        con.execute("DELETE FROM target")
+        for name in ("target_alias", "target_ion", "target_rt", "target"):
+            con.execute(f"DELETE FROM {name}")
         db.insert(con, "target", table[["name"] + TARGET_COLUMNS])
         db.insert(con, "target_ion", targets.ions[ION_COLUMNS])
+        db.insert(con, "target_rt", targets.rts[RT_COLUMNS])
         db.insert(
             con,
             "target_alias",

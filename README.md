@@ -58,14 +58,44 @@ column of a mass is NaN outside them (the GUI draws the measured scans only). Th
 GCwerks stores it, baseline included. Unchanged files (same size and mtime) are skipped. The
 files written before ~April 2012 (an older layout) cannot be read yet.
 
+Each upload also imports the targets of the GCwerks directory
+(`src/esper/sources/gcwerks_targets.py`), replacing the targets of the data directory:
+
+- the names of `config/peak.list` (one target per active line);
+- from the peak identification `integrator/channel0/peakid/<yymmdd[.hhmm]>`, the expected rt,
+  window (full width) and ions (target ion, qualifiers) of each target, from the date of the
+  version on. Only the changes are stored: `target_rt` (rt NULL: no longer identified from
+  then) and `target_ion` (`valid_from`). The half masses of 2007-2009 (e.g. 67.5) are the unit
+  masses below.
+
+A peakid name is the target of the same name, else the one the `aliases` of the `esper.yaml`
+give it, else the target it is an [openghg-defs](https://github.com/openghg/openghg_defs) name
+of (`CFC12` -> `CFC-12`). Any other name stops the upload, with the list of the names to map:
+
+```yaml
+instrument: gcwerks
+aliases:          # peakid name: peak.list name (null: not a target)
+  CH2F2: HFC-32
+  O2: null
+```
+
+In the GUI, the expected rt, window and ions of a target in a run are those of the version in
+effect at the time of the run (from its name); the targets of a target list (`esper targets`)
+are found from their retention index as before.
+
 ### Peak fit
 
 After the import, the peaks of each mass are fitted in the unit mass chromatograms with
-[peaxart](https://github.com/lionel42/peaxart) (`src/esper/fitting.py`): Pap-Papai peaks
-on a constant baseline, starting at the rts of the extraction, by groups of overlapping
-peaks. peaxart adds a peak where the data show a coelution. The fit is stored in the peak
-table (`fit_rt_s`, `fit_height`, `fit_sigma_s`, `fit_tailing`, `fit_baseline`, `fit_area`,
-their uncertainties `*_u*`, `fit_sn`; NULL when the fit rejected the peak).
+[peaxart](https://github.com/lionel42/peaxart) (`src/esper/fitting.py`): exponentially
+modified Gaussians (peaxart's default peak function; Pap-Papai before fit version 3) on a
+constant baseline, starting at the rts of the extraction and at the narrow peaks it missed,
+by groups of overlapping peaks split at the valleys where the signal returns to the
+background. peaxart adds a peak where the data show a coelution. The fit is stored in the
+peak table (`fit_rt_s` and `fit_height`: the apex; `fit_sigma_s`, `fit_tailing`,
+`fit_baseline`, `fit_area`, their uncertainties `*_u*`, `fit_sn`; NULL when the fit
+rejected the peak), with the peak function (`fit_shape`) and its location and amplitude
+(`fit_shape_rt_s`, `fit_shape_height`). `esper fit` fits again the measurements fitted by
+an older version (`FIT_VERSION`).
 
 Each fitted peak goes to the nearest extraction peak. When several are within its half
 maximum crossings, the extraction peak is split: its row takes the nearest piece, new rows

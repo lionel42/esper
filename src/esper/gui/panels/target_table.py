@@ -58,7 +58,7 @@ class TargetTablePanel(TablePanel):
         self.toolbar.insertWidget(2, self.found_only)
         if self.data.targets.empty:
             self.filter_edit.setPlaceholderText(
-                "No targets, import them with: esper targets"
+                "No targets, import them with: esper targets (GCwerks: esper upload)"
             )
 
     def load(self) -> pd.DataFrame:
@@ -70,7 +70,9 @@ class TargetTablePanel(TablePanel):
             df["expected_rt"] = float("nan")
             df["found"] = False
             return df
-        df["expected_rt"] = self.data.expected_rts(mid, df["ri"].to_numpy(dtype=float))
+        df["expected_rt"] = self.data.expected_target_rts(mid)
+        # the ions of the version of the measurement (GCwerks peakid)
+        df["ions"] = [", ".join(map(str, self.data.target_masses(mid, t))) for t in df.index]
         df["found"] = df.index.isin(self.data.targets_found(mid))
         return df
 

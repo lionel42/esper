@@ -21,18 +21,24 @@ def _pipeline(path):
     peaks["mass_of_peak"] = ("peak", np.array([85, 87, 43]))
     peaks["is_max_of_cmp"] = ("peak", np.array([1, 0, 1]))
     compounds = {
-        var: ("compound", np.arange(n_compounds, dtype=float)) for var in _COMPOUND_COLUMNS
+        var: ("compound", np.arange(n_compounds, dtype=float))
+        for var in _COMPOUND_COLUMNS
     }
     compounds["compound_name"] = ("compound", np.array(["CFC-12", ""], dtype=object))
     for col in ("is_ref_ri", "valid_candidate"):
         compounds[col] = ("compound", np.array([1, 0]))
-    candidates = {"bc_spectra": ("compound", np.array(["nist_CFC-12", ""], dtype=object))}
+    candidates = {
+        "bc_spectra": ("compound", np.array(["nist_CFC-12", ""], dtype=object))
+    }
     for prefix in _RANKS.values():
         candidates[f"{prefix}_spectra"] = (
             "compound",
             np.array(["nist_CFC-12", ""], dtype=object),
         )
-        candidates[f"{prefix}_candidate"] = ("compound", np.array(["CFC-12", ""], dtype=object))
+        candidates[f"{prefix}_candidate"] = (
+            "compound",
+            np.array(["CFC-12", ""], dtype=object),
+        )
         for var in ("score", "ri", "ri_diff", "score_combined"):
             candidates[f"{prefix}_{var}"] = ("compound", np.array([0.9, np.nan]))
     ds = xr.Dataset(

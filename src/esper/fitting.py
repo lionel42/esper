@@ -1,10 +1,14 @@
 """Chromatographic fit of the peaks found by the extraction (alpinac), with peaxart.
 
-The peaks of each mass are fitted in its unit mass chromatogram with Pap-Papai
-peaks and a constant baseline (``peaxart.fit_chromatogram``, standard Gaussian
-convention: the areas are true areas), by groups of overlapping peaks. The fit
-starts at the rts of the extraction and adds peaks where the data show a coelution
-(peaxart's extra-peak search). The fit itself is the one of the processing
+The peaks of each mass are fitted in its unit mass chromatogram with the peak
+function of peaxart (``ChromatogramFitConfig.peak_shape``: exponentially modified
+Gaussians; Pap-Papai before FIT_VERSION 3) and a constant baseline
+(``peaxart.fit_chromatogram``, standard Gaussian convention: the areas are true
+areas), by groups of overlapping peaks. The fit starts at the rts of the extraction
+and at the narrow peaks it missed, and adds peaks where the data show a coelution
+(peaxart's extra-peak search). ``fit_rt_s`` / ``fit_height`` are the apex of a fitted
+peak; ``fit_shape`` names its function, whose parameters are ``fit_shape_rt_s``,
+``fit_shape_height``, ``fit_sigma_s`` and ``fit_tailing`` (``peak_shape``). The fit itself is the one of the processing
 (``esper.deconvolution``); here it becomes the peak table of the database.
 
 The fit improves the extraction: the peak table becomes the peaks of the fit.
@@ -50,11 +54,14 @@ from esper.deconvolution import FIT_CONFIG, fit_chromatograms, fit_pool  # noqa:
 logger = logging.getLogger(__name__)
 
 # Increase when the fit changes (2: prominence and height of the fitted signal,
-# extraction kept)
-FIT_VERSION = 2
+# extraction kept; 3: peaxart 44e817d, exponentially modified Gaussians, added seeds,
+# groups split at their valleys, bounded baseline)
+FIT_VERSION = 3
 # Gaussian convention of peaxart's peak shapes, and the half widths of the extraction
 # are clipped to this range [s] (peaxart.ChromatogramFitConfig, esper.deconvolution.FIT_CONFIG)
 CONVENTION = FIT_CONFIG.convention
+# Peak function of the fits stored without fit_shape (FIT_VERSION 1 and 2)
+LEGACY_SHAPE = "pap_papai"
 HWHM_RANGE_S = FIT_CONFIG.hwhm_range
 # A fitted peak outside the half maximum crossings of its extraction peak still takes
 # its row within this many half widths (of each side), if no other is within them
@@ -75,23 +82,33 @@ FIT_COLUMNS = {
     "fit_area": "area",
     "fit_area_u": "area_u",
     "fit_sn": "sn",
+    "fit_shape": "shape",
+    "fit_shape_rt_s": "shape_rt",
+    "fit_shape_height": "shape_height",
 }
 # Columns of fit_mass / fit_peaks
 FITTED_COLUMNS = ["peak_idx", *FIT_COLUMNS, "signal_height", "signal_prominence"]
 
 
-def peak_shape(t: np.ndarray, peak) -> np.ndarray:
-    """Signal of a fitted peak above its baseline (``fit_*`` columns of a peak row)."""
-    from peaxart.shapes import chromato
+def _given(value) -> bool:
+    return isinstance(value, str) or (value is not None and np.isfinite(value))
 
-    return chromato(
-        t,
-        peak.fit_height,
-        peak.fit_rt_s,
-        peak.fit_sigma_s,
-        peak.fit_tailing,
-        CONVENTION,
-    )
+
+def peak_shape(t: np.ndarray, peak) -> np.ndarray:
+    """Signal of a fitted peak above its baseline (``fit_*`` columns of a peak row).
+
+    The fits stored without ``fit_shape`` are Pap-Papai peaks (LEGACY_SHAPE), whose
+    parameters are their apex.
+    """
+    from peaxart.shapes import peak_shape as shape_of
+
+    name = getattr(peak, "fit_shape", None)
+    shape = shape_of(name if isinstance(name, str) else LEGACY_SHAPE, CONVENTION)
+    location = getattr(peak, "fit_shape_rt_s", None)
+    amplitude = getattr(peak, "fit_shape_height", None)
+    if not (_given(location) and _given(amplitude)):
+        location, amplitude = peak.fit_rt_s, peak.fit_height
+    return shape.value(t, amplitude, location, peak.fit_sigma_s, peak.fit_tailing)
 
 
 def peak_groups(peaks: pd.DataFrame) -> list[tuple[pd.DataFrame, float, float]]:
@@ -112,12 +129,15 @@ def _as_fitted(fitted: pd.DataFrame, peaks: pd.DataFrame) -> pd.DataFrame:
     A fitted peak whose group has only peaks the detection missed (``peak`` -1) goes to the
     nearest extraction peak of the mass: it becomes a new peak (``fitted_peak_table``).
     """
+    fitted = fitted.assign(shape=fitted.attrs.get("peak_shape", FIT_CONFIG.peak_shape))
     out = fitted.rename(
         columns={v: k for k, v in FIT_COLUMNS.items()} | {"peak": "peak_idx"}
     )
     index = fitted["peak"].to_numpy(dtype=int)
     rt = peaks["rt_s"].to_numpy(dtype=float)
-    nearest = np.abs(fitted["rt"].to_numpy(dtype=float)[:, None] - rt[None, :]).argmin(axis=1)
+    nearest = np.abs(fitted["rt"].to_numpy(dtype=float)[:, None] - rt[None, :]).argmin(
+        axis=1
+    )
     out["peak_idx"] = peaks.index.to_numpy()[np.where(index >= 0, index, nearest)]
     return out[FITTED_COLUMNS]
 
@@ -312,7 +332,7 @@ def fitted_peak_table(peaks: pd.DataFrame, fitted: pd.DataFrame) -> pd.DataFrame
     table = peaks.copy()
     table["source"] = SOURCE_EXTRACTION
     for column in FIT_COLUMNS:
-        table[column] = np.nan
+        table[column] = None if column == "fit_shape" else np.nan
     table["compound_idx"] = table["compound_idx"].astype("Int64")
 
     matched, to_match = [], []  # (peak_idx, fitted row)

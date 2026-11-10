@@ -19,7 +19,11 @@ A source module has:
 - ``find_runs(path) -> list[Run]``: the runs of a path, sorted;
 - ``read(run) -> MeasurementImport``: everything to store of a run;
 - ``refresh(con, run)``: update what can change without importing the run again (called
-  for the unchanged runs; e.g. the mass calibration).
+  for the unchanged runs; e.g. the mass calibration);
+- optionally ``read_targets(path, config) -> esper.targets.Targets``: the targets that
+  the instrument defines itself (GCwerks: peak.list and peakid), imported by each upload
+  (``config``: the esper.yaml of the data directory). Without it, the targets come from
+  a target list (``esper targets``).
 
 :mod:`esper.upload` stores what they read.
 """
@@ -84,7 +88,9 @@ class MeasurementImport:
 
     run: Run
     instrument: str
-    peak_source: str | None  # where the peaks come from (e.g. 'alpinac'), None: no peaks
+    peak_source: (
+        str | None
+    )  # where the peaks come from (e.g. 'alpinac'), None: no peaks
     rt_start_s: float | None = None
     rt_stop_s: float | None = None
     cleaning: str | None = None

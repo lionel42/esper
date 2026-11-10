@@ -21,6 +21,7 @@ def _gui(args: argparse.Namespace) -> int:
 
 def _upload(args: argparse.Namespace) -> int:
     from esper.sources import InstrumentError
+    from esper.targets import TargetError
     from esper.upload import upload
 
     try:
@@ -32,7 +33,7 @@ def _upload(args: argparse.Namespace) -> int:
             workers=args.workers,
             instrument=args.instrument,
         )
-    except InstrumentError as e:
+    except (InstrumentError, TargetError) as e:
         print(e, file=sys.stderr)
         return 2
     print(
