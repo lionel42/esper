@@ -1,8 +1,8 @@
 """Chromatographic fit of the peaks found by the extraction (alpinac), with peaxart.
 
-The peaks of each mass are fitted in its unit mass chromatogram with Pap-Papai
-peaks and a constant baseline (``peaxart.fit_chromatogram``, standard Gaussian
-convention: the areas are true areas), by groups of overlapping peaks. The fit
+The peaks of each mass are fitted in its unit mass chromatogram with the peak
+function and the background of ``FIT_CONFIG`` (``peaxart.fit_chromatogram``, standard
+Gaussian convention: the areas are true areas), by groups of overlapping peaks. The fit
 starts at the rts of the extraction and adds peaks where the data show a coelution
 (peaxart's extra-peak search). The fit itself is the one of the processing
 (``esper.deconvolution``); here it becomes the peak table of the database.
@@ -51,8 +51,9 @@ logger = logging.getLogger(__name__)
 
 # Increase when the fit changes (2: prominence and height of the fitted signal,
 # extraction kept; 3: peaks added by the seeds, groups split at valleys, the peak
-# function of FIT_CONFIG (EMG), fit_rt_s / fit_height its apex)
-FIT_VERSION = 3
+# function of FIT_CONFIG (EMG), fit_rt_s / fit_height its apex; 4: the background of each
+# group chosen among constant / linear / exponential, fit_baseline_slope)
+FIT_VERSION = 4
 # Gaussian convention of peaxart's peak shapes, and the half widths of the extraction
 # are clipped to this range [s] (peaxart.ChromatogramFitConfig, esper.deconvolution.FIT_CONFIG)
 CONVENTION = FIT_CONFIG.convention
@@ -78,11 +79,20 @@ FIT_COLUMNS = {
     "fit_sn": "sn",
     "fit_shape_rt_s": "shape_rt",
     "fit_shape_height": "shape_height",
+    "fit_baseline_slope": "baseline_slope",
 }
 # Name of the peak function of the fitted rows (peaxart.shapes.SHAPES)
 FIT_SHAPE_COLUMN = "fit_shape"
 # Columns of fit_mass / fit_peaks
 FITTED_COLUMNS = ["peak_idx", *FIT_COLUMNS, "signal_height", "signal_prominence"]
+
+
+def peak_baseline(t: np.ndarray, peak) -> np.ndarray:
+    """Background under a fitted peak (``fit_*`` columns of a peak row): ``fit_baseline`` at
+    the apex, with its slope ``fit_baseline_slope`` (rows fitted before it: constant)."""
+    slope = getattr(peak, "fit_baseline_slope", np.nan)
+    slope = 0.0 if pd.isna(slope) else slope
+    return peak.fit_baseline + slope * (np.asarray(t, dtype=float) - peak.fit_rt_s)
 
 
 def peak_shape(t: np.ndarray, peak) -> np.ndarray:

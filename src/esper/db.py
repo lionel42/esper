@@ -27,10 +27,10 @@ CHROMATOGRAMS_DIRNAME = "chromatograms"
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 # Versions that are upgraded by creating the missing tables and columns (3: the area
 # columns of an unreleased version, kept)
-COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5, 6)
+COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5, 6, 7)
 # Oldest SCHEMA_VERSION of esper that can still use a database of this version, stored in
 # the database so that older esper versions know whether they can use it. A schema change
 # that only adds tables or nullable columns keeps it, a breaking change sets it to SCHEMA_VERSION.
@@ -77,7 +77,7 @@ ADDED_COLUMNS = {
     "peak": [
         # 'extraction': found by alpinac; 'fit': split or added by the fit (esper.fitting)
         ("source", "TEXT NOT NULL DEFAULT 'extraction'"),
-        # Chromatographic fit (peaxart, peak function fit_shape on a constant baseline), NULL: not fitted.
+        # Chromatographic fit (peaxart, peak function fit_shape on a background), NULL: not fitted.
         # fit_rt_s / fit_height: the apex; fit_shape_rt_s, fit_shape_height, fit_sigma_s, fit_tailing: the
         # parameters of the function (peaxart.shapes; NULL fit_shape: Pap-Papai, whose apex they are)
         ("fit_rt_s", "REAL"),
@@ -86,13 +86,15 @@ ADDED_COLUMNS = {
         ("fit_height_u", "REAL"),
         ("fit_sigma_s", "REAL"),  # width (standard deviation for a Gaussian)
         ("fit_tailing", "REAL"),  # tailing (0: Gaussian)
-        ("fit_baseline", "REAL"),  # [counts]
+        ("fit_baseline", "REAL"),  # the background at the apex [counts]
         ("fit_area", "REAL"),  # [counts * s]
         ("fit_area_u", "REAL"),
         ("fit_sn", "REAL"),  # signal to noise
         ("fit_shape", "TEXT"),  # name of the peak function ('emg', 'pap_papai'), peaxart.shapes.SHAPES
         ("fit_shape_rt_s", "REAL"),  # its location
         ("fit_shape_height", "REAL"),  # its amplitude
+        # derivative of the background at the apex [counts / s] (NULL: constant)
+        ("fit_baseline_slope", "REAL"),
     ],
     "compound_identification": [
         # Best library spectrum of the name given by hand, and its scores

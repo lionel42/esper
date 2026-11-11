@@ -46,6 +46,7 @@ FIT_VARIABLES = {
     "fit_shape_rt": "shape_rt",
     "fit_shape_height": "shape_height",
     "fit_baseline": "baseline",
+    "fit_baseline_slope": "baseline_slope",
     "fit_area": "area",
     "fit_area_u": "area_u",
     "fit_sn": "sn",
