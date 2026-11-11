@@ -19,6 +19,7 @@ from esper.fitting import (
     fit_peaks,
     fitted_peak_table,
     match_compounds,
+    peak_baseline,
     peak_groups,
     peak_shape,
     to_fit,
@@ -440,3 +441,13 @@ def test_fit_changes_nothing_changed():
     assert changes.extraction_peaks.empty
     assert changes.extraction_compounds.empty
     assert changes.summaries.empty
+
+
+def test_peak_baseline():
+    """The background under a fitted peak: its value at the apex and its slope (constant
+    for rows fitted before the slope was stored)."""
+    t = np.array([10.0, 20.0, 30.0])
+    row = pd.Series({"fit_rt_s": 20.0, "fit_baseline": 100.0, "fit_baseline_slope": -2.0})
+    np.testing.assert_allclose(peak_baseline(t, row), [120.0, 100.0, 80.0])
+    old = pd.Series({"fit_rt_s": 20.0, "fit_baseline": 100.0, "fit_baseline_slope": np.nan})
+    np.testing.assert_allclose(peak_baseline(t, old), 100.0)

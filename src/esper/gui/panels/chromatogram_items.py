@@ -10,7 +10,7 @@ import pandas as pd
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
 
-from esper.fitting import peak_shape
+from esper.fitting import peak_baseline, peak_shape
 from esper.integration import integration_bounds, peak_area
 
 # Fitted peaks: drawn where above this fraction of their height, filled with this
@@ -82,25 +82,28 @@ def integration_marks(start, stop, y_start, y_stop, rt, y_base, y_apex, color) -
 
 
 def fit_integration_items(t: np.ndarray, peaks) -> list:
-    """Outline, bases, constant baseline and apex line of the fitted peaks of one mass."""
+    """Outline, bases, baseline and apex line of the fitted peaks of one mass."""
     items = []
-    starts, stops, bases, rts, tops = [], [], [], [], []
+    starts, stops, start_bases, stop_bases, bases, rts, tops = [], [], [], [], [], [], []
     for p, part, shape in fitted_shapes(t, peaks, FIT_BASE_FRACTION):
+        base = peak_baseline(t[part], p)
         starts.append(t[part][0])
         stops.append(t[part][-1])
+        start_bases.append(base[0])
+        stop_bases.append(base[-1])
         bases.append(p.fit_baseline)
         rts.append(p.fit_rt_s)
         tops.append(p.fit_baseline + p.fit_height)
         outline = pg.PlotCurveItem(
             t[part],
-            p.fit_baseline + shape,
+            base + shape,
             pen=pg.mkPen(INTEGRATION_COLOR, width=1, style=Qt.PenStyle.DashLine),
         )
         outline.setZValue(-1)
         items.append(outline)
     if starts:
         items += integration_marks(
-            starts, stops, bases, bases, rts, bases, tops, INTEGRATION_COLOR
+            starts, stops, start_bases, stop_bases, rts, bases, tops, INTEGRATION_COLOR
         )
     return items
 
@@ -141,7 +144,7 @@ def fit_fill_items(t: np.ndarray, peaks, color, selected=()) -> list:
     items = []
     for p, part, shape in fitted_shapes(t, peaks, FIT_VISIBLE):
         tt = t[part]
-        base = np.full(len(tt), p.fit_baseline)
+        base = peak_baseline(tt, p)
         alpha = (
             FIT_ALPHA_SELECTED
             if not pd.isna(p.compound_idx) and p.compound_idx in selected
