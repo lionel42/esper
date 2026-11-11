@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import pyqtgraph as pg
+import numpy as np
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QVBoxLayout
 
 from esper.gui.panels.base import BasePanel
-from esper.gui.panels.chromatogram import ChromatogramPanel, Curve
-from esper.gui.plotting import add_curve, make_plot
+from esper.gui.panels.chromatogram import ChromatogramPanel, Curve, draw_curve
+from esper.gui.plotting import make_plot
 
 # Delay before rescaling the relative plot after a pan/zoom [ms]
 RESCALE_DELAY_MS = 100
@@ -17,7 +17,9 @@ RESCALE_DELAY_MS = 100
 class RelativeChromatogramPanel(BasePanel):
     """The curves of a chromatogram panel, each scaled to the main mass in the visible window.
 
-    Follows its source panel (x axis linked, same overlays), not the selection.
+    Follows its source panel (x axis linked, same overlays), not the selection; its
+    curves are drawn as there (``draw_curve``: colors, gaps where a mass was not
+    measured).
     """
 
     title = "Relative chromatograms"
@@ -32,9 +34,6 @@ class RelativeChromatogramPanel(BasePanel):
 
         self.plot = make_plot()
         self.plot.setXLink(source.plot)
-        self.curve = self.plot.plot(pen=pg.mkPen("k", width=1))
-        self.curve.setClipToView(True)
-        self.curve.setZValue(1)
         source.overlays.add_menu(self.plot)
 
         layout = QVBoxLayout(self)
@@ -57,10 +56,8 @@ class RelativeChromatogramPanel(BasePanel):
             self.plot.removeItem(item)
         self._items = []
         if self._main is None:
-            self.curve.clear()
             return
-        self.curve.setData(self._main.t, self._main.y)
-        self._items = [add_curve(self.plot, c.t, c.y, c.color) for c in self._overlays]
+        self._items = [draw_curve(self.plot, c) for c in (self._main, *self._overlays)]
         self.rescale()
 
     def rescale(self) -> None:
@@ -76,12 +73,14 @@ class RelativeChromatogramPanel(BasePanel):
         if not window.any():
             return
         main_min, main_max = float(y[window].min()), float(y[window].max())
-        for item, curve in zip(self._items, self._overlays):
+        for item, curve in zip(self._items[1:], self._overlays):
             w = (curve.t >= x0) & (curve.t <= x1)
             if not w.any():
                 continue
             lo, hi = curve.y[w].min(), curve.y[w].max()
             factor = (main_max - main_min) / (hi - lo) if hi > lo else 0.0
-            item.setData(curve.t, main_min + (curve.y - lo) * factor)
+            # the drawn values (NaN in the gaps) scaled
+            scaled = main_min + (np.asarray(curve.drawn_y) - lo) * factor
+            item.setData(curve.drawn_t, scaled, connect="finite")
         span = max(main_max - main_min, 1.0)
         self.plot.setYRange(main_min - 0.05 * span, main_max + 0.05 * span, padding=0)

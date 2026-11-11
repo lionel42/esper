@@ -19,12 +19,12 @@ when they change.
 from __future__ import annotations
 
 import logging
-import math
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from esper.sources.gcwerks import unit_mass
 from esper.targets import (
     ION_COLUMNS,
     RT_COLUMNS,
@@ -38,12 +38,6 @@ logger = logging.getLogger(__name__)
 
 ALIASES_KEY = "aliases"  # of the esper.yaml: peakid name -> peak.list name or null
 _ION_COLUMNS = ["target_ion", "qualifier_ion_1", "qualifier_ion_2"]
-
-
-def unit_mass(mass: float) -> int:
-    """Unit mass of a peakid ion. From 2007-12 to 2009-07 the masses were set 0.5 higher
-    (e.g. 67.5 for 67), so a half mass is the mass below it."""
-    return int(math.floor(mass + 0.25))
 
 
 def _iso(time: pd.Timestamp) -> str:

@@ -29,9 +29,11 @@ def make_highlight() -> pg.ScatterPlotItem:
     return item
 
 
-def add_curve(plot: pg.PlotWidget, t, y, color, z: float = -1) -> pg.PlotDataItem:
+def add_curve(
+    plot: pg.PlotWidget, t, y, color, z: float = -1, width: float = 1
+) -> pg.PlotDataItem:
     # connect "finite": NaN breaks the curve (gaps of chromatogram_store.with_breaks)
-    item = plot.plot(t, y, pen=pg.mkPen(color, width=1), connect="finite")
+    item = plot.plot(t, y, pen=pg.mkPen(color, width=width), connect="finite")
     # Only once in the plot: pyqtgraph fails if set before
     item.setClipToView(True)
     item.setDownsampling(auto=True, method="peak")

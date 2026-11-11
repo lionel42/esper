@@ -50,6 +50,11 @@ GCWERKS = "gcwerks"
 INSTRUMENTS = (TOFWERK, GCWERKS)
 # Instrument of the data directories made before it was declared (all tofwerk)
 LEGACY_INSTRUMENT = TOFWERK
+# Attribute of a chromatogram frame (stored in its parquet file): "1" when a mass without
+# a value in a scan was swept but not found there (GCwerks scan runs), its curve then
+# links the values around; without it, a missing value is a gap (not measured: the
+# time windows of SIM)
+CONTINUOUS = "esper.continuous"
 
 # e.g. 241007.0423.air.1, or without number (GCwerks: 260112.1907.tune)
 _NAME_RE = re.compile(

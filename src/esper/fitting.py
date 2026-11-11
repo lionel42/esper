@@ -182,9 +182,9 @@ def fit_peaks(
     """
     t = frame.index.to_numpy(dtype=float)
     groups = [
-        (frame[str(mass)].to_numpy(dtype=float), group)
+        (frame[f"{mass:g}"].to_numpy(dtype=float), group)
         for mass, group in peaks.groupby("mass")
-        if str(mass) in frame
+        if f"{mass:g}" in frame
     ]
     # Largest first, for the load balance
     groups.sort(key=lambda g: -len(g[1]))

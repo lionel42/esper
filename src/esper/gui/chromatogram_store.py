@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import math
 from collections import OrderedDict
 from collections.abc import Callable
 from functools import lru_cache
@@ -9,6 +11,8 @@ from pathlib import Path
 
 import pandas as pd
 import pyarrow.parquet as pq
+
+from esper.sources import CONTINUOUS
 
 
 def mass_column(mass: float) -> str:
@@ -44,6 +48,28 @@ def column_mass(column: str) -> int | float | None:
     return int(mass) if mass.is_integer() else mass
 
 
+# A unit mass M stands for the masses measured in [M - 0.5, M + 0.5] (69.5: 69 and 70)
+UNIT_HALF_WIDTH = 0.5
+_TOLERANCE = 1e-6
+
+
+def unit_masses(masses) -> list[int]:
+    """The unit masses of masses as measured (``masses_of_unit``), by increasing mass."""
+    units = set()
+    for m in masses:
+        low = math.ceil(m - UNIT_HALF_WIDTH - _TOLERANCE)
+        high = math.floor(m + UNIT_HALF_WIDTH + _TOLERANCE)
+        units.update(range(low, high + 1))
+    return sorted(units)
+
+
+def masses_of_unit(masses, unit: float) -> list[int | float]:
+    """The masses as measured that a unit mass stands for: those of
+    ``[unit - 0.5, unit + 0.5]``, by increasing mass (GCwerks: 69 -> 68.5 ... 69.5; a
+    TOF file has the unit masses: 69 -> 69)."""
+    return sorted(m for m in masses if abs(m - unit) <= UNIT_HALF_WIDTH + _TOLERANCE)
+
+
 class ChromatogramStore:
     """Chromatogram files (parquet, index: rt [s], one column per unit mass and ``tic``).
 
@@ -63,11 +89,13 @@ class ChromatogramStore:
         self._cache_size = cache_size
         self._series: OrderedDict = OrderedDict()
         self._columns = lru_cache(maxsize=None)(self._read_columns)
+        self._continuous = lru_cache(maxsize=None)(self._read_continuous)
         self._frame = lru_cache(maxsize=n_frames)(self._read_frame)
 
     def clear(self) -> None:
         self._series.clear()
         self._columns.cache_clear()
+        self._continuous.cache_clear()
         self._frame.cache_clear()
 
     def _path(self, measurement_id: int) -> Path | None:
@@ -77,6 +105,25 @@ class ChromatogramStore:
     def _read_columns(self, measurement_id: int) -> frozenset[str]:
         path = self._path(measurement_id)
         return frozenset() if path is None else frozenset(pq.read_schema(path).names)
+
+    def _read_continuous(self, measurement_id: int) -> bool:
+        path = self._path(measurement_id)
+        if path is None:
+            return False
+        attrs = (pq.read_schema(path).metadata or {}).get(b"PANDAS_ATTRS")
+        return attrs is not None and json.loads(attrs).get(CONTINUOUS) == "1"
+
+    def continuous(self, measurement_id: int) -> bool:
+        """Whether a missing value is a mass not found in a scan, not a gap (GCwerks
+        scans, ``esper.sources.CONTINUOUS``): the curves link the values around."""
+        return self._continuous(measurement_id)
+
+    def to_draw(self, measurement_id: int, series: pd.Series) -> pd.Series:
+        """A chromatogram of the measurement to draw: with one NaN in each gap
+        (``with_breaks``), or without NaN when ``continuous``."""
+        if self.continuous(measurement_id):
+            return series.dropna()
+        return with_breaks(series)
 
     def _read_frame(self, measurement_id: int) -> pd.DataFrame | None:
         path = self._path(measurement_id)
@@ -100,7 +147,7 @@ class ChromatogramStore:
         return None if cached is None else cached[0]
 
     def drawn(self, measurement_id: int, column: str) -> pd.Series | None:
-        """One chromatogram to draw: with one NaN in each gap (``with_breaks``)."""
+        """One chromatogram to draw (``to_draw``)."""
         cached = self._cached(measurement_id, column)
         return None if cached is None else cached[1]
 
@@ -117,7 +164,10 @@ class ChromatogramStore:
         series = pd.read_parquet(self._path_of(measurement_id), columns=[column])[
             column
         ]
-        cached = self._series[key] = (series.dropna(), with_breaks(series))
+        cached = self._series[key] = (
+            series.dropna(),
+            self.to_draw(measurement_id, series),
+        )
         if len(self._series) > self._cache_size:
             self._series.popitem(last=False)
         return cached

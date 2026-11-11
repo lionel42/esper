@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit
 
@@ -93,11 +95,12 @@ class ChromatogramToolbar(BasePanel):
             self.selection.select_candidate(matching.iloc[0])
 
     def _on_mass_text(self, text: str) -> None:
+        """A unit mass, or a mass as measured: its unit mass (all its masses drawn)."""
         text = text.strip().lower()
         if text == "tic":
             self.selection.select_mass(TIC)
         elif (mass := column_mass(text)) is not None and mass > 0:
-            self.selection.select_mass(mass)
+            self.selection.select_mass(math.floor(mass + 0.5))
 
     def _on_time(self) -> None:
         text = self.time_edit.text().strip()
@@ -135,12 +138,18 @@ class ChromatogramToolbar(BasePanel):
         key = (sel.measurement_id, sel.compound_idx)
         if self._mass_items_key != key:
             self._mass_items_key = key
+            masses = []
             if sel.measurement_id is not None and sel.compound_idx is not None:
                 masses = self.data.compound_masses(*key)
-            else:
+            elif sel.measurement_id is not None:
+                # the unit masses of its chromatograms (GCwerks: of the masses measured)
+                masses = self.data.unit_masses(sel.measurement_id)
+            if not masses:
                 masses = list(range(2, 301))
-            self.mass_box.set_items([("tic", TIC)] + [(str(m), m) for m in masses])
-        self.mass_box.set_current(sel.mass, "tic" if sel.mass is TIC else str(sel.mass))
+            self.mass_box.set_items([("tic", TIC)] + [(f"{m:g}", m) for m in masses])
+        self.mass_box.set_current(
+            sel.mass, "tic" if sel.mass is TIC else f"{sel.mass:g}"
+        )
 
         self.time_edit.setText("" if sel.rt is None else f"{sel.rt:.1f}")
 

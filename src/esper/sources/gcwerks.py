@@ -9,17 +9,21 @@ mass-spectrometer chromatograms of each run::
 
 The files are read with the `gcwerks <https://github.com/lionel42/gcwerks>`_ package and
 written as esper chromatograms (``chromatograms/<name>.parquet``: index ``rt`` [s], one
-column per unit mass and ``tic``). Only the chromatograms are imported: no peaks, no
+column per mass as measured and ``tic``). Only the chromatograms are imported: no peaks, no
 compounds (``peak_source`` NULL: not fitted).
 
 The quadrupole measures each mass only in its time windows (SIM): a mass column is NaN
-outside them. The signal is as GCwerks stores it, baseline included.
+outside them. The scan runs sweep the whole mass range at each scan and keep, for each
+unit mass, one centroided peak above a threshold at its measured mass (69.4, 69.5 ...):
+a mass is NaN in the scans where it was not found, not a gap (``CONTINUOUS``: its
+curve links the values). The signal is as GCwerks stores it, baseline included.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import sqlite3
 from pathlib import Path
@@ -28,7 +32,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from esper.sources import GCWERKS, MeasurementImport, Run
+from esper.sources import CONTINUOUS, GCWERKS, MeasurementImport, Run
 
 if TYPE_CHECKING:
     from gcwerks.io.chromatogram import Chromatogram
@@ -49,6 +53,14 @@ _RUN_NAME_RE = re.compile(r"^\d{6}\.\d{4}\.(?P<type>[^.]+)(\.[^.]+)*$")
 SKIPPED_TYPES = frozenset({"tune"})
 _YEAR_RE = re.compile(r"^\d{2}$")
 PROVENANCE = "esper.gcwerks"
+
+
+def unit_mass(mass: float) -> int:
+    """Unit mass of a mass of the quadrupole (measured, or an ion of peakid): the masses
+    of ``[M - 0.25, M + 0.75)`` are ``M``. The scans step by 0.1 around the unit mass
+    (69.2 ... 69.6 for m/z 69), and from 2007-12 to 2009-07 the SIM masses were set 0.5
+    higher (e.g. 67.5 for 67): a half mass is the mass below it."""
+    return int(math.floor(mass + 0.25))
 
 
 def gcwerks_root(path: Path) -> Path | None:
@@ -162,6 +174,8 @@ def read(run: Run) -> MeasurementImport:
     frame.attrs[PROVENANCE] = json.dumps(
         {"file": str(path.resolve()), "start": str(chromatogram.start)}
     )
+    if chromatogram.is_scan:  # the whole mass range swept at each scan: no gaps
+        frame.attrs[CONTINUOUS] = "1"
     times = chromatogram.times
     return MeasurementImport(
         run=run,

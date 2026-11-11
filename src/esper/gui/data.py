@@ -16,7 +16,13 @@ import pandas as pd
 
 from esper import db
 from esper.fitting import FIT_COLUMNS, SOURCE_EXTRACTION
-from esper.gui.chromatogram_store import ChromatogramStore, mass_column
+from esper.gui.chromatogram_store import (
+    ChromatogramStore,
+    column_mass,
+    mass_column,
+    masses_of_unit,
+    unit_masses,
+)
 from esper.gui.target_index import TargetIndex
 from esper.integration import has_ips, integration_bounds, peak_area
 from esper.libraries import Spectrum
@@ -420,7 +426,7 @@ class EsperData:
         their largest peak."""
         peaks = self.compound_peaks(measurement_id, compound_idx)
         peaks = peaks.sort_values("prominence", ascending=False)
-        return [int(m) for m in peaks["mass"].drop_duplicates()]
+        return [column_mass(f"{m:g}") for m in peaks["mass"].drop_duplicates()]
 
     @_cached_method(maxsize=64)
     def compound_spectrum(
@@ -840,6 +846,26 @@ class EsperData:
 
     def chromatogram_columns(self, measurement_id: int) -> frozenset[str]:
         return self.chromatograms.columns(measurement_id)
+
+    def chromatogram_masses(self, measurement_id: int) -> list[int | float]:
+        """The masses of the chromatograms of a measurement, as measured (GCwerks: ``69.5``,
+        the scans ``69.2`` ...), by increasing mass."""
+        columns = self.chromatograms.columns(measurement_id)
+        return sorted(m for m in map(column_mass, columns) if m is not None)
+
+    def unit_masses(self, measurement_id: int) -> list[int]:
+        """The unit masses of the chromatograms of a measurement (``masses_of_unit``)."""
+        return unit_masses(self.chromatogram_masses(measurement_id))
+
+    def measured_masses(self, measurement_id: int, mass: int | float | None) -> list:
+        """The chromatograms a mass stands for: a unit mass, the masses measured within
+        +- 0.5 (``masses_of_unit``); a mass as measured, itself; the TIC, itself."""
+        if mass is TIC:
+            return [TIC]
+        masses = self.chromatogram_masses(measurement_id)
+        if mass in masses and not float(mass).is_integer():
+            return [mass]
+        return masses_of_unit(masses, mass)
 
     def chromatogram_frame(self, measurement_id: int) -> pd.DataFrame | None:
         """All unit mass chromatograms of a measurement (whole parquet file)."""

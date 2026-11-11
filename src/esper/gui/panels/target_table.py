@@ -30,7 +30,8 @@ class TargetTablePanel(TablePanel):
             "expected_rt",
             "exp. rt",
             "{:.1f}",
-            "rt expected in this measurement, from the RI [s]",
+            "rt expected in this measurement [s]: from the identification of the "
+            "time of the run (GCwerks peakid), else from the RI",
         ),
         Column(
             "found",
@@ -48,13 +49,16 @@ class TargetTablePanel(TablePanel):
 
     def __init__(self, data: EsperData, selection: Selection, parent=None) -> None:
         super().__init__(data, selection, parent)
-        self.with_ri = QCheckBox("with RI")
-        self.with_ri.setToolTip("Only the targets with a retention index")
+        self.targets_only = QCheckBox("targets only")
+        self.targets_only.setToolTip(
+            "Only the targets with an expected position (retention index or expected "
+            "rt), not the suspects known only by their spectrum"
+        )
         self.found_only = QCheckBox("found")
         self.found_only.setToolTip("Only the targets found in this measurement")
-        for check in (self.with_ri, self.found_only):
+        for check in (self.targets_only, self.found_only):
             check.toggled.connect(lambda _: self.refilter())
-        self.toolbar.insertWidget(1, self.with_ri)
+        self.toolbar.insertWidget(1, self.targets_only)
         self.toolbar.insertWidget(2, self.found_only)
         if self.data.targets.empty:
             self.filter_edit.setPlaceholderText(
@@ -69,16 +73,22 @@ class TargetTablePanel(TablePanel):
         if mid is None or df.empty:
             df["expected_rt"] = float("nan")
             df["found"] = False
+            # no run to place them in: any retention reference makes a target
+            has_rts = [self.data.target_index.has_rts(t) for t in df.index]
+            df["is_target"] = df["ri"].notna() | pd.Series(has_rts, index=df.index, dtype=bool)
             return df
         df["expected_rt"] = self.data.expected_target_rts(mid)
+        # a target is expected somewhere: an rt in this run (GCwerks peakid, or from the
+        # RI with the RI references of the run), or at least an RI (run without references)
+        df["is_target"] = df["expected_rt"].notna() | df["ri"].notna()
         # the ions of the version of the measurement (GCwerks peakid)
         df["ions"] = [", ".join(map(str, self.data.target_masses(mid, t))) for t in df.index]
         df["found"] = df.index.isin(self.data.targets_found(mid))
         return df
 
     def filter_rows(self, df: pd.DataFrame) -> pd.DataFrame:
-        if self.with_ri.isChecked() and len(df):
-            df = df[df["ri"].notna()]
+        if self.targets_only.isChecked() and len(df):
+            df = df[df["is_target"]]
         if self.found_only.isChecked() and len(df):
             df = df[df["found"]]
         return df

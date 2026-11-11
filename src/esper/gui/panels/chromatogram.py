@@ -13,7 +13,7 @@ from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import QCheckBox, QVBoxLayout, QWidgetAction
 
 from esper.fitting import SOURCE_FIT
-from esper.gui.chromatogram_store import column_mass, mass_column, with_breaks
+from esper.gui.chromatogram_store import column_mass, mass_column
 from esper.gui.data import TIC, EsperData
 from esper.gui.labels import (
     NO_COMPOUND,
@@ -78,11 +78,44 @@ def _shape_text(p) -> str:
 
 @dataclass
 class Curve:
-    mass: int | None  # None: TIC
+    """A chromatogram drawn in a chromatogram panel, as the other panels draw it too
+    (``draw_curve``)."""
+
+    mass: int | float | None  # None: TIC
     label: str
-    t: np.ndarray
+    t: np.ndarray  # without NaN: to compute with
     y: np.ndarray
-    color: object
+    drawn_t: np.ndarray  # with one NaN in each gap where the mass was not measured
+    drawn_y: np.ndarray
+    color: object = "k"
+    width: float = 1
+    z: float = -1
+
+
+def chromatogram_curve(series: pd.Series, drawn: pd.Series, mass) -> Curve:
+    """The Curve of a chromatogram (``series``: without NaN; ``drawn``: with breaks,
+    ``chromatogram_store.with_breaks``)."""
+    return Curve(
+        mass,
+        mass_label(mass),
+        series.index.to_numpy(dtype=float),
+        series.to_numpy(dtype=float),
+        drawn.index.to_numpy(dtype=float),
+        drawn.to_numpy(dtype=float),
+    )
+
+
+def draw_curve(plot: pg.PlotWidget, curve: Curve, y: np.ndarray | None = None):
+    """Draw a Curve, with a break in each gap (``y``: other values of ``drawn_y``, e.g.
+    scaled)."""
+    return add_curve(
+        plot,
+        curve.drawn_t,
+        curve.drawn_y if y is None else y,
+        curve.color,
+        z=curve.z,
+        width=curve.width,
+    )
 
 
 class OverlayOptions(QObject):
@@ -164,11 +197,9 @@ class ChromatogramPanel(BasePanel):
         self.show_info = show_info
         self._keep_range = False
         self._annotations: list = []
-        self._overlay_items: list = []
+        self._curve_items: list = []
 
         self.plot = make_plot()
-        self.curve = self.plot.plot(pen=pg.mkPen("k", width=1))
-        self.curve.setClipToView(True)
 
         self.info_label = pg.LabelItem(justify="left", color="k", size="9pt")
         self.info_label.setParentItem(self.plot.getViewBox())
@@ -261,7 +292,12 @@ class ChromatogramPanel(BasePanel):
             masses.extend(self.data.target_masses(sel.measurement_id, sel.target))
         if "tic" in checked:
             masses.append(TIC)
-        return [m for m in dict.fromkeys(masses) if m != sel.mass]
+        # a unit mass: the masses measured for it (GCwerks), each its own curve
+        measured = [
+            m for mass in masses for m in self.data.measured_masses(sel.measurement_id, mass)
+        ]
+        shown = set(self.data.measured_masses(sel.measurement_id, sel.mass)) | {sel.mass}
+        return [m for m in dict.fromkeys(measured) if m not in shown]
 
     def _peaking_masses(self) -> list[int]:
         """Masses with a peak apex in the visible rt range, most prominent first."""
@@ -269,7 +305,7 @@ class ChromatogramPanel(BasePanel):
         peaks = self.data.peaks(self.selection.measurement_id)
         here = peaks[(peaks["rt_s"] >= lo) & (peaks["rt_s"] <= hi)]
         return [
-            int(m)
+            column_mass(f"{m:g}")
             for m in here.groupby("mass")["prominence"]
             .max()
             .sort_values(ascending=False)
@@ -299,19 +335,22 @@ class ChromatogramPanel(BasePanel):
         view_range = self.plot.viewRange()
         self._clear()
         if sel.measurement_id is None:
-            self.curve.clear()
             self.info_label.setText("")
             self.title_label.setText("")
             self.curves_changed.emit(None, [])
             return
 
-        series = self.data.chromatogram(sel.measurement_id, sel.mass)
         title = mass_label(sel.mass)
         if not self.show_info:
             name = self.data.measurements.loc[sel.measurement_id, "name"]
             title = f"{name}   {html.escape(sel.label or '')}   {title}"
-        if series is None:
-            title = f"{title} (no chromatogram)"
+        # the masses measured for the selected one (GCwerks: 68.5 ... 69.5)
+        measured = self.data.measured_masses(sel.measurement_id, sel.mass)
+        selected = [c for m in measured if (c := self._curve(m)) is not None]
+        if len(selected) == 1 and selected[0].mass != sel.mass:
+            title += f" ({selected[0].mass:g})"
+        if not selected:
+            title += " (no chromatogram)"
         elif self.integration.startswith("fit") and not self.data.is_fitted(
             sel.measurement_id
         ):
@@ -321,91 +360,91 @@ class ChromatogramPanel(BasePanel):
             self._update_info()
         else:
             self.info_label.setText("")
-        if series is None:
-            self.curve.clear()
+        if not selected:
             self.curves_changed.emit(None, [])
             return
 
-        t = series.index.to_numpy(dtype=float)
-        y = series.to_numpy(dtype=float)
-        # drawn with a break in each gap where the mass was not measured
-        drawn = self.data.chromatogram_drawn(sel.measurement_id, sel.mass)
-        self.curve.setData(
-            drawn.index.to_numpy(dtype=float),
-            drawn.to_numpy(dtype=float),
-            connect="finite",
+        # main: the selected mass itself, else its largest measured mass, drawn on top
+        main = next(
+            (c for c in selected if c.mass == sel.mass),
+            max(selected, key=lambda c: c.y.max()),
         )
-        self._annotate(t, y)
+        selected.remove(main)
+        selected.insert(0, main)
+        overlay_masses = self._overlaid = self._overlay_masses()
+        frame = (
+            self.data.chromatogram_frame(sel.measurement_id)
+            if len(overlay_masses) > READ_ALL_ABOVE
+            else None
+        )
+        overlays = [
+            c for m in overlay_masses if (c := self._curve(m, frame)) is not None
+        ]
+        # the selected masses in color when several (thicker than the overlays)
+        several = len(selected) > 1
+        colors = overlay_colors(len(selected) * several + len(overlays))
+        for i, curve in enumerate(selected):
+            curve.color = colors[i] if several else "k"
+            curve.width = 1.5 if several else 1
+            curve.z = 1 if curve is main else 0
+        for curve, color in zip(overlays, colors[len(selected) * several :]):
+            curve.color = color
+        curves = selected + overlays
+        show_legend = len(curves) > 1 and len(curves) - (not several) <= MAX_LEGEND_ENTRIES
+
+        peaks = self.data.peaks(sel.measurement_id)
+        for curve in curves:
+            item = draw_curve(self.plot, curve)
+            self._curve_items.append(item)
+            if show_legend:
+                self.legend.addItem(item, curve.label)
+            # Fitted peaks of the overlaid masses, unless there are too many
+            if (
+                curve in overlays
+                and self.integration == "fit_shapes"
+                and curve.mass is not TIC
+                and show_legend
+            ):
+                self._add_all(
+                    fit_fill_items(
+                        curve.t, peaks[peaks["mass"] == curve.mass], curve.color
+                    )
+                )
+        self._annotate(main.t, main.y)
         self._mark_target()
         if keep_range:
             self.plot.setRange(xRange=view_range[0], yRange=view_range[1], padding=0)
         else:
-            self._set_range(t, y)
-        overlays = self._draw_overlays()
-        self.curves_changed.emit(
-            Curve(sel.mass, mass_label(sel.mass), t, y, "k"), overlays
-        )
+            # the range of all the selected masses
+            t = np.concatenate([c.t for c in selected])
+            order = np.argsort(t, kind="stable")
+            y = np.concatenate([c.y for c in selected])
+            self._set_range(t[order], y[order])
+        self.curves_changed.emit(main, curves[1:])
+
+    def _curve(self, mass, frame: pd.DataFrame | None = None) -> Curve | None:
+        """The Curve of a chromatogram of the selected measurement (None: none); from
+        ``frame`` (the whole file, to read many masses at once) if given."""
+        mid = self.selection.measurement_id
+        if frame is None:
+            series = self.data.chromatogram(mid, mass)
+            drawn = self.data.chromatogram_drawn(mid, mass)
+        else:
+            column = "tic" if mass is TIC else mass_column(mass)
+            series = frame[column].dropna() if column in frame else None
+            drawn = (
+                None if series is None else self.data.chromatograms.to_draw(mid, frame[column])
+            )
+        if series is None or series.empty:
+            return None
+        return chromatogram_curve(series, drawn, mass)
 
     def _clear(self) -> None:
-        for item in self._annotations + self._overlay_items:
+        for item in self._annotations + self._curve_items:
             self.plot.removeItem(item)
         self._annotations = []
-        self._overlay_items = []
+        self._curve_items = []
         self.legend.clear()
-
-    def _draw_overlays(self) -> list[Curve]:
-        """Other masses of the measurement, drawn in color behind the main mass."""
-        sel = self.selection
-        masses = self._overlaid = self._overlay_masses()
-        if not masses:
-            return []
-        frame = (
-            self.data.chromatogram_frame(sel.measurement_id)
-            if len(masses) > READ_ALL_ABOVE
-            else None
-        )
-
-        n = len(masses)
-        colors = overlay_colors(n)
-        peaks = self.data.peaks(sel.measurement_id)
-        show_legend = n <= MAX_LEGEND_ENTRIES
-        if show_legend:
-            self.legend.addItem(self.curve, mass_label(sel.mass))
-        curves = []
-        for i, mass in enumerate(masses):
-            if frame is not None:
-                column = "tic" if mass is TIC else mass_column(mass)
-                drawn = with_breaks(frame[column]) if column in frame else None
-                series = None if drawn is None else drawn.dropna()
-            else:
-                series = self.data.chromatogram(sel.measurement_id, mass)
-                drawn = self.data.chromatogram_drawn(sel.measurement_id, mass)
-            if series is None:
-                continue
-            color = colors[i]
-            curve = Curve(
-                mass,
-                mass_label(mass),
-                series.index.to_numpy(dtype=float),
-                series.to_numpy(dtype=float),
-                color,
-            )
-            item = add_curve(
-                self.plot,
-                drawn.index.to_numpy(dtype=float),
-                drawn.to_numpy(dtype=float),
-                color,
-            )
-            self._overlay_items.append(item)
-            curves.append(curve)
-            # Fitted peaks of the overlaid masses, unless there are too many
-            if self.integration == "fit_shapes" and mass is not TIC and show_legend:
-                self._add_all(
-                    fit_fill_items(curve.t, peaks[peaks["mass"] == mass], color)
-                )
-            if show_legend:
-                self.legend.addItem(item, curve.label)
-        return curves
 
     def _update_info(self) -> None:
         sel = self.selection
@@ -608,7 +647,12 @@ class ChromatogramPanel(BasePanel):
     def _set_range(self, t: np.ndarray, y: np.ndarray) -> None:
         sel = self.selection
         if sel.rt is None:
-            self.plot.autoRange()
+            # the whole chromatogram: from the data, not autoRange (the curves are
+            # clipped to the view, their bounds would be those of the previous view)
+            bottom, top = float(np.min(y)), float(np.max(y))
+            span = max(top - bottom, 1.0)
+            self.plot.setXRange(float(np.min(t)), float(np.max(t)), padding=0.02)
+            self.plot.setYRange(bottom - 0.02 * span, top + 0.05 * span, padding=0)
             return
         x0, x1 = sel.rt - RT_HALF_WINDOW, sel.rt + RT_HALF_WINDOW
         mask = (t >= x0) & (t <= x1)

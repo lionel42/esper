@@ -253,3 +253,40 @@ def test_measurements_of_another_instrument_are_refused(tmp_path, monkeypatch):
     (data_dir / "esper.yaml").write_text("instrument: tofwerk\n")
     with pytest.raises(InstrumentError, match="measurements of gcwerks"):
         upload(tmp_path / "runs", data_dir)
+
+
+def test_masses_of_a_unit_mass():
+    """A unit mass stands for the masses measured within +- 0.5 (69.5: 69 and 70)."""
+    from esper.gui.chromatogram_store import masses_of_unit, unit_masses
+
+    measured = [68.4, 68.5, 69.2, 69.5, 69.6, 85]
+    assert masses_of_unit(measured, 69) == [68.5, 69.2, 69.5]
+    assert masses_of_unit(measured, 70) == [69.5, 69.6]
+    assert masses_of_unit(measured, 85) == [85]
+    assert masses_of_unit(measured, 84) == []
+    assert unit_masses(measured) == [68, 69, 70, 85]
+
+
+def test_scan_runs_are_drawn_continuous(tmp_path, monkeypatch):
+    """A scan run sweeps the whole mass range: a mass without a value in a scan was not
+    found there, its curve links the values around (no gap, as between SIM windows)."""
+    root = _gcdir(tmp_path, ["260112.2114.air.7", "260112.2224.std.9.scan"])
+
+    def read(path):
+        chromatogram = _chromatogram()
+        chromatogram.kind = 5 if path.name.endswith(".scan") else 4
+        return chromatogram
+
+    monkeypatch.setattr(gc_chromatogram, "read_chromatogram", read)
+    data_dir = tmp_path / "esper"
+    upload(root, data_dir, instrument="gcwerks")
+    files = {
+        mid: data_dir / "chromatograms" / f"{name}.parquet"
+        for mid, name in enumerate(["260112.2114.air.7", "260112.2224.std.9.scan"])
+    }
+    store = ChromatogramStore(files.get)
+    assert not store.continuous(0) and store.continuous(1)
+    # 43: scans 0-2 and 7-8
+    assert store.drawn(0, "43").isna().sum() == 1
+    assert store.drawn(1, "43").tolist() == [1.0, 2.0, 3.0, 7.0, 8.0]
+    assert store.series(1, "43").tolist() == [1.0, 2.0, 3.0, 7.0, 8.0]

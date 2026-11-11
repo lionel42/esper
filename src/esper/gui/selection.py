@@ -30,6 +30,9 @@ class Selection(QObject):
     (library, name); None means the default (alpinac's best candidate). It is
     reset when the compound or the measurement changes.
 
+    ``mass`` is a unit mass; the masses measured for it (GCwerks: 68.5 ... 69.5,
+    ``EsperData.measured_masses``) are drawn each as a curve.
+
     ``changed`` is emitted with the set of fields that changed.
     """
 
