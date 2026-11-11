@@ -51,12 +51,15 @@ esper upload /path/to/gcwerks/jungfraujoch-medusa/26 /path/to/esper/data   # one
 
 The source can be the GCwerks directory, a year, its `chromatograms` folder or one file. The
 files `<yy>/chromatograms/channel0/<name>` (not the `tune` runs) are written as
-`chromatograms/<name>.parquet` (index rt, one column per unit mass and `tic`), the start of the
-run from the file (`acq_start_source = 'gcwerks'`, to the s). Only the chromatograms: no peaks,
-no fit (`peak_source` NULL). The quadrupole measures each mass only in its time windows: the
-column of a mass is NaN outside them (the GUI draws the measured scans only). The signal is as
-GCwerks stores it, baseline included. Unchanged files (same size and mtime) are skipped. The
-files written before ~April 2012 (an older layout) cannot be read yet.
+`chromatograms/<name>.parquet` (index rt, one column per mass as measured, `"43"`, or `"84.9"`
+for the masses of the scans, and `tic`), the start of the run from the file
+(`acq_start_source = 'gcwerks'`, to the s). Only the chromatograms: no peaks, no fit
+(`peak_source` NULL). The quadrupole measures each mass only in its time windows: the column of
+a mass is NaN outside them, and the GUI draws it with a gap where it was not measured. The SIM
+runs before April 2012 are stored window by window: a row of NaN between two windows, so that a
+mass measured in both is not drawn continuous. The signal is as GCwerks stores it, baseline
+included. Unchanged files (same size and mtime) are skipped (`--force` to import them again,
+e.g. with a newer gcwerks).
 
 Each upload also imports the targets of the GCwerks directory
 (`src/esper/sources/gcwerks_targets.py`), replacing the targets of the data directory:

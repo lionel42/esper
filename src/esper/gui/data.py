@@ -16,7 +16,7 @@ import pandas as pd
 
 from esper import db
 from esper.fitting import FIT_COLUMNS, SOURCE_EXTRACTION
-from esper.gui.chromatogram_store import ChromatogramStore
+from esper.gui.chromatogram_store import ChromatogramStore, mass_column
 from esper.gui.target_index import TargetIndex
 from esper.integration import has_ips, integration_bounds, peak_area
 from esper.libraries import Spectrum
@@ -851,5 +851,12 @@ class EsperData:
         Only the requested column of the parquet file is read.
         """
         return self.chromatograms.series(
-            measurement_id, "tic" if mass is TIC else str(mass)
+            measurement_id, "tic" if mass is TIC else mass_column(mass)
+        )
+
+    def chromatogram_drawn(self, measurement_id: int, mass: int | None) -> pd.Series | None:
+        """``chromatogram`` to draw: one NaN in each gap where the mass was not measured
+        (``chromatogram_store.with_breaks``)."""
+        return self.chromatograms.drawn(
+            measurement_id, "tic" if mass is TIC else mass_column(mass)
         )

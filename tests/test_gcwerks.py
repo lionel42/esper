@@ -68,6 +68,66 @@ def test_chromatogram_frame():
     np.testing.assert_array_equal(frame["tic"], np.arange(10) * 10)
 
 
+def test_masses_kept_as_measured():
+    """The masses of the scans are not unit masses: one column each, not rounded."""
+    from esper.gui.chromatogram_store import column_mass, mass_column
+
+    chromatogram = _chromatogram()
+    chromatogram.ions += [
+        IonChromatogram(84.9, np.array([5]), np.array([9.0])),
+        IonChromatogram(85.2, np.array([5]), np.array([10.0])),
+        IonChromatogram(85.0000001, np.array([6]), np.array([11.0])),  # m/z 85
+    ]
+    frame, warnings = gcwerks.chromatogram_frame(chromatogram)
+    assert warnings == []
+    assert list(frame.columns) == ["43", "84.9", "85", "85.2", "tic"]
+    assert frame["85"].count() == 3
+    assert [column_mass(c) for c in frame.columns] == [43, 84.9, 85, 85.2, None]
+    assert [mass_column(m) for m in (43, 84.9, 85.0)] == ["43", "84.9", "85"]
+
+
+def test_windows_are_not_continuous():
+    """A row of NaN between two time windows (layout B), where the chromatograms are not
+    drawn continuous; one NaN in each gap of a drawn chromatogram."""
+    from esper.gui.chromatogram_store import with_breaks
+
+    chromatogram = Chromatogram(
+        start=START,
+        times=np.array([0.0, 0.5, 1.0, 1.6, 1.85]),
+        tic=np.arange(5, dtype=float),
+        ions=[
+            IonChromatogram(69.0, np.array([0, 1, 2]), np.array([1.0, 2.0, 3.0])),
+            IonChromatogram(69.0, np.array([3, 4]), np.array([4.0, 5.0])),
+            IonChromatogram(50.0, np.array([0, 1, 2]), np.array([6.0, 7.0, 8.0])),
+        ],
+        windows=[0, 3],
+    )
+    frame, warnings = gcwerks.chromatogram_frame(chromatogram)
+    assert warnings == []
+    np.testing.assert_allclose(frame.index, [0, 0.5, 1.0, 1.3, 1.6, 1.85])
+    assert frame.loc[1.3].isna().all()
+    np.testing.assert_array_equal(frame["69"].dropna(), [1, 2, 3, 4, 5])
+    drawn = with_breaks(frame["69"])
+    assert drawn.isna().tolist() == [False] * 3 + [True] + [False] * 2
+    # 50: not in the second window: no NaN after its last value
+    assert with_breaks(frame["50"]).tolist() == [6.0, 7.0, 8.0]
+    # the same mass twice in the same scans: warned unless the same values
+    chromatogram.ions.append(IonChromatogram(69.0, np.array([4]), np.array([5.0])))
+    assert gcwerks.chromatogram_frame(chromatogram)[1] == []
+    chromatogram.ions.append(IonChromatogram(69.0, np.array([4]), np.array([6.0])))
+    (warning,) = gcwerks.chromatogram_frame(chromatogram)[1]
+    assert warning.startswith("mass 69 measured twice in 1 scans (1.9 s")
+
+
+def test_with_breaks():
+    from esper.gui.chromatogram_store import with_breaks
+
+    s = pd.Series([np.nan, 1, np.nan, np.nan, 2, 3, np.nan, 4, np.nan, np.nan])
+    assert with_breaks(s).index.tolist() == [1, 2, 4, 5, 6, 7]
+    assert with_breaks(pd.Series([np.nan, np.nan])).empty
+    assert with_breaks(pd.Series([1.0, 2.0])).tolist() == [1.0, 2.0]
+
+
 def test_find_chromatogram_files(tmp_path):
     names = ["250101.0013.std.5", "260112.2114.air.7", "260112.1907.tune"]
     root = _gcdir(tmp_path, names)

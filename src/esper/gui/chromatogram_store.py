@@ -11,6 +11,39 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 
+def mass_column(mass: float) -> str:
+    """The column of a mass in a chromatogram file: ``"85"``; ``"84.9"`` for a mass that is
+    not a unit mass (e.g. the scans of GCwerks)."""
+    return f"{mass:g}"
+
+
+def with_breaks(series: pd.Series) -> pd.Series:
+    """A chromatogram to draw: without its NaN, but one NaN in each gap between the
+    values (where the mass was not measured, between time windows), so that the
+    curve, drawn with ``connect="finite"``, is not continuous over it."""
+    finite = series.notna().to_numpy()
+    if finite.all():
+        return series
+    if not finite.any():
+        return series.iloc[:0]
+    first, last = finite.argmax(), len(finite) - finite[::-1].argmax()
+    keep = finite.copy()
+    # the first NaN of each run of NaN between two values
+    keep[1:] |= ~finite[1:] & finite[:-1]
+    keep[:first] = keep[last:] = False
+    return series[keep]
+
+
+def column_mass(column: str) -> int | float | None:
+    """The mass of a column of a chromatogram file (int for a unit mass), None if it is not
+    a mass (``tic``)."""
+    try:
+        mass = float(column)
+    except ValueError:
+        return None
+    return int(mass) if mass.is_integer() else mass
+
+
 class ChromatogramStore:
     """Chromatogram files (parquet, index: rt [s], one column per unit mass and ``tic``).
 
@@ -63,6 +96,18 @@ class ChromatogramStore:
         Without its NaN: the masses measured only in some time windows (GCwerks
         quadrupole, esper.sources.gcwerks) are NaN outside them.
         """
+        cached = self._cached(measurement_id, column)
+        return None if cached is None else cached[0]
+
+    def drawn(self, measurement_id: int, column: str) -> pd.Series | None:
+        """One chromatogram to draw: with one NaN in each gap (``with_breaks``)."""
+        cached = self._cached(measurement_id, column)
+        return None if cached is None else cached[1]
+
+    def _cached(
+        self, measurement_id: int, column: str
+    ) -> tuple[pd.Series, pd.Series] | None:
+        """(without NaN, to draw) of one column of the file (cached)."""
         key = (measurement_id, column)
         if key in self._series:
             self._series.move_to_end(key)
@@ -71,8 +116,8 @@ class ChromatogramStore:
             return None
         series = pd.read_parquet(self._path_of(measurement_id), columns=[column])[
             column
-        ].dropna()
-        self._series[key] = series
+        ]
+        cached = self._series[key] = (series.dropna(), with_breaks(series))
         if len(self._series) > self._cache_size:
             self._series.popitem(last=False)
-        return series
+        return cached

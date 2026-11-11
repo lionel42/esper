@@ -13,6 +13,7 @@ from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import QCheckBox, QVBoxLayout, QWidgetAction
 
 from esper.fitting import SOURCE_FIT
+from esper.gui.chromatogram_store import column_mass, mass_column, with_breaks
 from esper.gui.data import TIC, EsperData
 from esper.gui.labels import (
     NO_COMPOUND,
@@ -244,7 +245,9 @@ class ChromatogramPanel(BasePanel):
         masses: list = []
         if "all" in checked:
             columns = self.data.chromatogram_columns(sel.measurement_id)
-            masses = sorted(int(c) for c in columns if c.isdigit())
+            masses = sorted(
+                m for m in map(column_mass, columns) if m is not None
+            )
         elif "compound" in checked:
             masses = compound_masses
         else:
@@ -325,7 +328,13 @@ class ChromatogramPanel(BasePanel):
 
         t = series.index.to_numpy(dtype=float)
         y = series.to_numpy(dtype=float)
-        self.curve.setData(t, y)
+        # drawn with a break in each gap where the mass was not measured
+        drawn = self.data.chromatogram_drawn(sel.measurement_id, sel.mass)
+        self.curve.setData(
+            drawn.index.to_numpy(dtype=float),
+            drawn.to_numpy(dtype=float),
+            connect="finite",
+        )
         self._annotate(t, y)
         self._mark_target()
         if keep_range:
@@ -365,10 +374,12 @@ class ChromatogramPanel(BasePanel):
         curves = []
         for i, mass in enumerate(masses):
             if frame is not None:
-                column = "tic" if mass is TIC else str(mass)
-                series = frame[column].dropna() if column in frame else None
+                column = "tic" if mass is TIC else mass_column(mass)
+                drawn = with_breaks(frame[column]) if column in frame else None
+                series = None if drawn is None else drawn.dropna()
             else:
                 series = self.data.chromatogram(sel.measurement_id, mass)
+                drawn = self.data.chromatogram_drawn(sel.measurement_id, mass)
             if series is None:
                 continue
             color = colors[i]
@@ -379,7 +390,12 @@ class ChromatogramPanel(BasePanel):
                 series.to_numpy(dtype=float),
                 color,
             )
-            item = add_curve(self.plot, curve.t, curve.y, color)
+            item = add_curve(
+                self.plot,
+                drawn.index.to_numpy(dtype=float),
+                drawn.to_numpy(dtype=float),
+                color,
+            )
             self._overlay_items.append(item)
             curves.append(curve)
             # Fitted peaks of the overlaid masses, unless there are too many

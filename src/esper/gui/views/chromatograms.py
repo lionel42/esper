@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit
 
+from esper.gui.chromatogram_store import column_mass
 from esper.gui.data import TIC, EsperData
 from esper.gui.labels import compound_label
 from esper.gui.panels.base import BasePanel
@@ -95,8 +96,8 @@ class ChromatogramToolbar(BasePanel):
         text = text.strip().lower()
         if text == "tic":
             self.selection.select_mass(TIC)
-        elif text.isdigit():
-            self.selection.select_mass(int(text))
+        elif (mass := column_mass(text)) is not None and mass > 0:
+            self.selection.select_mass(mass)
 
     def _on_time(self) -> None:
         text = self.time_edit.text().strip()

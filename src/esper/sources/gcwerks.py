@@ -99,28 +99,50 @@ def find_chromatogram_files(source: Path, channel: str = DEFAULT_CHANNEL) -> lis
     return sorted((p for p in files if is_run_file(p)), key=lambda p: p.name)
 
 
+# Masses of the chromatograms rounded to this many decimals (the same mass in several
+# windows: one column)
+MASS_DECIMALS = 3
+
+
 def chromatogram_frame(chromatogram: Chromatogram) -> tuple[pd.DataFrame, list[str]]:
     """The chromatograms as esper stores them, and warnings.
 
-    Index ``rt`` (s since the start of the run), one column per unit mass (``"43"``,
-    NaN where the mass was not measured), then ``tic``. A mass measured in several
-    windows is one column.
+    Index ``rt`` (s since the start of the run), one column per mass as measured (``"43"``;
+    ``"84.9"`` for the masses that are not unit masses, e.g. of the scans; NaN where the
+    mass was not measured), by increasing mass, then ``tic``. A mass measured in several
+    windows is one column. Between two time windows (``Chromatogram.windows``, the SIM
+    runs before 2012-04), a row of NaN halfway between their scans: the chromatograms
+    are not drawn continuous from one window to the next.
     """
     warnings = []
-    index = pd.Index(np.asarray(chromatogram.times, dtype=float), name="rt")
-    columns: dict[int, np.ndarray] = {}
+    times = np.asarray(chromatogram.times, dtype=float)
+    columns: dict[float, np.ndarray] = {}
     for ion in chromatogram.ions:
-        mass = int(round(ion.mass))
-        if abs(ion.mass - mass) > 0.05:
-            warnings.append(f"mass {ion.mass:g} stored as {mass}")
-        values = columns.setdefault(mass, np.full(len(index), np.nan))
-        if np.isfinite(values[ion.scans]).any():
-            warnings.append(f"mass {mass} measured twice in some scans, last kept")
+        mass = round(float(ion.mass), MASS_DECIMALS)
+        values = columns.setdefault(mass, np.full(len(times), np.nan))
+        # the same mass in the same scans (so at the same times) twice
+        before = values[ion.scans]
+        measured = np.isfinite(before)
+        if measured.any() and not np.array_equal(before[measured], ion.values[measured]):
+            warnings.append(
+                f"mass {mass:g} measured twice in {int(measured.sum())} scans"
+                f" ({times[ion.scans[measured][0]]:.1f} s ...), last kept"
+            )
         values[ion.scans] = ion.values
     frame = pd.DataFrame(
-        {str(m): columns[m] for m in sorted(columns)}, index=index, dtype=float
+        {f"{m:g}": columns[m] for m in sorted(columns)}, index=times, dtype=float
     )
     frame["tic"] = np.asarray(chromatogram.tic, dtype=float)
+    starts = [s for s in getattr(chromatogram, "windows", [0]) if 0 < s < len(times)]
+    if starts:
+        starts = np.asarray(starts)
+        breaks = pd.DataFrame(
+            np.nan,
+            index=(times[starts - 1] + times[starts]) / 2,
+            columns=frame.columns,
+        )
+        frame = pd.concat([frame, breaks]).sort_index(kind="stable")
+    frame.index.name = "rt"
     return frame, warnings
 
 
