@@ -32,6 +32,23 @@ class UploadSummary:
     fit_failed: list[tuple[str, str]] = field(default_factory=list)
     # Names of the targets of the instrument added to the esper.yaml (add_aliases)
     added_aliases: list[str] = field(default_factory=list)
+    # Not imported: before ``after`` or not before ``before`` (or no date in the name)
+    skipped_dates: list[str] = field(default_factory=list)
+
+
+def in_dates(
+    name: str, after: datetime | None = None, before: datetime | None = None
+) -> bool:
+    """Whether the run ``name`` (``YYMMDD.HHMM...``) was started on or after ``after``
+    and before ``before`` (None: no limit). Without a date in its name: only without
+    limits."""
+    if after is None and before is None:
+        return True
+    started = parse_measurement_name(name)["acq_datetime"]
+    if started is None:
+        return False
+    started = datetime.fromisoformat(started)
+    return (after is None or started >= after) and (before is None or started < before)
 
 
 def _is_unchanged(con: sqlite3.Connection, name: str, file: Path) -> bool:
@@ -212,6 +229,8 @@ def upload(
     workers: int | None = None,
     instrument: str | None = None,
     add_aliases: bool = False,
+    after: datetime | None = None,
+    before: datetime | None = None,
 ) -> UploadSummary:
     """Import the runs of ``source``, and fit their peaks (``esper.fitting``) if ``fit``.
 
@@ -221,6 +240,9 @@ def upload(
     ``add_aliases``: the names of the instrument's targets that match none (GCwerks peakid
     names) are added to the esper.yaml as not targets (null, to map by hand), instead of
     stopping the upload.
+    ``after``, ``before``: only the runs started on or after ``after`` and before
+    ``before``, from the date in their name (``YYMMDD.HHMM...``; the targets are read
+    all the same).
     """
     data_dir = Path(data_dir)
     instrument = resolve_instrument(data_dir, instrument, source)
@@ -247,6 +269,9 @@ def upload(
         pool = stack.enter_context(fit_pool(workers)) if fit else None
         for run in runs:
             name = run.name
+            if not in_dates(name, after, before):
+                summary.skipped_dates.append(name)
+                continue
             if run.file is None:
                 logger.warning(f"{name}: not complete, skipped")
                 summary.skipped_incomplete.append(name)

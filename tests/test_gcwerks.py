@@ -290,3 +290,41 @@ def test_scan_runs_are_drawn_continuous(tmp_path, monkeypatch):
     assert store.drawn(0, "43").isna().sum() == 1
     assert store.drawn(1, "43").tolist() == [1.0, 2.0, 3.0, 7.0, 8.0]
     assert store.series(1, "43").tolist() == [1.0, 2.0, 3.0, 7.0, 8.0]
+
+
+def test_upload_between_dates(tmp_path, monkeypatch, capsys):
+    """--after (on or after) and --before (before): from the date in the names."""
+    from datetime import datetime
+
+    from esper.cli.main import main
+    from esper.upload import in_dates
+
+    names = ["260111.2300.air.7", "260112.0000.air.7", "260112.2114.air.7", "260113.0800.air.7"]
+    root = _gcdir(tmp_path, names)
+    monkeypatch.setattr(
+        gc_chromatogram, "read_chromatogram", lambda path: _chromatogram()
+    )
+    data_dir = tmp_path / "esper"
+    summary = upload(
+        root, data_dir, instrument="gcwerks",
+        after=datetime(2026, 1, 12), before=datetime(2026, 1, 13),
+    )
+    assert summary.imported == ["260112.0000.air.7", "260112.2114.air.7"]
+    assert summary.skipped_dates == ["260111.2300.air.7", "260113.0800.air.7"]
+    assert in_dates("no-date") and not in_dates("no-date", before=datetime(2026, 1, 1))
+
+    assert main(["upload", str(root), str(data_dir), "--after", "2026-01-12 21:14"]) == 0
+    out = capsys.readouterr().out
+    assert "imported: 1," in out and "outside the dates: 2" in out
+    with pytest.raises(SystemExit):
+        main(["upload", str(root), str(data_dir), "--before", "12.01.2026"])
+    # a year or a month: its start (--after includes it, --before leaves it out)
+    from esper.cli.main import _date_argument
+
+    assert _date_argument("2008") == datetime(2008, 1, 1)
+    assert _date_argument("2008-08") == datetime(2008, 8, 1)
+    assert _date_argument("2008-08-10 12:30") == datetime(2008, 8, 10, 12, 30)
+    assert main(["upload", str(root), str(data_dir), "--after", "2026", "--before", "2027"]) == 0
+    assert "outside the dates: 0" in capsys.readouterr().out
+    assert main(["upload", str(root), str(data_dir), "--before", "2026"]) == 0
+    assert "outside the dates: 4" in capsys.readouterr().out

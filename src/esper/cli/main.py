@@ -7,6 +7,7 @@ import argparse
 import logging
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,26 @@ def _gui(args: argparse.Namespace) -> int:
 
     data_dir = args.data_dir or os.environ.get("ESPER_DATA_DIR")
     return run(Path(data_dir) if data_dir else None)
+
+
+DATE_FORMATS = "YYYY, YYYY-MM, YYYY-MM-DD or 'YYYY-MM-DD HH:MM'"
+
+
+def _date_argument(text: str) -> datetime:
+    """A date of the command line: a year or a month (its first day), a day, or a day
+    with a time."""
+    text = text.strip()
+    for fmt in ("%Y", "%Y-%m"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            pass
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"not a date: {text!r} ({DATE_FORMATS})"
+        ) from None
 
 
 def _upload(args: argparse.Namespace) -> int:
@@ -33,6 +54,8 @@ def _upload(args: argparse.Namespace) -> int:
             workers=args.workers,
             instrument=args.instrument,
             add_aliases=args.add_aliases,
+            after=args.after,
+            before=args.before,
         )
     except (InstrumentError, TargetError) as e:
         print(e, file=sys.stderr)
@@ -44,6 +67,8 @@ def _upload(args: argparse.Namespace) -> int:
         f"failed: {len(summary.failed)}, "
         f"fit failed: {len(summary.fit_failed)}"
     )
+    if args.after is not None or args.before is not None:
+        print(f"outside the dates: {len(summary.skipped_dates)}")
     if summary.added_aliases:
         print(
             f"{len(summary.added_aliases)} names added to the aliases of"
@@ -353,6 +378,20 @@ def main(argv: list[str] | None = None) -> int:
         help="gcwerks: add the peakid names that match no peak.list name to the aliases "
         "of the esper.yaml, as not targets (null; map the targets among them to their "
         "peak.list name), instead of stopping",
+    )
+    p_upload.add_argument(
+        "--after",
+        type=_date_argument,
+        metavar="DATE",
+        help=f"only the runs started on or after DATE ({DATE_FORMATS}; a year or a"
+        " month: from its start, included), from the date in their name",
+    )
+    p_upload.add_argument(
+        "--before",
+        type=_date_argument,
+        metavar="DATE",
+        help=f"only the runs started before DATE ({DATE_FORMATS}; a year, month or day:"
+        " before its start, itself left out)",
     )
     p_upload.set_defaults(func=_upload)
 
