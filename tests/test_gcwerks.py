@@ -319,7 +319,7 @@ def test_upload_between_dates(tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit):
         main(["upload", str(root), str(data_dir), "--before", "12.01.2026"])
     # a year or a month: its start (--after includes it, --before leaves it out)
-    from esper.cli.main import _date_argument
+    from esper.cli.common import date_argument as _date_argument
 
     assert _date_argument("2008") == datetime(2008, 1, 1)
     assert _date_argument("2008-08") == datetime(2008, 8, 1)
