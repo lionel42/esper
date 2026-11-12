@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QLayout, QSplitter, QVBoxLayout, QWidget
 from esper.gui.data import EsperData
 from esper.gui.panels.base import BasePanel
 from esper.gui.selection import Selection
+from esper.gui.settings import settings_manager
 
 # Initial width of the left column and of the main stack
 COLUMN_RATIO = (1, 2)
@@ -77,14 +78,24 @@ class BaseView(QWidget):
         """Add a panel below the others, in the main stack or in the left column.
 
         ``stretch`` sets its initial height relative to the other panels of the column.
+        An optional panel is shown or hidden as the user last left it (the settings),
+        else as ``visible``.
         """
         splitter = self.left_splitter if left else self.splitter
         splitter.addWidget(panel)
         splitter.setStretchFactor(splitter.count() - 1, stretch)
-        panel.setVisible(visible)
         panel.open_chromatogram.connect(self.open_chromatogram)
         if optional:
-            self._panel_actions.append(panel.toggle_action())
+            settings = settings_manager()
+            shown = settings.panel_shown(self.title, panel.title)
+            panel.setVisible(visible if shown is None else shown)
+            action = panel.toggle_action()
+            action.toggled.connect(
+                lambda shown: settings.remember_panel(self.title, panel.title, shown)
+            )
+            self._panel_actions.append(action)
+        else:
+            panel.setVisible(visible)
         if left:
             panel.toggled.connect(lambda _: self._update_left_column())
             self._update_left_column()

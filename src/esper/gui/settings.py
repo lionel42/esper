@@ -110,6 +110,9 @@ class Settings:
     )
     # Data directories opened before, most recent first
     recent_data_dirs: list[str] = field(default_factory=list)
+    # Optional panels shown (true) or hidden (false) by the user: view -> panel ->
+    # shown (titles; the panels not in it have their default)
+    panels: dict[str, dict[str, bool]] = field(default_factory=dict)
 
     @property
     def processing(self) -> Processing:
@@ -133,6 +136,13 @@ class Settings:
                 for d in known["libraries"]
             ]
         settings = cls(**known)
+        if not isinstance(settings.panels, dict):
+            settings.panels = {}
+        settings.panels = {
+            view: {p: v for p, v in shown.items() if isinstance(v, bool)}
+            for view, shown in settings.panels.items()
+            if isinstance(shown, dict)
+        }
         if not settings.mass_drift_masses:
             settings.mass_drift_masses = Settings().mass_drift_masses
         settings.chromatogram_integration = OLD_INTEGRATIONS.get(
@@ -186,6 +196,19 @@ class SettingsManager(QObject):
         self.settings.recent_data_dirs = [
             p for p in self.settings.recent_data_dirs if p != data_dir
         ]
+        self.save()
+
+    def panel_shown(self, view: str, panel: str) -> bool | None:
+        """Whether the user showed a panel of a view (None: never toggled it)."""
+        return self.settings.panels.get(view, {}).get(panel)
+
+    def remember_panel(self, view: str, panel: str, shown: bool) -> None:
+        """Remember that the user showed or hid a panel of a view (saved, no
+        ``changed`` signal)."""
+        self.settings.panels = {
+            **self.settings.panels,
+            view: {**self.settings.panels.get(view, {}), panel: shown},
+        }
         self.save()
 
     def update(self, settings: Settings) -> None:
