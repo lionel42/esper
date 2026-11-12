@@ -66,7 +66,7 @@ def test_upload_alpinac_folders(tmp_path):
     assert declared_instrument(data_dir) == "tofwerk"
     con = db.connect(data_dir)
     row = con.execute(
-        "SELECT instrument, peak_source, sample_type, sample_number, rt_start_s, rt_stop_s,"
+        "SELECT instrument, peak_source, sample_type, port, rt_start_s, rt_stop_s,"
         " cleaning, n_peaks, n_compounds, chromatogram_file, source_dir FROM measurement"
     ).fetchone()
     assert row == (

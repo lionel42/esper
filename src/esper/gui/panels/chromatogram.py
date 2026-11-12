@@ -499,7 +499,8 @@ class ChromatogramPanel(BasePanel):
         sel = self.selection
         m = self.data.measurements.loc[sel.measurement_id]
         lines = [
-            ("sample", f"{m.sample_type} {m.sample_number}"),
+            ("sample", f"{m.sample_type}"),
+            ("port", "–" if pd.isna(m.port) else f"{m.port:.0f}"),
             (
                 "acquired",
                 "unknown"

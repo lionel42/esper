@@ -113,6 +113,8 @@ class Settings:
     # Optional panels shown (true) or hidden (false) by the user: view -> panel ->
     # shown (titles; the panels not in it have their default)
     panels: dict[str, dict[str, bool]] = field(default_factory=dict)
+    # Results panels comparing compounds (true), by title
+    compare: dict[str, bool] = field(default_factory=dict)
 
     @property
     def processing(self) -> Processing:
@@ -142,6 +144,11 @@ class Settings:
             view: {p: v for p, v in shown.items() if isinstance(v, bool)}
             for view, shown in settings.panels.items()
             if isinstance(shown, dict)
+        }
+        if not isinstance(settings.compare, dict):
+            settings.compare = {}
+        settings.compare = {
+            p: v for p, v in settings.compare.items() if isinstance(v, bool)
         }
         if not settings.mass_drift_masses:
             settings.mass_drift_masses = Settings().mass_drift_masses
@@ -210,6 +217,17 @@ class SettingsManager(QObject):
             view: {**self.settings.panels.get(view, {}), panel: shown},
         }
         self.save()
+
+    def compare_compounds(self, panel: str) -> bool:
+        """Whether a results panel compares compounds."""
+        return self.settings.compare.get(panel, False)
+
+    def remember_compare_compounds(self, panel: str, compare: bool) -> None:
+        """Remember whether a results panel compares compounds (saved, no ``changed``
+        signal)."""
+        if self.compare_compounds(panel) != compare:
+            self.settings.compare = {**self.settings.compare, panel: compare}
+            self.save()
 
     def update(self, settings: Settings) -> None:
         old = self.settings

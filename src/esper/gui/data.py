@@ -25,7 +25,7 @@ from esper.gui.chromatogram_store import (
 from esper.gui.settings import Intensity
 from esper.integration import has_ips, integration_bounds, peak_area
 from esper.libraries import Spectrum
-from esper.target_index import TargetIndex
+from esper.target_index import TargetIndex, unit_mass
 from esper.targets import interp_extrapolate
 
 TIC = None  # mass value standing for the total ion chromatogram
@@ -54,7 +54,15 @@ COMPOUNDS_WITH_BEST = f"""
         AND cc.is_best = 1
 """
 # Columns of the measurements added to the rows of the queries across measurements
-MEASUREMENT_COLUMNS = ["name", "acq_datetime", "sample_type", "sample_number"]
+MEASUREMENT_COLUMNS = ["name", "acq_datetime", "sample_type", "port"]
+# Ions of the compounds in the results (main, 2nd, ...: at most this many), with these
+# columns of their peak
+MAX_IONS = 20
+ION_COLUMNS = ["mass", "rt_s", "height", "prominence", "width_s", *FIT_COLUMNS]
+# Between the name of a compound and a column of it (``EsperData.results_by_run``)
+COMPOUND_SEP = "|"
+# Columns of the ions also given as a ratio to the main ion
+RATIO_COLUMNS = ["height", "prominence", "fit_height", "fit_area"]
 
 
 class _cached_method:
@@ -125,7 +133,7 @@ class EsperData:
             for name, kind in self._table_info(table)
             if kind.split(" ")[0].upper() in ("INTEGER", "REAL")
         ]
-        columns = [c for c in (*numeric, *extra) if c in df.columns]
+        columns = [c for c in dict.fromkeys((*numeric, *extra)) if c in df.columns]
         df[columns] = df[columns].apply(pd.to_numeric)
         return df
 
@@ -307,7 +315,9 @@ class EsperData:
                 """,
                 index_col="measurement_id",
             )
-            df = self._numeric(df, "measurement", "mass_cal_mode", "s_per_bin")
+            # a database older than schema 9 (read-only: not upgraded)
+            df = df.rename(columns={"sample_number": "port"})
+            df = self._numeric(df, "measurement", "mass_cal_mode", "s_per_bin", "port")
             df["acq_datetime"] = pd.to_datetime(df["acq_datetime"])
             self._measurements = df
         return self._measurements
@@ -643,11 +653,11 @@ class EsperData:
         )
         return df
 
+    @_cached_method(maxsize=8)
     def results(self, name: str, valid_only: bool) -> pd.DataFrame:
-        """All compounds with that main name (a target found under any of its aliases), with peak summaries.
-
-        See ``_peak_summaries``; the main ion is the target's (``target_main_ion``).
-        """
+        """All compounds with that main name (a target found under any of its aliases),
+        with the summary of their peaks and their ions (``_peak_summaries``). Cached
+        (shared by the panels): not to be changed."""
         where = "AND c.valid_candidate = 1" if valid_only else ""
         candidates = self.target_index.names_of(name)
         placeholders = ", ".join("?" * len(candidates))
@@ -663,9 +673,7 @@ class EsperData:
             tuple(candidates),
         )
         df = df.merge(
-            self._peak_summaries(
-                candidates, where, self.target_index.target_main_ion(name)
-            ),
+            self._peak_summaries(candidates, where, self.target_index.target_of(name)),
             on=["measurement_id", "compound_idx"],
         )
         return self._with_measurement(df)
@@ -735,33 +743,56 @@ class EsperData:
         )
         return cal, peaks
 
+    @_cached_method(maxsize=8)
+    def results_by_run(self, names: tuple[str, ...], valid_only: bool) -> pd.DataFrame:
+        """The ``results`` of several compounds side by side, one row per measurement
+        with one of them at least: the columns of each named ``<name>|<column>``
+        (``COMPOUND_SEP``), and those of the measurement. A compound found more than
+        once in a measurement: its valid one with the largest prominence sum. Cached:
+        not to be changed."""
+        keys = ["measurement_id", "measurement_pos", *MEASUREMENT_COLUMNS]
+        frames = []
+        for name in dict.fromkeys(names):
+            df = self.results(name, valid_only)
+            df = df.sort_values(
+                ["valid_candidate", "prominence_sum"], ascending=False
+            ).drop_duplicates("measurement_id")
+            df = df.set_index("measurement_id").drop(columns=keys[1:], errors="ignore")
+            frames.append(df.add_prefix(f"{name}{COMPOUND_SEP}"))
+        if not frames:
+            return self._with_measurement(pd.DataFrame({"measurement_id": []}))
+        joined = pd.concat(frames, axis=1, join="outer")
+        return self._with_measurement(joined.rename_axis("measurement_id").reset_index())
+
     def _peak_summaries(
-        self, candidates: list[str], where: str, main_ion: int | None
+        self, candidates: list[str], where: str, target: str | None
     ) -> pd.DataFrame:
         """Peaks of the compounds of ``results`` (the compounds without peaks left out).
 
         ``n_peaks``, ``prominence_sum``, ``fit_area_sum`` and ``n_fitted`` (the fitted
-        peaks), and the ``main_*`` columns of the main peak: the most prominent peak on
-        the ``main_ion`` (NaN if the compound has none), or the most prominent peak if
-        no main ion is given; ``main_fit_area_rel_u`` is its relative area uncertainty.
+        peaks), and the ``ion{k}_*`` columns (``ION_COLUMNS``) of its ions (``MAX_IONS``)
+        (k = 1: main ion): the most prominent peak on each. The ions of a ``target``
+        are its ions at the time of the run (``target_masses``, as unit masses; NaN
+        where the compound has no peak on one), else the unit masses of its peaks,
+        most prominent first. ``ion{k}_fit_area_rel_u``: the relative uncertainty of
+        the fitted area; ``ion{k}_ratio_*``: of ion k to the main ion (k > 1).
         """
-        main_columns = ["mass", "height", "prominence", *FIT_COLUMNS]
         keys = ["measurement_id", "compound_idx"]
-        fitted_db = "fit_height" in self._table_columns("peak")
-        selected = main_columns if fitted_db else main_columns[:3]
+        peak_columns = set(self._table_columns("peak"))
+        columns = [c for c in ION_COLUMNS if c in peak_columns]
         placeholders = ", ".join("?" * len(candidates))
         peaks = self._query(
             f"""
-            SELECT p.measurement_id, p.compound_idx, {", ".join(f"p.{c}" for c in selected)}
+            SELECT p.measurement_id, p.compound_idx, {", ".join(f"p.{c}" for c in columns)}
             FROM {COMPOUND_VIEW} c
             JOIN peak p
                 ON p.measurement_id = c.measurement_id AND p.compound_idx = c.compound_idx
             WHERE c.compound_name IN ({placeholders}) {where}
             """,
             tuple(candidates),
-        ).reindex(columns=keys + main_columns)
+        ).reindex(columns=keys + ION_COLUMNS)
         grouped = peaks.groupby(keys)
-        summary = pd.DataFrame(
+        df = pd.DataFrame(
             {
                 "n_peaks": grouped.size(),
                 "prominence_sum": grouped["prominence"].sum(),
@@ -769,17 +800,37 @@ class EsperData:
                 "n_fitted": grouped["fit_area"].count(),
             }
         )
-        candidates_main = (
-            peaks if main_ion is None else peaks[peaks["mass"] == main_ion]
+        # The most prominent peak of each compound on each unit mass
+        peaks["unit_mass"] = peaks["mass"].map(unit_mass)
+        best = peaks.sort_values("prominence", ascending=False).drop_duplicates(
+            keys + ["unit_mass"]
         )
-        main = (
-            candidates_main.sort_values("prominence", ascending=False)
-            .drop_duplicates(keys)
-            .set_index(keys)[main_columns]
-            .add_prefix("main_")
-        )
-        df = summary.join(main).reset_index()
-        df["main_fit_area_rel_u"] = df["main_fit_area_u"] / df["main_fit_area"]
+        if target is not None:
+            ranks = pd.DataFrame(
+                [
+                    (mid, rank, mass)
+                    for mid in best["measurement_id"].unique()
+                    for rank, mass in enumerate(
+                        self.target_masses(mid, target)[:MAX_IONS]
+                    )
+                ],
+                columns=["measurement_id", "ion_rank", "unit_mass"],
+            )
+            best = best.merge(ranks, on=["measurement_id", "unit_mass"])
+        else:
+            best["ion_rank"] = best.groupby(keys).cumcount()
+            best = best[best["ion_rank"] < MAX_IONS]
+        # as many as the compound has (in any run); the main ion always
+        n_ions = int(best["ion_rank"].max()) + 1 if len(best) else 1
+        for rank in range(n_ions):
+            ion = best[best["ion_rank"] == rank].set_index(keys)[ION_COLUMNS]
+            df = df.join(ion.add_prefix(f"ion{rank + 1}_"))
+        df = df.reset_index()
+        for k in range(1, n_ions + 1):
+            df[f"ion{k}_fit_area_rel_u"] = df[f"ion{k}_fit_area_u"] / df[f"ion{k}_fit_area"]
+            if k > 1:
+                for column in RATIO_COLUMNS:
+                    df[f"ion{k}_ratio_{column}"] = df[f"ion{k}_{column}"] / df[f"ion1_{column}"]
         return df
 
     def search(

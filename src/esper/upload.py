@@ -136,7 +136,7 @@ def store_measurement(
         cur = con.execute(
             """
             INSERT INTO measurement (
-                name, acq_datetime, sample_type, sample_number,
+                name, acq_datetime, sample_type, port,
                 rt_start_s, rt_stop_s, cleaning, n_peaks, n_compounds,
                 chromatogram_file, source_dir, source_mtime, source_size, imported_at,
                 acq_start, acq_start_source, instrument, peak_source

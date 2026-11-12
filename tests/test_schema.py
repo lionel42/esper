@@ -169,3 +169,41 @@ def test_upgrade_adds_valid_from_to_target_ion(tmp_path):
     )
     assert con.execute("SELECT count(*) FROM target_rt").fetchone() == (0,)
     con.close()
+
+
+def _version_8_with_a_run(tmp_path):
+    """A database of schema 8: the port of the runs still named sample_number."""
+    con = db.connect(tmp_path, create=True)
+    con.execute(
+        "INSERT INTO measurement (measurement_id, name, acq_datetime, port, source_dir,"
+        " source_mtime, source_size, imported_at)"
+        " VALUES (1, '240101.1200.air.3', '2024-01-01T12:00:00', 3, '', 0, 0, '')"
+    )
+    con.execute("DROP VIEW peak_full")
+    con.execute("ALTER TABLE measurement RENAME COLUMN port TO sample_number")
+    con.execute("PRAGMA user_version = 8")
+    con.commit()
+    con.close()
+
+
+def test_sample_number_renamed_port(tmp_path):
+    _version_8_with_a_run(tmp_path)
+    con = db.connect(tmp_path, create=True)
+    columns = db.table_columns(con, "measurement")
+    assert "port" in columns and "sample_number" not in columns
+    assert con.execute("SELECT port FROM measurement").fetchone() == (3,)
+    assert con.execute("SELECT port FROM peak_full").fetchall() == []
+    con.close()
+    assert _version(tmp_path) == db.SCHEMA_VERSION
+
+
+def test_port_of_a_database_not_upgraded(tmp_path):
+    from esper.gui.data import EsperData
+
+    _version_8_with_a_run(tmp_path)
+    data = EsperData(tmp_path)  # read-only: not upgraded
+    try:
+        assert data.measurements.loc[1, "port"] == 3
+    finally:
+        data.close()
+    assert _version(tmp_path) == 8

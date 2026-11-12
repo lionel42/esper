@@ -27,14 +27,15 @@ CHROMATOGRAMS_DIRNAME = "chromatograms"
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 # Versions that are upgraded by creating the missing tables and columns (3: the area
 # columns of an unreleased version, kept)
-COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5, 6, 7, 8)
+COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
 # Oldest SCHEMA_VERSION of esper that can still use a database of this version, stored in
 # the database so that older esper versions know whether they can use it. A schema change
 # that only adds tables or nullable columns keeps it, a breaking change sets it to SCHEMA_VERSION.
-MIN_READER_VERSION = 4  # 4: the peaks split by the fit have no extraction bounds
+MIN_READER_VERSION = 9  # 9: measurement.sample_number renamed port
+# (4: the peaks split by the fit have no extraction bounds)
 # (6 keeps it: older versions read the targets of the target lists as before; the
 # versioned ions of the GCwerks targets look to them like several ions per rank)
 # (8 keeps it: measurement.identification, nullable)
@@ -145,7 +146,7 @@ CREATE TABLE IF NOT EXISTS measurement (
     name                TEXT UNIQUE NOT NULL,   -- e.g. '241007.0423.air.1'
     acq_datetime        TEXT,                   -- ISO format, parsed from the name
     sample_type         TEXT,                   -- 'air', 'tank', ...
-    sample_number       INTEGER,
+    port                INTEGER,                -- inlet port of the instrument, from the name
     rt_start_s          REAL,
     rt_stop_s           REAL,
     cleaning            TEXT,
@@ -362,7 +363,7 @@ SELECT
     m.name AS measurement,
     m.acq_datetime,
     m.sample_type,
-    m.sample_number,
+    m.port,
     p.*,
     c.compound_name,
     c.retention_index,
@@ -529,6 +530,7 @@ def _upgrade(con: sqlite3.Connection, path: Path, version: int) -> None:
         )
     # Views are created again: CREATE VIEW IF NOT EXISTS keeps an older definition
     con.execute("DROP VIEW IF EXISTS peak_full")
+    _rename_columns(con)
     _rebuild_target_ion(con)
     con.executescript(SCHEMA + SCHEMA_INFO)
     add_columns(con)
@@ -538,6 +540,20 @@ def _upgrade(con: sqlite3.Connection, path: Path, version: int) -> None:
     )
     con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     con.commit()
+
+
+# Columns renamed: (table, old name, new name)
+RENAMED_COLUMNS = [
+    ("measurement", "sample_number", "port"),  # 9: the number of the name is the port
+]
+
+
+def _rename_columns(con: sqlite3.Connection) -> None:
+    """Rename the ``RENAMED_COLUMNS`` of an older database."""
+    for table, old, new in RENAMED_COLUMNS:
+        columns = table_columns(con, table)
+        if old in columns and new not in columns:
+            con.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
 
 
 def _rebuild_target_ion(con: sqlite3.Connection) -> None:

@@ -148,7 +148,7 @@ def test_name_without_number():
     assert parse_measurement_name("260112.1614.leak-test") == {
         "acq_datetime": "2026-01-12T16:14:00",
         "sample_type": "leak-test",
-        "sample_number": None,
+        "port": None,
     }
 
 
@@ -164,7 +164,7 @@ def test_upload(tmp_path, monkeypatch):
     assert summary.imported == ["260112.2114.air.7", "260112.2224.air.7"]
     con = db.connect(data_dir)
     row = con.execute(
-        "SELECT sample_type, sample_number, rt_start_s, rt_stop_s, n_peaks, acq_start,"
+        "SELECT sample_type, port, rt_start_s, rt_stop_s, n_peaks, acq_start,"
         " acq_start_source, instrument, peak_source, chromatogram_file FROM measurement"
         " WHERE name = ?",
         ("260112.2114.air.7",),

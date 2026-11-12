@@ -56,22 +56,23 @@ LEGACY_INSTRUMENT = TOFWERK
 # time windows of SIM)
 CONTINUOUS = "esper.continuous"
 
-# e.g. 241007.0423.air.1, or without number (GCwerks: 260112.1907.tune)
+# e.g. 241007.0423.air.1 (port 1), or without port (GCwerks: 260112.1907.tune)
 _NAME_RE = re.compile(
-    r"^(?P<date>\d{6})\.(?P<time>\d{4})\.(?P<type>[^.]+)(?:\.(?P<number>\d+))?$"
+    r"^(?P<date>\d{6})\.(?P<time>\d{4})\.(?P<type>[^.]+)(?:\.(?P<port>\d+))?$"
 )
 
 
 def parse_measurement_name(name: str) -> dict:
-    """Split 'YYMMDD.HHMM.<type>[.<number>]' into its parts (None if not matching)."""
+    """Split 'YYMMDD.HHMM.<type>[.<port>]' into its parts (None if not matching); the
+    port: the inlet port of the instrument the sample came from."""
     m = _NAME_RE.match(name)
     if m is None:
-        return {"acq_datetime": None, "sample_type": None, "sample_number": None}
+        return {"acq_datetime": None, "sample_type": None, "port": None}
     dt = datetime.strptime(m["date"] + m["time"], "%y%m%d%H%M")
     return {
         "acq_datetime": dt.isoformat(),
         "sample_type": m["type"],
-        "sample_number": None if m["number"] is None else int(m["number"]),
+        "port": None if m["port"] is None else int(m["port"]),
     }
 
 

@@ -77,14 +77,19 @@ def add_curve(
 
 
 def set_x_axis(plot: pg.PlotWidget, time: bool) -> None:
-    """Date axis for acquisition times, plain axis otherwise.
+    """Date x axis for acquisition times, plain axis otherwise."""
+    set_time_axis(plot, "bottom", time)
+
+
+def set_time_axis(plot: pg.PlotWidget, side: str, time: bool) -> None:
+    """Date axis (``side``: bottom, left) for times, plain axis otherwise.
 
     Replaced only when the kind changes: a new axis shows 0-1 until the view range changes.
     """
-    if isinstance(plot.getAxis("bottom"), pg.DateAxisItem) == time:
+    if isinstance(plot.getAxis(side), pg.DateAxisItem) == time:
         return
-    axis = pg.DateAxisItem(utcOffset=0) if time else pg.AxisItem("bottom")
-    plot.setAxisItems({"bottom": axis})
+    axis = pg.DateAxisItem(orientation=side, utcOffset=0) if time else pg.AxisItem(side)
+    plot.setAxisItems({side: axis})
 
 
 def time_values(df: pd.DataFrame, column: str = "acq_datetime") -> np.ndarray:
