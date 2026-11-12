@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from esper import __version__, db
 from esper.gui.data import EsperData
+from esper.gui.data_dir_dialog import DataDirDialog, copy_path, show_in_file_manager
 from esper.gui.library_loader import library_loader
 from esper.gui.open_dialog import OpenDataDialog, ask_data_dir, is_data_dir
 from esper.gui.selection import Selection
@@ -61,6 +62,16 @@ class MainWindow(QMainWindow):
         file_menu.addAction(open_action)
         self.recent_menu = file_menu.addMenu("Open &recent")
         self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
+        # The open data directory (enabled by open_data)
+        self.data_dir_menu = file_menu.addMenu("&Data directory")
+        self.data_dir_menu.setEnabled(False)
+        info_action = self.data_dir_menu.addAction("&Info…")
+        info_action.triggered.connect(self._show_data_dir_info)
+        copy_action = self.data_dir_menu.addAction("&Copy path")
+        copy_action.triggered.connect(self._copy_data_dir)
+        show_action = self.data_dir_menu.addAction("&Show in file manager")
+        show_action.triggered.connect(lambda: show_in_file_manager(self.data.data_dir))
+        file_menu.addSeparator()
         settings_action = QAction("&Settings…", self, shortcut=QKeySequence("Ctrl+,"))
         settings_action.triggered.connect(self._open_settings)
         file_menu.addAction(settings_action)
@@ -187,10 +198,18 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(view)
             self.views.append(view)
         self.setWindowTitle(f"esper - {data_dir}")
+        self.data_dir_menu.setEnabled(True)
 
         if not data.measurements.empty:
             self.selection.select_measurement(int(data.measurements.index[-1]))
         self.show_view(0)
+
+    def _show_data_dir_info(self) -> None:
+        DataDirDialog(self.data.data_dir, self.data.con, self).exec()
+
+    def _copy_data_dir(self) -> None:
+        path = copy_path(self.data.data_dir)
+        self.statusBar().showMessage(f"Copied {path}", 3000)
 
     def show_view(self, index: int) -> None:
         if self.stack.count() == 0:
