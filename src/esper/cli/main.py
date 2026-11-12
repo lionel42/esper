@@ -76,7 +76,7 @@ def build_parser(argv: list[str]) -> argparse.ArgumentParser:
             command.name,
             parents=[common],
             help=command.help,
-            description=command.description,
+            description=command.description or command.help,
         )
         if command.name == name:
             command.add_arguments(command_parser)

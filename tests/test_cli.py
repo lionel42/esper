@@ -48,7 +48,8 @@ def test_every_command_is_listed_with_its_options(capsys):
         assert command.name in listed
         with pytest.raises(SystemExit):
             cli.main([command.name, "--help"])
-        out = capsys.readouterr().out
+        out = " ".join(capsys.readouterr().out.split())
+        assert (command.description or command.help)[:60] in out  # what it does
         assert "-v, --verbose" in out
         assert "-d, --debug" in out
     with pytest.raises(SystemExit):
