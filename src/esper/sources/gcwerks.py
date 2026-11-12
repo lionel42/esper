@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import re
 import sqlite3
 from pathlib import Path
@@ -33,6 +32,7 @@ import numpy as np
 import pandas as pd
 
 from esper.sources import CONTINUOUS, GCWERKS, MeasurementImport, Run
+from esper.target_index import unit_mass  # noqa: F401 (of the GCwerks masses)
 
 if TYPE_CHECKING:
     from gcwerks.io.chromatogram import Chromatogram
@@ -53,14 +53,6 @@ _RUN_NAME_RE = re.compile(r"^\d{6}\.\d{4}\.(?P<type>[^.]+)(\.[^.]+)*$")
 SKIPPED_TYPES = frozenset({"tune"})
 _YEAR_RE = re.compile(r"^\d{2}$")
 PROVENANCE = "esper.gcwerks"
-
-
-def unit_mass(mass: float) -> int:
-    """Unit mass of a mass of the quadrupole (measured, or an ion of peakid): the masses
-    of ``[M - 0.25, M + 0.75)`` are ``M``. The scans step by 0.1 around the unit mass
-    (69.2 ... 69.6 for m/z 69), and from 2007-12 to 2009-07 the SIM masses were set 0.5
-    higher (e.g. 67.5 for 67): a half mass is the mass below it."""
-    return int(math.floor(mass + 0.25))
 
 
 def gcwerks_root(path: Path) -> Path | None:

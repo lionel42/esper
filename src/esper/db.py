@@ -27,16 +27,17 @@ CHROMATOGRAMS_DIRNAME = "chromatograms"
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 # Versions that are upgraded by creating the missing tables and columns (3: the area
 # columns of an unreleased version, kept)
-COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5, 6, 7)
+COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5, 6, 7, 8)
 # Oldest SCHEMA_VERSION of esper that can still use a database of this version, stored in
 # the database so that older esper versions know whether they can use it. A schema change
 # that only adds tables or nullable columns keeps it, a breaking change sets it to SCHEMA_VERSION.
 MIN_READER_VERSION = 4  # 4: the peaks split by the fit have no extraction bounds
 # (6 keeps it: older versions read the targets of the target lists as before; the
 # versioned ions of the GCwerks targets look to them like several ions per rank)
+# (8 keeps it: measurement.identification, nullable)
 # MIN_READER_VERSION of the schema versions written before schema_info existed
 LEGACY_MIN_READER_VERSIONS = {3: 2}  # 3 only adds nullable columns
 
@@ -58,6 +59,10 @@ ADDED_COLUMNS = {
         # defaults are those of the measurements imported before these columns.
         ("instrument", "TEXT NOT NULL DEFAULT 'tofwerk'"),
         ("peak_source", "TEXT DEFAULT 'alpinac'"),
+        # Method of esper.processing that identified the compounds ('target': target
+        # search, 'suspect': suspect screening); NULL: by the peak source ('alpinac'), or
+        # no peaks. peak_source 'esper': the peaks found by esper.processing
+        ("identification", "TEXT"),
     ],
     "mass_cal": [
         ("source_file", "TEXT"),  # the calibration file read

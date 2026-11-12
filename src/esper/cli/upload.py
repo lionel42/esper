@@ -21,6 +21,7 @@ HELP = (
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
+    from esper.processing import METHODS
     from esper.sources import INSTRUMENTS
 
     parser.add_argument(
@@ -35,6 +36,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--no-fit", action="store_true", help="do not fit the peaks (see esper fit)"
+    )
+    parser.add_argument(
+        "--method",
+        choices=METHODS,
+        help="how the compounds of the runs imported without peaks (gcwerks) are "
+        "identified, declared in the esper.yaml of the data directory (then optional); "
+        "without a method their peaks are not found (see esper peaks)",
     )
     add_workers(parser)
     parser.add_argument(
@@ -67,6 +75,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
+    from esper.processing.config import ProcessingConfigError
     from esper.sources import InstrumentError
     from esper.targets import TargetError
     from esper.upload import upload
@@ -82,8 +91,9 @@ def run(args: argparse.Namespace) -> int:
             add_aliases=args.add_aliases,
             after=args.after,
             before=args.before,
+            method=args.method,
         )
-    except (InstrumentError, TargetError) as e:
+    except (InstrumentError, TargetError, ProcessingConfigError) as e:
         print(e, file=sys.stderr)
         return 2
     print(
@@ -93,6 +103,11 @@ def run(args: argparse.Namespace) -> int:
         f"failed: {len(summary.failed)}, "
         f"fit failed: {len(summary.fit_failed)}"
     )
+    if summary.processed or summary.processing_failed:
+        print(
+            f"peaks found and identified: {len(summary.processed)},"
+            f" failed: {len(summary.processing_failed)}"
+        )
     if args.after is not None or args.before is not None:
         print(f"outside the dates: {len(summary.skipped_dates)}")
     if summary.added_aliases:
@@ -103,9 +118,12 @@ def run(args: argparse.Namespace) -> int:
         )
     for name, error in summary.failed:
         print(f"  FAILED {name}: {error}", file=sys.stderr)
+    for name, error in summary.processing_failed:
+        print(f"  PEAKS FAILED {name}: {error}", file=sys.stderr)
     for name, error in summary.fit_failed:
         print(f"  FIT FAILED {name}: {error}", file=sys.stderr)
-    return 1 if summary.failed or summary.fit_failed else 0
+    failed = summary.failed or summary.processing_failed or summary.fit_failed
+    return 1 if failed else 0
 
 
 COMMAND = Command(

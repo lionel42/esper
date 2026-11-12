@@ -6,7 +6,6 @@ are queried when a measurement is shown and kept in small caches.
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime
 from functools import cached_property, lru_cache, partial
 from pathlib import Path
@@ -23,9 +22,9 @@ from esper.gui.chromatogram_store import (
     masses_of_unit,
     unit_masses,
 )
-from esper.gui.target_index import TargetIndex
 from esper.integration import has_ips, integration_bounds, peak_area
 from esper.libraries import Spectrum
+from esper.target_index import TargetIndex
 from esper.targets import interp_extrapolate
 
 TIC = None  # mass value standing for the total ion chromatogram
@@ -526,32 +525,10 @@ class EsperData:
 
     # --- targets ----------------------------------------------------------------------
 
-    def _query_or_empty(self, sql: str, columns: list[str], **kwargs) -> pd.DataFrame:
-        """Query a table that may not exist (database without imported targets)."""
-        try:
-            return self._query(sql, **kwargs)
-        except (pd.errors.DatabaseError, sqlite3.Error):
-            return pd.DataFrame(columns=columns)
-
     @cached_property
     def target_index(self) -> TargetIndex:
         """The targets and their aliases (empty if none were imported)."""
-        targets = self._query_or_empty("SELECT * FROM target", ["name", "rt_ref_s", "ri"])
-        if self._has_table("target"):  # numbers also when all NULL (GCwerks: no RI)
-            targets = self._numeric(targets, "target")
-        return TargetIndex(
-            targets.set_index("name"),
-            self._query_or_empty(
-                "SELECT * FROM target_ion ORDER BY name, rank",
-                ["name", "rank", "ion", "exact_mass", "mass", "spectrum_ref"],
-            ),
-            self._query_or_empty(
-                "SELECT alias, name FROM target_alias", ["alias", "name"]
-            ),
-            self._query_or_empty(
-                "SELECT * FROM target_rt", ["name", "valid_from", "rt_s", "window_s"]
-            ),
-        )
+        return TargetIndex.from_db(self.con)
 
     @property
     def targets(self) -> pd.DataFrame:

@@ -1,11 +1,41 @@
-"""The target compounds and the names they go by, for the GUI."""
+"""The target compounds and the names they go by (the GUI, the target search of
+:mod:`esper.processing`)."""
 
 from __future__ import annotations
 
 import bisect
+import math
+import sqlite3
 
 import numpy as np
 import pandas as pd
+
+
+def unit_mass(mass: float) -> int:
+    """Unit mass of a mass of the quadrupole (measured, or an ion of peakid): the masses
+    of ``[M - 0.25, M + 0.75)`` are ``M``. The scans step by 0.1 around the unit mass
+    (69.2 ... 69.6 for m/z 69), and from 2007-12 to 2009-07 the SIM masses were set 0.5
+    higher (e.g. 67.5 for 67): a half mass is the mass below it."""
+    return int(math.floor(mass + 0.25))
+
+
+def _read_table(
+    con: sqlite3.Connection, table: str, sql: str, columns: list[str]
+) -> pd.DataFrame:
+    """The rows of a query on ``table``, its INTEGER and REAL columns as numbers (also
+    when all NULL, e.g. no retention index); empty with ``columns`` if there is no table."""
+    info = con.execute(f"PRAGMA table_info({table})").fetchall()
+    if not info:
+        return pd.DataFrame(columns=columns)
+    df = pd.read_sql(sql, con)
+    numeric = [
+        row[1]
+        for row in info
+        if row[1] in df.columns and row[2].split(" ")[0].upper() in ("INTEGER", "REAL")
+    ]
+    df[numeric] = df[numeric].apply(pd.to_numeric)
+    return df
+
 
 # valid_from of the rows that always apply (target lists: valid_from NULL)
 _ALWAYS = pd.Timestamp.min
@@ -67,6 +97,35 @@ class TargetIndex:
         # Target name or alias -> target name
         self._by_name = dict(zip(aliases["alias"], aliases["name"]))
         self._by_name.update({name: name for name in table.index})
+
+    @classmethod
+    def from_db(cls, con: sqlite3.Connection) -> TargetIndex:
+        """The targets of an esper database, with their ions, aliases and retention
+        times; empty if none were imported (also without the target tables)."""
+        target = _read_table(
+            con, "target", "SELECT * FROM target", ["name", "rt_ref_s", "ri"]
+        )
+        return cls(
+            target.set_index("name"),
+            _read_table(
+                con,
+                "target_ion",
+                "SELECT * FROM target_ion ORDER BY name, rank",
+                ["name", "rank", "ion", "exact_mass", "mass", "spectrum_ref"],
+            ),
+            _read_table(
+                con,
+                "target_alias",
+                "SELECT alias, name FROM target_alias",
+                ["alias", "name"],
+            ),
+            _read_table(
+                con,
+                "target_rt",
+                "SELECT * FROM target_rt",
+                ["name", "valid_from", "rt_s", "window_s"],
+            ),
+        )
 
     @staticmethod
     def _at(versions: tuple[list, list] | None, time):

@@ -25,10 +25,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 def run(args: argparse.Namespace) -> int:
     from esper import db
     from esper.fitting import fit_measurement, fit_pool, summary, to_fit
+    from esper.processing.config import read_processing_config
 
     if not db.db_path(args.data_dir).is_file():
         print(f"No esper database at {db.db_path(args.data_dir)}", file=sys.stderr)
         return 1
+    try:  # the fit of the data directory (processing: fit: of its esper.yaml)
+        config = read_processing_config(args.data_dir).fit
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 2
     # create: brings an older schema up to date (fit columns)
     con = db.connect(args.data_dir, create=True)
     failed = 0
@@ -39,7 +45,7 @@ def run(args: argparse.Namespace) -> int:
             for mid, name in todo:
                 try:
                     table = fit_measurement(
-                        con, mid, args.data_dir, workers=1, pool=pool
+                        con, mid, args.data_dir, workers=1, pool=pool, config=config
                     )
                 except Exception as e:
                     logger.exception(f"{name}: fit failed")

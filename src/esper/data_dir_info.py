@@ -132,19 +132,34 @@ def _measurements(con: sqlite3.Connection, config: dict) -> Section:
             )
         ),
     )
-    # Peaks and mass calibrations: only for the instruments with peaks (not GCwerks)
-    has_peaks = (
-        "peak_source" not in columns
-        or con.execute(
-            "SELECT 1 FROM measurement WHERE peak_source IS NOT NULL LIMIT 1"
-        ).fetchone()
-    )
-    if has_peaks:
-        with_peaks, n_peaks = con.execute(
-            "SELECT count(*), sum(n_peaks) FROM measurement WHERE n_peaks > 0"
-        ).fetchone()
+    processing = config.get("processing")
+    method = processing.get("method") if isinstance(processing, dict) else None
+    section.add("Processing method", method or "none (esper peaks --method)")
+    if "peak_source" in columns:
+        sources = con.execute(
+            "SELECT peak_source, count(*) FROM measurement GROUP BY peak_source"
+            " ORDER BY count(*) DESC"
+        ).fetchall()
+        section.add(
+            "Peaks from",
+            ", ".join(
+                f"{source or 'no peaks yet'} {count}" for source, count in sources
+            ),
+        )
+    if "identification" in columns:
+        methods = con.execute(
+            "SELECT identification, count(*) FROM measurement"
+            " WHERE identification IS NOT NULL GROUP BY identification"
+        ).fetchall()
+        if methods:
+            section.add("Identified by", _counts(methods))
+    with_peaks, n_peaks = con.execute(
+        "SELECT count(*), sum(n_peaks) FROM measurement WHERE n_peaks > 0"
+    ).fetchone()
+    if with_peaks:
         section.add("With peaks", f"{with_peaks} ({n_peaks or 0} peaks)")
-        n_cal = con.execute("SELECT count(*) FROM mass_cal").fetchone()[0]
+    n_cal = con.execute("SELECT count(*) FROM mass_cal").fetchone()[0]
+    if n_cal:
         section.add("With mass calibration", n_cal)
     if {"fit_version", "peak_source"} <= columns:
         sources = ", ".join("?" for _ in FITTED_PEAK_SOURCES)

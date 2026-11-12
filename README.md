@@ -57,12 +57,12 @@ chromatograms = data.chromatograms(measurement="2023-01-01_12-00-00")
 Each instrument is a module of `src/esper/sources/` that finds the runs of a source path and
 reads them (`find_runs`, `read`, `refresh`; see `esper/sources/__init__.py`); `esper.upload`
 stores what they read. The measurement table keeps the `instrument` of each run and where its
-peaks come from (`peak_source`); only the peaks of alpinac are fitted.
+peaks come from (`peak_source`: `alpinac`, or `esper` when esper found them).
 
 | instrument | runs | peaks |
 |---|---|---|
 | `tofwerk` | `<run>.alpinac` folders: the alpinac extraction, the chromatograms of `esper chromatograms`, the mass calibration and the h5 file next to the folder | `alpinac`, fitted |
-| `gcwerks` | `<yy>/chromatograms/channel0/<run>` of a GCwerks directory | none (chromatograms only) |
+| `gcwerks` | `<yy>/chromatograms/channel0/<run>` of a GCwerks directory | none: found by esper (see [Peaks](#peaks)) |
 
 [gcwerks](https://github.com/lionel42/gcwerks) (`src/esper/sources/gcwerks.py`):
 
@@ -73,10 +73,32 @@ esper upload /path/to/gcwerks/jungfraujoch-medusa /path/to/esper/data --instrume
 ```
 
 
+### Peaks
+
+The runs imported without peaks (gcwerks) get them from `esper peaks`, or from `esper upload`
+once the data directory has a method (`src/esper/processing/`):
+
+1. the peaks of each mass are found in each window where it was measured, after removing the
+   baseline there, and grouped into compounds of co-eluting peaks
+   ([peaxart](https://github.com/lionel42/peaxart));
+2. the compounds are identified by the method of the data directory: `target` (target search:
+   the expected rt and ions of the targets, e.g. from GCwerks peakid) or `suspect` (suspect
+   screening: the spectrum of each compound in the libraries, as alpinac). The compounds that
+   match nothing are kept, without a name;
+3. the peaks are fitted (below).
+
+```
+esper peaks /path/to/esper/data --method target
+```
+
+The method and the parameters of each step belong to the data directory: see `processing:`
+in [Data directory](#data-directory).
+
 ### Peak fit
 
-After the import, the peaks of each mass are fitted in the unit mass chromatograms with
-[peaxart](https://github.com/lionel42/peaxart) (`src/esper/fitting.py`)
+After the import (or `esper peaks`), the peaks of each mass are fitted in the chromatograms
+with [peaxart](https://github.com/lionel42/peaxart) (`src/esper/fitting.py`), with the fit
+parameters of the data directory.
 
 
 ### Mass calibration
@@ -100,7 +122,7 @@ peaxart (`peaxart.unit_mass_sums`, `peaxart.remove_baseline`), with the mass cal
 
 ```
 <data_dir>/
-    esper.yaml      instrument (written by the first upload), optional database path
+    esper.yaml      instrument (written by the first upload), processing, optional database path
     esper.sqlite
     chromatograms/<measurement>.parquet
     chromatograms/<measurement>.raw.parquet        (esper chromatograms only)
@@ -115,6 +137,26 @@ upload):
 ```yaml
 instrument: tofwerk
 database: /home/me/Data/esper/esper.sqlite
+```
+
+How the peaks are found, identified and fitted is set by `processing:` (all optional but the
+method; the others are [peaxart](https://github.com/lionel42/peaxart)'s parameters, see
+`src/esper/processing/config.py`):
+
+```yaml
+processing:
+  method: target            # target | suspect (written by --method)
+  baseline:                 # peaxart.BaselineConfig, before the detection (false: none)
+    lam: 1.0e+7
+  detection:                # peaxart.LegacyDeconvolutionConfig: thresholds in counts
+    height: 20
+    prominence: 60
+  fit:                      # peaxart.ChromatogramFitConfig
+    peak_shape: emg
+  target:
+    window_s: 20            # window of the targets without one in their source
+  suspect:
+    min_score: 0.8          # valid from this spectral score on
 ```
 
 ## Development

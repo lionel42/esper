@@ -23,6 +23,7 @@ from esper.cli import (
     gui,
     info,
     install,
+    peaks,
     plot_calibration,
     targets,
     upload,
@@ -32,6 +33,7 @@ from esper.cli.common import Command
 COMMANDS: list[Command] = [
     gui.COMMAND,
     upload.COMMAND,
+    peaks.COMMAND,
     fit.COMMAND,
     info.COMMAND,
     targets.COMMAND,

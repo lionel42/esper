@@ -75,10 +75,13 @@ def test_no_peaks_lines_for_gcwerks(tmp_path):
     con = db.connect(tmp_path, create=True)
     with con:
         _measurement(con, "250101.0013.air.1", "air", None, peak_source=None)
+        con.execute("UPDATE measurement SET n_peaks = 0")  # chromatograms only
     info = {s.title: dict(s.rows) for s in describe(tmp_path, con)}
     con.close()
     assert "With peaks" not in info["Measurements"]
     assert "Fitted" not in info["Measurements"]
+    assert info["Measurements"]["Peaks from"] == "no peaks yet 1"
+    assert info["Measurements"]["Processing method"].startswith("none")
 
 
 def test_dialog_copies(data_dir):

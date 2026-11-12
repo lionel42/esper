@@ -103,17 +103,25 @@ def _fit_task(args) -> pd.DataFrame:
     return px.fit_chromatogram(t, y, rt, start, stop, config)
 
 
-def fit_chromatograms(t: np.ndarray, tasks: list[tuple], config: px.ChromatogramFitConfig | None = None,
-                      workers: int | None = None, pool: Executor | None = None) -> list[pd.DataFrame]:
+def fit_chromatograms(
+    t: np.ndarray | None,
+    tasks: list[tuple],
+    config: px.ChromatogramFitConfig | None = None,
+    workers: int | None = None,
+    pool: Executor | None = None,
+) -> list[pd.DataFrame]:
     """:func:`peaxart.fit_chromatogram` of several chromatograms of a run, in parallel.
 
-    :param tasks: (y, rt, start, stop) of each chromatogram (its values and its detected peaks).
+    :param t: rt of the chromatograms, s; None: each task has its own (a part of a chromatogram, e.g.
+        a time window of a quadrupole mass).
+    :param tasks: (y, rt, start, stop) of each chromatogram (its values and its detected peaks); with
+        ``t`` None, (t, y, rt, start, stop).
     :param pool: processes (:func:`fit_pool`), else ``workers`` processes are started (None: the number
         of CPUs, 1: in this process).
     :return: the fitted peaks of each task, in order.
     """
     config = config or FIT_CONFIG
-    args = [(t, *task, config) for task in tasks]
+    args = [(*task, config) if t is None else (t, *task, config) for task in tasks]
     if pool is not None and len(args) > 1:
         return list(pool.map(_fit_task, args))
     if len(args) > 1 and (workers or os.cpu_count() or 1) > 1:

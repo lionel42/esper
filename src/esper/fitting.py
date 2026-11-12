@@ -1,8 +1,11 @@
-"""Chromatographic fit of the peaks found by the extraction (alpinac), with peaxart.
+"""Chromatographic fit of the peaks found by the extraction (alpinac, or the peak
+detection of esper: :mod:`esper.processing`), with peaxart.
 
-The peaks of each mass are fitted in its unit mass chromatogram with the peak
-function and the background of ``FIT_CONFIG`` (``peaxart.fit_chromatogram``, standard
-Gaussian convention: the areas are true areas), by groups of overlapping peaks. The fit
+The peaks of each mass are fitted in its chromatogram, in each window where it was
+measured (:mod:`esper.windows`), with the peak function and the background of the fit
+configuration (``FIT_CONFIG``, or the one of the data directory: ``processing: fit:`` of
+its esper.yaml, :mod:`esper.processing`; ``peaxart.fit_chromatogram``, standard Gaussian
+convention: the areas are true areas), by groups of overlapping peaks. The fit
 starts at the rts of the extraction and adds peaks where the data show a coelution
 (peaxart's extra-peak search). The fit itself is the one of the processing
 (``esper.deconvolution``); here it becomes the peak table of the database.
@@ -46,6 +49,7 @@ import peaxart as px
 
 from esper import db
 from esper.deconvolution import FIT_CONFIG, fit_chromatograms, fit_pool  # noqa: F401 (fit_pool: used from here)
+from esper.windows import is_continuous, measured_windows
 
 logger = logging.getLogger(__name__)
 
@@ -127,13 +131,18 @@ def peak_groups(peaks: pd.DataFrame) -> list[tuple[pd.DataFrame, float, float]]:
     return [(peaks.iloc[members], lo, hi) for members, lo, hi in groups]
 
 
-def _as_fitted(fitted: pd.DataFrame, peaks: pd.DataFrame) -> pd.DataFrame:
+def _as_fitted(
+    fitted: pd.DataFrame,
+    peaks: pd.DataFrame,
+    config: px.ChromatogramFitConfig | None = None,
+) -> pd.DataFrame:
     """``peaxart.fit_chromatogram`` peaks of one mass as FITTED_COLUMNS (``peaks``: as fitted).
 
     A fitted peak whose group has only peaks the detection missed (``peak`` -1) goes to the
     nearest extraction peak of the mass: it becomes a new peak (``fitted_peak_table``).
     """
-    fitted = fitted.assign(shape=fitted.attrs.get("peak_shape", FIT_CONFIG.peak_shape))
+    shape = (config or FIT_CONFIG).peak_shape
+    fitted = fitted.assign(shape=fitted.attrs.get("peak_shape", shape))
     out = fitted.rename(
         columns={v: k for k, v in FIT_COLUMNS.items()} | {"peak": "peak_idx"}
     )
@@ -147,15 +156,19 @@ def _as_fitted(fitted: pd.DataFrame, peaks: pd.DataFrame) -> pd.DataFrame:
 
 
 def fit_mass(
-    t: np.ndarray, y: np.ndarray, peaks: pd.DataFrame
+    t: np.ndarray,
+    y: np.ndarray,
+    peaks: pd.DataFrame,
+    config: px.ChromatogramFitConfig | None = None,
 ) -> tuple[pd.DataFrame, int]:
-    """Fitted peaks of one mass, and the number of warnings of the fits.
+    """Fitted peaks of one mass (one window), and the number of warnings of the fits.
 
     Columns: ``peak_idx`` (the nearest extraction peak), the ``fit_*`` columns and
     ``signal_height`` / ``signal_prominence`` (``peaxart.fit_chromatogram``).
     """
-    (fitted,) = fit_chromatograms(t, [_task(y, peaks)], FIT_CONFIG, workers=1)
-    return _as_fitted(fitted, peaks), fitted.attrs.get("n_warnings", 0)
+    config = config or FIT_CONFIG
+    (fitted,) = fit_chromatograms(t, [_task(y, peaks)], config, workers=1)
+    return _as_fitted(fitted, peaks, config), fitted.attrs.get("n_warnings", 0)
 
 
 def _task(y: np.ndarray, peaks: pd.DataFrame) -> tuple:
@@ -167,34 +180,70 @@ def _task(y: np.ndarray, peaks: pd.DataFrame) -> tuple:
     )
 
 
+def mass_windows(
+    frame: pd.DataFrame, peaks: pd.DataFrame, min_points: int = 1
+) -> list[tuple[np.ndarray, np.ndarray, pd.DataFrame]]:
+    """(t, y, peaks) of each window of each mass with peaks (``esper.windows``): the
+    chromatogram of a mass where it was measured (at least ``min_points`` values), and
+    its peaks there. A peak outside every window (e.g. on a missing value) goes to the
+    nearest one; a chromatogram without NaN is one window."""
+    t = frame.index.to_numpy(dtype=float)
+    continuous = is_continuous(frame)
+    out = []
+    for mass, group in peaks.groupby("mass"):
+        column = f"{mass:g}"
+        if column not in frame:
+            continue
+        y = frame[column].to_numpy(dtype=float)
+        windows = measured_windows(y, continuous, min_points)
+        if not windows:
+            continue
+        starts = np.array([t[w[0]] for w in windows])
+        stops = np.array([t[w[-1]] for w in windows])
+        rt = group["rt_s"].to_numpy(dtype=float)[:, None]
+        # 0 inside a window, else the distance to it
+        distance = np.maximum(starts[None, :] - rt, 0) + np.maximum(
+            rt - stops[None, :], 0
+        )
+        nearest = distance.argmin(axis=1)
+        for k, index in enumerate(windows):
+            inside = group[nearest == k]
+            if len(inside):
+                out.append((t[index], y[index], inside))
+    return out
+
+
 def fit_peaks(
     frame: pd.DataFrame,
     peaks: pd.DataFrame,
     workers: int | None = None,
     pool: Executor | None = None,
+    config: px.ChromatogramFitConfig | None = None,
 ) -> pd.DataFrame:
-    """Fitted peaks of all masses (see ``fit_mass``); ``peaks`` indexed by peak_idx.
+    """Fitted peaks of all masses (see ``fit_mass``), in each window where the mass was
+    measured (``mass_windows``); ``peaks`` indexed by peak_idx.
 
-    ``frame``: the unit mass chromatograms (index: rt [s], columns: masses).
+    ``frame``: the chromatograms (index: rt [s], columns: masses).
     ``pool``: the processes of the fits (``fit_pool``), else ``workers`` processes
     are started (None: the number of CPUs, 1: in this process).
+    ``config``: of the fit (None: ``FIT_CONFIG``).
     The number of warnings of the fits is in ``attrs["n_warnings"]``.
     """
-    t = frame.index.to_numpy(dtype=float)
-    groups = [
-        (frame[f"{mass:g}"].to_numpy(dtype=float), group)
-        for mass, group in peaks.groupby("mass")
-        if f"{mass:g}" in frame
-    ]
+    config = config or FIT_CONFIG
+    groups = mass_windows(frame, peaks, config.min_points)
     # Largest first, for the load balance
-    groups.sort(key=lambda g: -len(g[1]))
+    groups.sort(key=lambda g: -len(g[2]))
     results = fit_chromatograms(
-        t, [_task(y, group) for y, group in groups], FIT_CONFIG, workers, pool
+        None,
+        [(t, *_task(y, group)) for t, y, group in groups],
+        config,
+        workers,
+        pool,
     )
     n_warnings = sum(r.attrs.get("n_warnings", 0) for r in results)
     parts = [
-        _as_fitted(fitted, group)
-        for (_, group), fitted in zip(groups, results, strict=True)
+        _as_fitted(fitted, group, config)
+        for (_, _, group), fitted in zip(groups, results, strict=True)
         if not fitted.empty
     ]
     out = (
@@ -297,19 +346,22 @@ EXTRACTION_ONLY_COLUMNS = [
 ]
 
 
-def _half_max_interval(peak: pd.Series) -> tuple[float, float]:
-    """Half maximum crossings of an extraction peak, at least HWHM_RANGE_S[0] from the apex."""
+def _half_max_interval(
+    peak: pd.Series, min_hwhm: float = HWHM_RANGE_S[0]
+) -> tuple[float, float]:
+    """Half maximum crossings of an extraction peak, at least ``min_hwhm`` from the apex
+    (the smallest half width of the fit)."""
     start, stop = peak["start_s"], peak["stop_s"]
-    start = peak["rt_s"] - HWHM_RANGE_S[0] if not np.isfinite(start) else start
-    stop = peak["rt_s"] + HWHM_RANGE_S[0] if not np.isfinite(stop) else stop
-    return min(start, peak["rt_s"] - HWHM_RANGE_S[0]), max(
-        stop, peak["rt_s"] + HWHM_RANGE_S[0]
-    )
+    start = peak["rt_s"] - min_hwhm if not np.isfinite(start) else start
+    stop = peak["rt_s"] + min_hwhm if not np.isfinite(stop) else stop
+    return min(start, peak["rt_s"] - min_hwhm), max(stop, peak["rt_s"] + min_hwhm)
 
 
-def _taking_row(peak: pd.Series, group: pd.DataFrame) -> pd.Series:
+def _taking_row(
+    peak: pd.Series, group: pd.DataFrame, min_hwhm: float = HWHM_RANGE_S[0]
+) -> pd.Series:
     """The fitted peaks given to an extraction peak that are its pieces (see ``fitted_peak_table``)."""
-    start, stop = _half_max_interval(peak)
+    start, stop = _half_max_interval(peak, min_hwhm)
     inside = group["fit_rt_s"].between(start, stop)
     if inside.any():
         return inside
@@ -324,15 +376,21 @@ def _taking_row(peak: pd.Series, group: pd.DataFrame) -> pd.Series:
     return inside
 
 
-def fitted_peak_table(peaks: pd.DataFrame, fitted: pd.DataFrame) -> pd.DataFrame:
+def fitted_peak_table(
+    peaks: pd.DataFrame,
+    fitted: pd.DataFrame,
+    config: px.ChromatogramFitConfig | None = None,
+) -> pd.DataFrame:
     """The peak table of a measurement with the fit (see the module docstring).
 
-    ``peaks``: the extraction peaks, indexed by peak_idx; ``fitted``: ``fit_peaks``.
+    ``peaks``: the extraction peaks, indexed by peak_idx; ``fitted``: ``fit_peaks``
+    (with ``config``, None: ``FIT_CONFIG``).
     The fitted peaks given to an extraction peak (the nearest) split it when
     several are within its half maximum crossings; the others are new peaks.
     Returns all the peaks, indexed by peak_idx (new peaks after the last one), with
     ``is_max_of_cmp`` of all the compounds again.
     """
+    min_hwhm = (config or FIT_CONFIG).hwhm_range[0]
     table = peaks.copy()
     table["source"] = SOURCE_EXTRACTION
     for column in FIT_COLUMNS:
@@ -342,7 +400,7 @@ def fitted_peak_table(peaks: pd.DataFrame, fitted: pd.DataFrame) -> pd.DataFrame
     matched, to_match = [], []  # (peak_idx, fitted row)
     for peak_idx, group in fitted.groupby("peak_idx"):
         peak = peaks.loc[peak_idx]
-        inside = _taking_row(peak, group)
+        inside = _taking_row(peak, group, min_hwhm)
         distance = (group["fit_rt_s"] - peak["rt_s"]).abs()
         if inside.sum() == 1:
             matched.append((peak_idx, group[inside].iloc[0]))
@@ -473,8 +531,9 @@ def is_fitted(con: sqlite3.Connection, measurement_id: int) -> bool:
     return fit_version(con, measurement_id) is not None
 
 
-# Peak sources (measurement.peak_source) whose peaks are fitted: the extraction of alpinac
-FITTED_PEAK_SOURCES = ("alpinac",)
+# Peak sources (measurement.peak_source) whose peaks are fitted: the extraction of
+# alpinac, the peak detection of esper (esper.processing.PEAK_SOURCE)
+FITTED_PEAK_SOURCES = ("alpinac", "esper")
 
 
 def to_fit(con: sqlite3.Connection, force: bool = False) -> list[tuple[int, str]]:
@@ -541,7 +600,9 @@ def extraction(
         (peaks["source"] == SOURCE_EXTRACTION) & ~peaks.index.isin(kept.index)
     ]
     columns = [c for c in columns if c != "peak_idx"]
-    peaks = pd.concat([extracted[columns], kept[columns]]).sort_index()
+    # Not with an empty frame: its columns (object) would make all of them object
+    parts = [extracted[columns]] + ([kept[columns]] if len(kept) else [])
+    peaks = pd.concat(parts).sort_index()
     compounds.update(kept_compounds)
     return peaks, compounds
 
@@ -661,12 +722,13 @@ def fit_measurement(
     data_dir: Path,
     workers: int | None = None,
     pool: Executor | None = None,
+    config: px.ChromatogramFitConfig | None = None,
 ) -> pd.DataFrame | None:
     """Fit the peaks of a measurement (again: from the extraction) and store the result.
 
     Single transaction. Returns the new peak table (``attrs["n_warnings"]``: warnings of
-    the fits), None if the measurement has no chromatograms. ``workers``, ``pool``: see
-    ``fit_peaks``.
+    the fits), None if the measurement has no chromatograms. ``workers``, ``pool``,
+    ``config``: see ``fit_peaks``.
     """
     mid = int(measurement_id)
     (chromatogram_file,) = con.execute(
@@ -676,8 +738,8 @@ def fit_measurement(
         return None
     peaks, compounds = extraction(con, mid)
     frame = pd.read_parquet(Path(data_dir) / chromatogram_file)
-    fitted = fit_peaks(frame, peaks, workers, pool)
-    table = fitted_peak_table(peaks, fitted)
+    fitted = fit_peaks(frame, peaks, workers, pool, config)
+    table = fitted_peak_table(peaks, fitted, config)
     table.attrs["n_warnings"] = fitted.attrs.get("n_warnings", 0)
 
     earlier = [

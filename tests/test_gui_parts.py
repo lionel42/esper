@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from esper.gui.chromatogram_store import ChromatogramStore
-from esper.gui.target_index import TargetIndex
+from esper.target_index import TargetIndex
 
 
 def _index() -> TargetIndex:

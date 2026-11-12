@@ -1,4 +1,10 @@
-"""Import the runs of an instrument (:mod:`esper.sources`) into an esper data directory."""
+"""Import the runs of an instrument (:mod:`esper.sources`) into an esper data directory.
+
+The runs imported with peaks (alpinac) are fitted (:mod:`esper.fitting`); those imported
+without (GCwerks) are processed with the method of the data directory if it has one
+(:mod:`esper.processing`: peaks found, identified and fitted), also when unchanged but
+not processed yet.
+"""
 
 from __future__ import annotations
 
@@ -30,6 +36,10 @@ class UploadSummary:
     failed: list[tuple[str, str]]
     # Imported, but the fit failed
     fit_failed: list[tuple[str, str]] = field(default_factory=list)
+    # Processed (esper.processing): imported, or unchanged but not processed before
+    processed: list[str] = field(default_factory=list)
+    # Imported, but finding or identifying their peaks failed (esper.processing)
+    processing_failed: list[tuple[str, str]] = field(default_factory=list)
     # Names of the targets of the instrument added to the esper.yaml (add_aliases)
     added_aliases: list[str] = field(default_factory=list)
     # Not imported: before ``after`` or not before ``before`` (or no date in the name)
@@ -231,8 +241,12 @@ def upload(
     add_aliases: bool = False,
     after: datetime | None = None,
     before: datetime | None = None,
+    method: str | None = None,
 ) -> UploadSummary:
-    """Import the runs of ``source``, and fit their peaks (``esper.fitting``) if ``fit``.
+    """Import the runs of ``source``, and fit their peaks (``esper.fitting``) if ``fit``;
+    the runs without peaks are processed (``esper.processing``) with the method of the
+    data directory (``method``: declared if not yet, see
+    :func:`esper.processing.resolve_method`), and fitted if ``fit``.
 
     ``instrument``: of the runs; the one declared in the esper.yaml of the data directory,
     declared there if not yet (:func:`esper.sources.resolve_instrument`).
@@ -244,16 +258,35 @@ def upload(
     ``before``, from the date in their name (``YYMMDD.HHMM...``; the targets are read
     all the same).
     """
+    from esper.processing.config import (
+        ProcessingConfigError,
+        read_processing_config,
+        resolve_method,
+    )
+
     data_dir = Path(data_dir)
     instrument = resolve_instrument(data_dir, instrument, source)
     instrument_source = get_source(instrument)
-    # The fit (and its dependencies) only for the instruments with peaks
-    if fit and instrument_source.PEAK_SOURCE is not None:
-        from esper.fitting import FITTED_PEAK_SOURCES, fit_pool
+    if method is not None and instrument_source.PEAK_SOURCE is not None:
+        raise ProcessingConfigError(
+            f"--method: the runs of {instrument} are imported with their peaks"
+            f" ({instrument_source.PEAK_SOURCE}), esper does not find them"
+        )
+    resolve_method(data_dir, method)
+    config = read_processing_config(data_dir)
+    # The fit of the imported peaks (and its dependencies) only for the instruments with
+    # peaks; the others are processed if the data directory has a method
+    fit_imported = fit and instrument_source.PEAK_SOURCE is not None
+    process = instrument_source.PEAK_SOURCE is None and config.method is not None
+    if fit_imported:
+        from esper.fitting import FITTED_PEAK_SOURCES
 
-        fit = instrument_source.PEAK_SOURCE in FITTED_PEAK_SOURCES
-    else:
-        fit = False
+        fit_imported = instrument_source.PEAK_SOURCE in FITTED_PEAK_SOURCES
+    if instrument_source.PEAK_SOURCE is None and config.method is None:
+        logger.info(
+            f"{data_dir}: no processing method, the peaks of the runs are not found"
+            " (esper peaks --method ...)"
+        )
     summary = UploadSummary([], [], [], [])
     con = db.connect(data_dir, create=True)
     stack = contextlib.ExitStack()
@@ -263,10 +296,20 @@ def upload(
             summary.added_aliases = _store_targets(
                 con, instrument_source, source, data_dir, add_aliases
             )
+        processor, pending = None, set()
+        if process:
+            from esper.processing.pipeline import Processor, to_process
+
+            processor = Processor(con, data_dir, config)
+            pending = {name for _, name in to_process(con, config.method)}
         runs = instrument_source.find_runs(source)
         logger.info(f"{len(runs)} runs of {instrument} in {source}")
         # The processes of the fits, for all the measurements (started at the first fit)
-        pool = stack.enter_context(fit_pool(workers)) if fit else None
+        pool = None
+        if fit_imported or (process and fit):
+            from esper.fitting import fit_pool
+
+            pool = stack.enter_context(fit_pool(workers))
         for run in runs:
             name = run.name
             if not in_dates(name, after, before):
@@ -284,6 +327,8 @@ def upload(
                 except Exception as e:
                     logger.exception(f"{name}: refresh failed")
                     summary.failed.append((name, f"refresh: {e!r}"))
+                if name in pending:  # imported before, not processed yet
+                    _process(con, processor, name, fit, pool, summary)
                 continue
             try:
                 imported = instrument_source.read(run)
@@ -300,8 +345,10 @@ def upload(
             n_compounds = 0 if imported.compounds is None else len(imported.compounds)
             logger.info(f"{name}: {n_peaks} peaks, {n_compounds} compounds")
             summary.imported.append(name)
-            if fit:
-                _fit(con, name, mid, data_dir, pool, summary)
+            if imported.peaks is None and processor is not None:
+                _process(con, processor, name, fit, pool, summary, mid)
+            elif imported.peaks is not None and fit_imported:
+                _fit(con, name, mid, data_dir, pool, summary, config.fit)
     finally:
         stack.close()
         con.close()
@@ -315,12 +362,13 @@ def _fit(
     data_dir: Path,
     pool,
     summary: UploadSummary,
+    config=None,
 ) -> None:
     from esper.fitting import fit_measurement
     from esper.fitting import summary as fit_summary
 
     try:
-        table = fit_measurement(con, mid, data_dir, workers=1, pool=pool)
+        table = fit_measurement(con, mid, data_dir, workers=1, pool=pool, config=config)
     except Exception as e:
         logger.exception(f"{name}: fit failed")
         summary.fit_failed.append((name, repr(e)))
@@ -329,3 +377,35 @@ def _fit(
         logger.warning(f"{name}: no chromatograms, not fitted")
         return
     logger.info(f"{name}: {fit_summary(table)}")
+
+
+def _process(
+    con: sqlite3.Connection,
+    processor,
+    name: str,
+    fit: bool,
+    pool,
+    summary: UploadSummary,
+    mid: int | None = None,
+) -> None:
+    """Find and identify the peaks of a measurement (``esper.processing``), then fit them
+    if ``fit`` (each failure counted apart)."""
+    from esper.processing.pipeline import summary as process_summary
+
+    if mid is None:
+        (mid,) = con.execute(
+            "SELECT measurement_id FROM measurement WHERE name = ?", (name,)
+        ).fetchone()
+    try:
+        table = processor.process(mid, fit=False)
+    except Exception as e:
+        logger.exception(f"{name}: processing failed")
+        summary.processing_failed.append((name, repr(e)))
+        return
+    if table is None:
+        logger.warning(f"{name}: no chromatograms, not processed")
+        return
+    summary.processed.append(name)
+    logger.info(f"{name}: {process_summary(table, con, mid)}")
+    if fit:
+        _fit(con, name, mid, processor.data_dir, pool, summary, processor.config.fit)

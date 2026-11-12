@@ -8,8 +8,8 @@ import pandas as pd
 import pytest
 
 from esper import db
-from esper.gui.target_index import TargetIndex
 from esper.sources.gcwerks_targets import read_targets, unit_mass
+from esper.target_index import TargetIndex
 from esper.targets import TargetError, store_targets
 
 PEAK_LIST = """\
