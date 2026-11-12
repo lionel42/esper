@@ -22,9 +22,31 @@ def valid_color(text: str) -> str | None:
     return bool_color("✓" in text)
 
 
+# Columns of the spectral library matches, of the retention indices, and of both
+LIBRARY_COLUMNS = {"best_score", "best_spectrum"}
+RI_COLUMNS = {"retention_index"}
+LIBRARY_AND_RI_COLUMNS = {"best_score_combined"}
+
+
+def shown_columns(columns: list[Column], processing) -> list[Column]:
+    """The columns that apply to a data directory (``processing``: its
+    ``ProcessingConfig``): those of the library matches only if it uses them (not with
+    target search), of the retention indices only if it uses them."""
+    library = processing.uses_library
+    ri = processing.uses_retention_index
+    hidden = (
+        (set() if library else LIBRARY_COLUMNS)
+        | (set() if ri else RI_COLUMNS)
+        | (set() if library and ri else LIBRARY_AND_RI_COLUMNS)
+    )
+    return [c for c in columns if c.key not in hidden]
+
+
 class CompoundTablePanel(TablePanel):
     """Compounds of the selected measurement. Choosing a row selects the compound.
 
+    Its columns are those of the data directory (``shown_columns``): no library match nor
+    retention index with target search, unless its retention indices are used.
     The identification of a compound can be edited from the context menu of its row.
     Several compounds can be selected (ctrl/shift click) to see them combined,
     and merged from the context menu into the one with the lowest index.
@@ -74,6 +96,8 @@ class CompoundTablePanel(TablePanel):
     ]
 
     def __init__(self, data: EsperData, selection: Selection, parent=None) -> None:
+        # the columns of what identifies the compounds in this data directory
+        self.columns = shown_columns(self.columns, data.processing)
         super().__init__(data, selection, parent)
         self.valid_only = QCheckBox("valid only")
         self.valid_only.toggled.connect(lambda _: self.refilter())

@@ -35,6 +35,17 @@ def app():
 
 
 @pytest.fixture
+def manager(tmp_path, monkeypatch):
+    """The settings of the application in a temporary file (not the user's)."""
+    from esper.gui import settings as settings_module
+    from esper.gui.settings import SettingsManager
+
+    manager = SettingsManager(tmp_path / "settings.json")
+    monkeypatch.setattr(settings_module, "_manager", manager)
+    return manager
+
+
+@pytest.fixture
 def data(tmp_path):
     con = db.connect(tmp_path, create=True)
     con.execute(
@@ -185,7 +196,7 @@ def test_optional_selector(app):
     assert changes == [Axis(COMPOUND, COMPOUND.variables[0]), None]
 
 
-def test_other_y_axes(app, data):
+def test_other_y_axes(app, data, manager):
     from esper.gui.panels.results_plot import ResultsPlotPanel
     from esper.gui.selection import Selection
 
@@ -221,14 +232,10 @@ def test_results_by_run(data):
     assert axis.values(df)[0] == 50.0
 
 
-def test_compare_compounds(app, data, tmp_path, monkeypatch):
-    from esper.gui import settings as settings_module
+def test_compare_compounds(app, data, manager):
     from esper.gui.panels.results_plot import ResultsPlotPanel
     from esper.gui.selection import Selection
-    from esper.gui.settings import SettingsManager
 
-    manager = SettingsManager(tmp_path / "settings.json")
-    monkeypatch.setattr(settings_module, "_manager", manager)
     selection = Selection(data)
     selection.select_candidate("CFC-12")
     panel = ResultsPlotPanel(data, selection)

@@ -497,6 +497,7 @@ class ChromatogramPanel(BasePanel):
 
     def _update_info(self) -> None:
         sel = self.selection
+        processing = self.data.processing
         m = self.data.measurements.loc[sel.measurement_id]
         lines = [
             ("sample", f"{m.sample_type}"),
@@ -524,6 +525,8 @@ class ChromatogramPanel(BasePanel):
                 ("score", f"{c.best_score:.3f} (combined {c.best_score_combined:.3f})"),
                 ("valid", "yes" if c.valid_candidate else "no"),
             ]
+            if not processing.uses_library:  # e.g. target search: no library match
+                lines = [line for line in lines if line[0] not in ("spectrum", "score")]
         if sel.target is not None:
             target = self.data.targets.loc[sel.target]
             expected_rt = self.data.expected_rt(sel.measurement_id, sel.target)
@@ -546,6 +549,8 @@ class ChromatogramPanel(BasePanel):
                 ),
                 ("expected ions", ", ".join(map(str, masses)) or "unknown"),
             ]
+        if not processing.uses_retention_index:
+            lines = [line for line in lines if line[0] not in ("RI", "expected RI")]
         self.info_label.setText(
             "<br>".join(f"{k}&nbsp;&nbsp;{html.escape(str(v))}" for k, v in lines)
         )

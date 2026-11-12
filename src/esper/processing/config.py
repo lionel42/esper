@@ -4,6 +4,8 @@
 
     processing:
       method: target          # how the compounds are identified: target | suspect
+      retention_index: false  # whether retention indices are used (default: not
+                              # with target search)
       baseline:               # peaxart.BaselineConfig, before the detection (false: none)
         lam: 1.0e+6
       detection:              # peaxart.LegacyDeconvolutionConfig (DETECTION_CONFIG)
@@ -18,6 +20,11 @@
 Every key is optional: what is not given has its default (peaxart's, and esper's
 ``FIT_CONFIG`` for the fit). The method is the data directory's, not the instrument's:
 ``esper peaks --method`` declares it.
+
+What is used to identify the compounds follows (``uses_library``, ``uses_retention_index``,
+e.g. the columns shown in the GUI): the spectral libraries with suspect screening (and
+without method: imported with alpinac's identification, suspect screening); the retention
+indices if ``retention_index`` says so, else not with target search.
 """
 
 from __future__ import annotations
@@ -32,7 +39,7 @@ import peaxart as px
 
 from esper import db
 from esper.deconvolution import FIT_CONFIG
-from esper.processing import METHODS
+from esper.processing import METHODS, TARGET
 
 logger = logging.getLogger(__name__)
 
@@ -66,12 +73,29 @@ class SuspectScreeningConfig:
 @dataclass(frozen=True)
 class ProcessingConfig:
     method: str | None = None
+    # Whether retention indices are used (None: with suspect screening, not with target
+    # search; see ``uses_retention_index``)
+    retention_index: bool | None = None
     # None: the baseline is not removed before the detection
     baseline: px.BaselineConfig | None = field(default_factory=px.BaselineConfig)
     detection: px.LegacyDeconvolutionConfig = DETECTION_CONFIG
     fit: px.ChromatogramFitConfig = FIT_CONFIG
     target: TargetSearchConfig = field(default_factory=TargetSearchConfig)
     suspect: SuspectScreeningConfig = field(default_factory=SuspectScreeningConfig)
+
+    @property
+    def uses_library(self) -> bool:
+        """Whether the compounds are matched to the spectral libraries: not with target
+        search (no method: alpinac's identification, a suspect screening)."""
+        return self.method != TARGET
+
+    @property
+    def uses_retention_index(self) -> bool:
+        """Whether retention indices are used: as ``retention_index`` says, else not with
+        target search."""
+        if self.retention_index is not None:
+            return self.retention_index
+        return self.method != TARGET
 
 
 # Sections of ``processing:`` and their defaults
@@ -135,18 +159,23 @@ def processing_config(section: dict | None, where: str = PROCESSING_KEY):
     section = section or {}
     if not isinstance(section, dict):
         raise ProcessingConfigError(f"{where}: expected keys, not {section!r}")
-    unknown = sorted(set(section) - {"method", *SECTIONS})
+    unknown = sorted(set(section) - {"method", "retention_index", *SECTIONS})
     if unknown:
         raise ProcessingConfigError(
             f"{where}: unknown {', '.join(unknown)}"
-            f" (known: method, {', '.join(SECTIONS)})"
+            f" (known: method, retention_index, {', '.join(SECTIONS)})"
         )
     method = section.get("method")
     if method is not None and method not in METHODS:
         raise ProcessingConfigError(
             f"{where}.method: {method!r}, expected one of {', '.join(METHODS)}"
         )
-    values = {"method": method}
+    retention_index = section.get("retention_index")
+    if retention_index is not None and not isinstance(retention_index, bool):
+        raise ProcessingConfigError(
+            f"{where}.retention_index: {retention_index!r}, expected true or false"
+        )
+    values = {"method": method, "retention_index": retention_index}
     for name in SECTIONS:
         given = section.get(name)
         default = getattr(_DEFAULTS, name)

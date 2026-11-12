@@ -146,6 +146,7 @@ method; the others are [peaxart](https://github.com/lionel42/peaxart)'s paramete
 ```yaml
 processing:
   method: target            # target | suspect (written by --method)
+  retention_index: false    # retention indices used (default: not with target search)
   baseline:                 # peaxart.BaselineConfig, before the detection (false: none)
     lam: 1.0e+7
   detection:                # peaxart.LegacyDeconvolutionConfig: thresholds in counts,
@@ -159,6 +160,9 @@ processing:
   suspect:
     min_score: 0.8          # valid from this spectral score on
 ```
+
+The GUI shows only what the data directory uses: with target search, no library match
+(score, spectrum) and, unless `retention_index: true`, no retention index.
 
 ## Development
 

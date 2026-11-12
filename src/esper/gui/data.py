@@ -6,6 +6,7 @@ are queried when a measurement is shown and kept in small caches.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from functools import cached_property, lru_cache, partial
 from pathlib import Path
@@ -27,6 +28,8 @@ from esper.integration import has_ips, integration_bounds, peak_area
 from esper.libraries import Spectrum
 from esper.target_index import TargetIndex, unit_mass
 from esper.targets import interp_extrapolate
+
+logger = logging.getLogger(__name__)
 
 TIC = None  # mass value standing for the total ion chromatogram
 
@@ -538,6 +541,19 @@ class EsperData:
         return int(matching["prominence_sum"].idxmax())
 
     # --- targets ----------------------------------------------------------------------
+
+    @cached_property
+    def processing(self):
+        """How the peaks of the data directory are processed (``processing:`` of its
+        esper.yaml, ``esper.processing.config.ProcessingConfig``); the defaults if it is
+        not valid (logged)."""
+        from esper.processing.config import ProcessingConfig, read_processing_config
+
+        try:
+            return read_processing_config(self.data_dir)
+        except ValueError as e:
+            logger.warning(f"{e}: the default processing assumed")
+            return ProcessingConfig()
 
     @cached_property
     def target_index(self) -> TargetIndex:
