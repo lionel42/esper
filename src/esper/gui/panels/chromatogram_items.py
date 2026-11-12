@@ -11,6 +11,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt
 
 from esper.fitting import peak_baseline, peak_shape
+from esper.gui.settings import Integration
 from esper.integration import integration_bounds, peak_area
 
 # Fitted peaks: drawn where above this fraction of their height, filled with this
@@ -159,3 +160,26 @@ def fit_fill_items(t: np.ndarray, peaks, color, selected=()) -> list:
             item.setZValue(-2)
             items.append(item)
     return items
+
+
+def integration_items(
+    t: np.ndarray, y: np.ndarray, peaks, integration: Integration, selected=()
+) -> tuple[list, np.ndarray, np.ndarray]:
+    """Items of the peaks of one mass in an integration view.
+
+    Returns the items, the areas and the baselines below the apex (NaN where none).
+    """
+    if integration == Integration.EXTRACTION:
+        return ips_items(t, y, peaks)
+    if integration == Integration.FIT:
+        items = fit_integration_items(t, peaks)
+    elif integration == Integration.FIT_SHAPES:
+        items = fit_fill_items(t, peaks, "k", selected=selected)
+    else:
+        nan = np.full(len(peaks), np.nan)
+        return [], nan, nan.copy()
+    return (
+        items,
+        peaks["fit_area"].to_numpy(dtype=float),
+        peaks["fit_baseline"].to_numpy(dtype=float),
+    )

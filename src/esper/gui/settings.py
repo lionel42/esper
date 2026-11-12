@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
+from enum import StrEnum
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -23,27 +24,79 @@ SETTINGS_FILE = (
 # Number of data directories remembered
 MAX_RECENT_DATA_DIRS = 10
 
-# Intensity of the measured peaks used for the spectra
-INTENSITIES = ["prominence", "height", "area", "fit_area"]
 
-# Peak integration drawn in the chromatograms: of the fit (esper.fitting): bases,
-# baseline and area of the fitted peaks, or the fitted peak shapes filled; of the
-# extraction (alpinac): from its ips; or none
-INTEGRATIONS = ["fit_integration", "fit_shapes", "extraction", "none"]
+class Intensity(StrEnum):
+    """Intensity of the measured peaks used for the spectra (a column of the peaks)."""
+
+    PROMINENCE = "prominence"
+    HEIGHT = "height"
+    AREA = "area"  # integrated in the chromatograms, from the ips
+    FIT_AREA = "fit_area"
+
+
+class Integration(StrEnum):
+    """Peak integration drawn in the chromatograms."""
+
+    FIT = "fit_integration"  # of the fit (esper.fitting): bases, baseline and area
+    FIT_SHAPES = "fit_shapes"  # the fitted peak shapes, filled
+    EXTRACTION = "extraction"  # of the extraction (alpinac), from its ips
+    NONE = "none"
+
+    @property
+    def of_fit(self) -> bool:
+        """Drawn from the fit (none for a measurement not fitted)."""
+        return self in (Integration.FIT, Integration.FIT_SHAPES)
+
+    @property
+    def text(self) -> str:
+        """In the menus."""
+        return _INTEGRATION_TEXTS[self]
+
+
+_INTEGRATION_TEXTS = {
+    Integration.FIT: "fit: integration",
+    Integration.FIT_SHAPES: "fit: peak shapes",
+    Integration.EXTRACTION: "extraction (ips)",
+    Integration.NONE: "none",
+}
 # Names of an earlier version
 OLD_INTEGRATIONS = {
-    "integration": "fit_integration",
-    "fit": "fit_shapes",
-    "ips": "extraction",
+    "integration": Integration.FIT,
+    "fit": Integration.FIT_SHAPES,
+    "ips": Integration.EXTRACTION,
 }
+
+
+class CurveStyle(StrEnum):
+    """How the chromatograms are drawn: lines, or each value as a point or a cross."""
+
+    LINES = "lines"
+    POINTS = "points"
+    CROSSES = "crosses"
+
+    @property
+    def text(self) -> str:
+        """In the menus."""
+        return self.value
+
+
+def _choice(value, default: StrEnum) -> StrEnum:
+    """``value`` (of a settings file) as a member of the enum of ``default``, ``default``
+    if it is none of them."""
+    try:
+        return type(default)(value)
+    except ValueError:
+        return default
 
 
 @dataclass
 class Settings:
     # Spectrum of the measured compounds
-    spectrum_intensity: str = "prominence"
+    spectrum_intensity: Intensity = Intensity.PROMINENCE
     # Peak integration drawn in the chromatograms
-    chromatogram_integration: str = INTEGRATIONS[0]
+    chromatogram_integration: Integration = Integration.FIT
+    # How the chromatograms are drawn
+    chromatogram_style: CurveStyle = CurveStyle.LINES
     # Spectral libraries, by priority
     libraries: list[Library] = field(default_factory=default_libraries)
     # Matching (alpinac's processing)
@@ -82,13 +135,13 @@ class Settings:
         settings = cls(**known)
         if not settings.mass_drift_masses:
             settings.mass_drift_masses = Settings().mass_drift_masses
-        if settings.spectrum_intensity not in INTENSITIES:
-            settings.spectrum_intensity = INTENSITIES[0]
         settings.chromatogram_integration = OLD_INTEGRATIONS.get(
             settings.chromatogram_integration, settings.chromatogram_integration
         )
-        if settings.chromatogram_integration not in INTEGRATIONS:
-            settings.chromatogram_integration = INTEGRATIONS[0]
+        # the choices (fields with an enum default) as members, their default if invalid
+        for f in fields(cls):
+            if isinstance(f.default, StrEnum):
+                setattr(settings, f.name, _choice(getattr(settings, f.name), f.default))
         return settings
 
 

@@ -22,6 +22,7 @@ from esper.gui.chromatogram_store import (
     masses_of_unit,
     unit_masses,
 )
+from esper.gui.settings import Intensity
 from esper.integration import has_ips, integration_bounds, peak_area
 from esper.libraries import Spectrum
 from esper.target_index import TargetIndex
@@ -429,7 +430,10 @@ class EsperData:
 
     @_cached_method(maxsize=64)
     def compound_spectrum(
-        self, measurement_id: int, compound_idx: int | tuple[int, ...], intensity: str
+        self,
+        measurement_id: int,
+        compound_idx: int | tuple[int, ...],
+        intensity: Intensity,
     ) -> Spectrum:
         """Spectrum of a compound (or of several together): unit masses and 'prominence', 'height', 'area' or 'fit_area' of its peaks.
 
@@ -439,10 +443,10 @@ class EsperData:
         out); 'fit_area' is the area of the fitted peaks (unfitted peaks left out).
         """
         peaks = self.compound_peaks(measurement_id, compound_idx)
-        if intensity == "fit_area":
+        if intensity == Intensity.FIT_AREA:
             fitted = peaks[peaks["fit_area"].notna()]
             return Spectrum.from_pairs(fitted["mass"], fitted["fit_area"])
-        if intensity != "area":
+        if intensity != Intensity.AREA:
             return Spectrum.from_pairs(peaks["mass"], peaks[intensity])
         peaks = peaks[has_ips(peaks)]
         masses, areas = [], []

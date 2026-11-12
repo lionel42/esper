@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import pyqtgraph as pg
 
+from esper.gui.settings import CurveStyle
 from esper.gui.style import CROSS
 
 # Fixed width so that stacked plots stay aligned
@@ -29,11 +30,45 @@ def make_highlight() -> pg.ScatterPlotItem:
     return item
 
 
+# Size of the symbols of a curve drawn as points or crosses [px]
+POINT_SIZE = 3
+CROSS_SIZE = 6
+
+
+def curve_style(color, width: float = 1, style=CurveStyle.LINES) -> dict:
+    """The options of a PlotDataItem drawn as ``style``: lines, or each value as a point
+    or a cross."""
+    if style == CurveStyle.POINTS:
+        return dict(
+            pen=None,
+            symbol="o",
+            symbolSize=POINT_SIZE,
+            symbolPen=None,
+            symbolBrush=pg.mkBrush(color),
+        )
+    if style == CurveStyle.CROSSES:
+        return dict(
+            pen=None,
+            symbol="x",
+            symbolSize=CROSS_SIZE,
+            symbolPen=pg.mkPen(color, width=width),
+            symbolBrush=None,
+        )
+    return dict(pen=pg.mkPen(color, width=width), symbol=None)
+
+
 def add_curve(
-    plot: pg.PlotWidget, t, y, color, z: float = -1, width: float = 1
+    plot: pg.PlotWidget,
+    t,
+    y,
+    color,
+    z: float = -1,
+    width: float = 1,
+    style: CurveStyle = CurveStyle.LINES,
 ) -> pg.PlotDataItem:
+    """A curve (``style``: see ``curve_style``)."""
     # connect "finite": NaN breaks the curve (gaps of chromatogram_store.with_breaks)
-    item = plot.plot(t, y, pen=pg.mkPen(color, width=width), connect="finite")
+    item = plot.plot(t, y, connect="finite", **curve_style(color, width, style))
     # Only once in the plot: pyqtgraph fails if set before
     item.setClipToView(True)
     item.setDownsampling(auto=True, method="peak")

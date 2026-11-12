@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from esper.gui.settings import INTENSITIES, Settings, settings_manager
+from esper.gui.settings import Intensity, Settings, settings_manager
 from esper.libraries import Library
 
 LIBRARY_ROLE = Qt.ItemDataRole.UserRole
@@ -80,7 +80,7 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         form = QFormLayout(tab)
         self.intensity = QComboBox()
-        self.intensity.addItems(INTENSITIES)
+        self.intensity.addItems([i.value for i in Intensity])
         self.intensity.setCurrentText(settings.spectrum_intensity)
         form.addRow("Intensity of the measured peaks:", self.intensity)
         note = QLabel(
@@ -231,7 +231,7 @@ class SettingsDialog(QDialog):
         ignored = _parse_masses(self.ignored.text())
         return replace(
             settings_manager().settings,
-            spectrum_intensity=self.intensity.currentText(),
+            spectrum_intensity=Intensity(self.intensity.currentText()),
             libraries=self._libraries(),
             cutoff_mass=self.cutoff.value(),
             ignored_masses=ignored,

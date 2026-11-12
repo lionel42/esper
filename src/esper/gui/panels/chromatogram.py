@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 from dataclasses import dataclass, replace
+from enum import StrEnum
 
 import numpy as np
 import pandas as pd
@@ -25,13 +26,12 @@ from esper.gui.labels import (
 from esper.gui.panels.base import BasePanel
 from esper.gui.panels.chromatogram_items import (
     fit_fill_items,
-    fit_integration_items,
-    ips_items,
+    integration_items,
     lowest_near,
 )
 from esper.gui.plotting import add_curve, make_plot
 from esper.gui.selection import Selection
-from esper.gui.settings import INTEGRATIONS, settings_manager
+from esper.gui.settings import CurveStyle, Integration, settings_manager
 from esper.gui.style import TARGET_COLOR, overlay_colors
 
 # Half width of the rt window shown around the selected compound [s]
@@ -59,12 +59,11 @@ MAX_LEGEND_ENTRIES = 12
 READ_ALL_ABOVE = 20
 # Delay before updating the masses peaking in the view after a pan/zoom [ms]
 PEAKING_DELAY_MS = 300
-# Integration menu: key -> menu text
-INTEGRATION_TEXTS = {
-    "fit_integration": "fit: integration",
-    "fit_shapes": "fit: peak shapes",
-    "extraction": "extraction (ips)",
-    "none": "none",
+# Choices of the right click menu, saved in the settings (for all the chromatogram
+# panels): setting -> (menu, its choices)
+CHOICE_MENUS = {
+    "chromatogram_integration": ("Integration", Integration),
+    "chromatogram_style": ("Draw as", CurveStyle),
 }
 
 
@@ -105,7 +104,12 @@ def chromatogram_curve(series: pd.Series, drawn: pd.Series, mass) -> Curve:
     )
 
 
-def draw_curve(plot: pg.PlotWidget, curve: Curve, y: np.ndarray | None = None):
+def draw_curve(
+    plot: pg.PlotWidget,
+    curve: Curve,
+    y: np.ndarray | None = None,
+    style: CurveStyle = CurveStyle.LINES,
+):
     """Draw a Curve, with a break in each gap (``y``: other values of ``drawn_y``, e.g.
     scaled)."""
     return add_curve(
@@ -115,6 +119,7 @@ def draw_curve(plot: pg.PlotWidget, curve: Curve, y: np.ndarray | None = None):
         curve.color,
         z=curve.z,
         width=curve.width,
+        style=style,
     )
 
 
@@ -179,6 +184,82 @@ class _MenuSync(QObject):
             check.blockSignals(False)
 
 
+class DrawOptions(QObject):
+    """How the chromatograms are drawn: the integration of their peaks and the style of
+    their curves (``CHOICE_MENUS``), with their submenus in several plots.
+
+    Saved in the settings, for all the chromatogram panels; ``changed`` is emitted when
+    they change (from any menu, or the settings of another panel).
+    """
+
+    changed = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.settings = settings_manager()
+        self.integration, self.curve_style = self._current()
+        self.settings.changed.connect(self._on_settings_changed)
+
+    def _current(self) -> tuple[Integration, CurveStyle]:
+        """The integration and curve style of the settings (as members, also when
+        set as plain strings)."""
+        settings = self.settings.settings
+        return (
+            Integration(settings.chromatogram_integration),
+            CurveStyle(settings.chromatogram_style),
+        )
+
+    def shown_integration(self, fitted: bool) -> Integration:
+        """The integration drawn for a measurement: none of the fit when it is not
+        ``fitted`` (the title of the panel says so)."""
+        if self.integration.of_fit and not fitted:
+            return Integration.NONE
+        return self.integration
+
+    def set(self, name: str, key: Integration | CurveStyle) -> None:
+        """Set a setting of ``CHOICE_MENUS`` (``changed`` follows)."""
+        self.settings.update(replace(self.settings.settings, **{name: key}))
+
+    def _on_settings_changed(self) -> None:
+        integration, style = self._current()
+        if (integration, style) != (self.integration, self.curve_style):
+            self.integration, self.curve_style = integration, style
+            self.changed.emit()
+
+    def add_menus(self, plot: pg.PlotWidget) -> None:
+        """The submenus of ``CHOICE_MENUS`` in the right click menu of a plot, kept in
+        sync with the others."""
+        for name, (title, choices) in CHOICE_MENUS.items():
+            submenu = plot.getViewBox().menu.addMenu(title)
+            group = QActionGroup(submenu)
+            actions = {}
+            for key in choices:
+                action = QAction(key.text, submenu, checkable=True)
+                action.setChecked(key == getattr(self.settings.settings, name))
+                action.triggered.connect(
+                    lambda _=False, name=name, key=key: self.set(name, key)
+                )
+                group.addAction(action)
+                submenu.addAction(action)
+                actions[key] = action
+            _ChoiceSync(self, name, actions, submenu)
+
+
+class _ChoiceSync(QObject):
+    """Keeps the actions of one choice submenu in sync; owned by the menu, so that the
+    connection goes with it."""
+
+    def __init__(
+        self, options: DrawOptions, name: str, actions: dict[StrEnum, QAction], menu
+    ) -> None:
+        super().__init__(menu)
+        self.options, self.name, self.actions = options, name, actions
+        options.changed.connect(self.sync)
+
+    def sync(self) -> None:
+        self.actions[getattr(self.options.settings.settings, self.name)].setChecked(True)
+
+
 class ChromatogramPanel(BasePanel):
     """Chromatogram of the selected measurement and mass, with the peaks found at that mass.
 
@@ -211,11 +292,10 @@ class ChromatogramPanel(BasePanel):
 
         self.overlays = OverlayOptions(self)
         self.overlay_checks = self.overlays.add_menu(self.plot)
-        self.overlays.changed.connect(self._on_overlays_changed)
-        self.settings = settings_manager()
-        self.integration = self.settings.settings.chromatogram_integration
-        self.integration_actions = self._add_integration_menu(self.plot)
-        self.settings.changed.connect(self._on_settings_changed)
+        self.overlays.changed.connect(self._redraw_keeping_view)
+        self.draw_options = DrawOptions(self)
+        self.draw_options.add_menus(self.plot)
+        self.draw_options.changed.connect(self._redraw_keeping_view)
         # Masses overlaid now, to redraw only when "peaking here" changes them after a pan/zoom
         self._overlaid: list = []
         self._peaking_timer = QTimer(self, singleShot=True, interval=PEAKING_DELAY_MS)
@@ -228,38 +308,7 @@ class ChromatogramPanel(BasePanel):
 
     # --- overlays -------------------------------------------------------------------
 
-    def _add_integration_menu(self, plot: pg.PlotWidget) -> dict[str, QAction]:
-        """'Integration' submenu of the right click menu: ips, fitted peaks or none."""
-        submenu = plot.getViewBox().menu.addMenu("Integration")
-        group = QActionGroup(submenu)
-        actions = {}
-        for key in INTEGRATIONS:
-            action = QAction(INTEGRATION_TEXTS[key], submenu, checkable=True)
-            action.setChecked(key == self.integration)
-            action.triggered.connect(
-                lambda _=False, key=key: self._set_integration(key)
-            )
-            group.addAction(action)
-            submenu.addAction(action)
-            actions[key] = action
-        return actions
-
-    def _set_integration(self, key: str) -> None:
-        """Saved in the settings, for all the chromatogram panels."""
-        self.settings.update(
-            replace(self.settings.settings, chromatogram_integration=key)
-        )
-
-    def _on_settings_changed(self) -> None:
-        key = self.settings.settings.chromatogram_integration
-        if key == self.integration:
-            return
-        self.integration = key
-        self.integration_actions[key].setChecked(True)
-        self._keep_range = True
-        self.invalidate()
-
-    def _on_overlays_changed(self) -> None:
+    def _redraw_keeping_view(self) -> None:
         self._keep_range = True
         self.invalidate()
 
@@ -351,7 +400,7 @@ class ChromatogramPanel(BasePanel):
             title += f" ({selected[0].mass:g})"
         if not selected:
             title += " (no chromatogram)"
-        elif self.integration.startswith("fit") and not self.data.is_fitted(
+        elif self.draw_options.integration.of_fit and not self.data.is_fitted(
             sel.measurement_id
         ):
             title = f"{title} (peaks not fitted)"
@@ -394,14 +443,14 @@ class ChromatogramPanel(BasePanel):
 
         peaks = self.data.peaks(sel.measurement_id)
         for curve in curves:
-            item = draw_curve(self.plot, curve)
+            item = draw_curve(self.plot, curve, style=self.draw_options.curve_style)
             self._curve_items.append(item)
             if show_legend:
                 self.legend.addItem(item, curve.label)
             # Fitted peaks of the overlaid masses, unless there are too many
             if (
                 curve in overlays
-                and self.integration == "fit_shapes"
+                and self.draw_options.integration == Integration.FIT_SHAPES
                 and curve.mass is not TIC
                 and show_legend
             ):
@@ -539,7 +588,7 @@ class ChromatogramPanel(BasePanel):
             self._add(item)
 
     def _annotate(self, t: np.ndarray, y: np.ndarray) -> None:
-        """Integration (``self.integration``), apex marker and label of each peak at this mass."""
+        """Integration (``self.draw_options``), apex marker and label of each peak at this mass."""
         sel = self.selection
         if sel.mass is TIC:
             return
@@ -552,28 +601,15 @@ class ChromatogramPanel(BasePanel):
         y_apex = np.interp(rt, t, y)
         # Labels below the baseline, under the lowest signal near the peak if none is drawn
         y_label = lowest_near(t, y, rt)
-        areas = np.full(len(peaks), np.nan)
-        integration = self.integration
-        # Not fitted: no integration of the fit (the title says so)
-        if integration.startswith("fit") and not self.data.is_fitted(
-            sel.measurement_id
-        ):
-            integration = "none"
-        fitted = integration == "fit_integration"
-        if fitted:
-            self._add_all(fit_integration_items(t, peaks))
-            areas = peaks["fit_area"].to_numpy(dtype=float)
-            base = peaks["fit_baseline"].to_numpy(dtype=float)
-            y_label = np.where(np.isfinite(base), base, y_label)
-        elif integration == "extraction":
-            items, areas, y_base = ips_items(t, y, peaks)
-            self._add_all(items)
-            y_label = np.where(np.isfinite(y_base), y_base, y_label)
-        elif integration == "fit_shapes":
-            self._add_all(fit_fill_items(t, peaks, "k", selected=sel.compound_idxs))
-            areas = peaks["fit_area"].to_numpy(dtype=float)
-            base = peaks["fit_baseline"].to_numpy(dtype=float)
-            y_label = np.where(np.isfinite(base), base, y_label)
+        integration = self.draw_options.shown_integration(
+            self.data.is_fitted(sel.measurement_id)
+        )
+        fitted = integration == Integration.FIT
+        items, areas, y_base = integration_items(
+            t, y, peaks, integration, selected=sel.compound_idxs
+        )
+        self._add_all(items)
+        y_label = np.where(np.isfinite(y_base), y_base, y_label)
 
         # Invisible markers at the apex to select a compound by clicking on its peak
         compound_idxs = peaks["compound_idx"].fillna(NO_COMPOUND).to_numpy(dtype=int)
@@ -602,7 +638,7 @@ class ChromatogramPanel(BasePanel):
                     html.escape(peak_compound_label(names, compound_idxs[i])),
                     f"H = {p.height:.0f}",
                 ]
-                if integration != "none":
+                if integration != Integration.NONE:
                     lines.append(
                         "A = –" if np.isnan(areas[i]) else f"A = {areas[i]:.0f}"
                     )
