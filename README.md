@@ -148,7 +148,8 @@ processing:
   method: target            # target | suspect (written by --method)
   baseline:                 # peaxart.BaselineConfig, before the detection (false: none)
     lam: 1.0e+7
-  detection:                # peaxart.LegacyDeconvolutionConfig: thresholds in counts
+  detection:                # peaxart.LegacyDeconvolutionConfig: thresholds in counts,
+    width: 5                # minimum width (half prominence), scans (default 5)
     height: 20
     prominence: 60
   fit:                      # peaxart.ChromatogramFitConfig

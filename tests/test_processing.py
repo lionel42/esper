@@ -33,7 +33,7 @@ def test_defaults():
     config = processing_config(None)
     assert config.method is None
     assert config.baseline == px.BaselineConfig()
-    assert config.detection == px.LegacyDeconvolutionConfig()
+    assert config.detection == px.LegacyDeconvolutionConfig(width=5)
     assert config.fit.peak_shape == "emg"
 
 

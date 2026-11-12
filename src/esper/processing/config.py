@@ -6,7 +6,7 @@
       method: target          # how the compounds are identified: target | suspect
       baseline:               # peaxart.BaselineConfig, before the detection (false: none)
         lam: 1.0e+6
-      detection:              # peaxart.LegacyDeconvolutionConfig
+      detection:              # peaxart.LegacyDeconvolutionConfig (DETECTION_CONFIG)
         prominence: 200
       fit:                    # peaxart.ChromatogramFitConfig
         peak_shape: emg
@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 
 PROCESSING_KEY = "processing"
 
+# Detection of esper: peaxart's legacy thresholds, but a minimum width of 5 scans, not 9
+# (half prominence): narrow peaks (e.g. CS2 at ~8 scans of a 6 Hz quadrupole) were lost
+DETECTION_CONFIG = px.LegacyDeconvolutionConfig(width=5)
+
 
 class ProcessingConfigError(ValueError):
     """The ``processing:`` of an esper.yaml is not valid."""
@@ -64,9 +68,7 @@ class ProcessingConfig:
     method: str | None = None
     # None: the baseline is not removed before the detection
     baseline: px.BaselineConfig | None = field(default_factory=px.BaselineConfig)
-    detection: px.LegacyDeconvolutionConfig = field(
-        default_factory=px.LegacyDeconvolutionConfig
-    )
+    detection: px.LegacyDeconvolutionConfig = DETECTION_CONFIG
     fit: px.ChromatogramFitConfig = FIT_CONFIG
     target: TargetSearchConfig = field(default_factory=TargetSearchConfig)
     suspect: SuspectScreeningConfig = field(default_factory=SuspectScreeningConfig)
