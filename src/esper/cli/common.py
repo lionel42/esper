@@ -25,7 +25,7 @@ class Command:
     add_arguments: Callable[[argparse.ArgumentParser], None]
     run: Callable[[argparse.Namespace], int]
     description: str | None = None
-    """Shown by ``esper <name> --help`` (None: none)."""
+    """Shown by ``esper <name> --help`` (None: ``help``)."""
 
 
 DATE_FORMATS = "YYYY, YYYY-MM, YYYY-MM-DD or 'YYYY-MM-DD HH:MM'"

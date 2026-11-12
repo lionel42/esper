@@ -21,6 +21,7 @@ from esper.cli import (
     chromatograms,
     fit,
     gui,
+    info,
     install,
     plot_calibration,
     targets,
@@ -32,6 +33,7 @@ COMMANDS: list[Command] = [
     gui.COMMAND,
     upload.COMMAND,
     fit.COMMAND,
+    info.COMMAND,
     targets.COMMAND,
     calibrate.COMMAND,
     plot_calibration.COMMAND,
@@ -76,7 +78,7 @@ def build_parser(argv: list[str]) -> argparse.ArgumentParser:
             command.name,
             parents=[common],
             help=command.help,
-            description=command.description,
+            description=command.description or command.help,
         )
         if command.name == name:
             command.add_arguments(command_parser)
