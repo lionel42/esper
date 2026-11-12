@@ -17,7 +17,7 @@ from PySide6.QtCore import (
     Qt,
     QTimer,
 )
-from PySide6.QtGui import QColor, QGuiApplication, QKeySequence
+from PySide6.QtGui import QColor, QGuiApplication, QKeySequence, QPalette, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -25,6 +25,9 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMenu,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableView,
     QVBoxLayout,
 )
@@ -168,6 +171,26 @@ class DataFrameModel(QAbstractTableModel):
         return None
 
 
+class SelectionDelegate(QStyledItemDelegate):
+    """In a selected row, the cells colored by their value (``Column.color``) keep their
+    color, framed above and below by the selection color; the others are highlighted."""
+
+    def paint(self, painter, option, index) -> None:
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        if not selected or index.data(Qt.ItemDataRole.BackgroundRole) is None:
+            super().paint(painter, option, index)
+            return
+        unselected = QStyleOptionViewItem(option)
+        unselected.state &= ~QStyle.StateFlag.State_Selected
+        super().paint(painter, unselected, index)
+        painter.save()
+        painter.setPen(QPen(option.palette.color(QPalette.ColorRole.Highlight), 2))
+        rect = option.rect.adjusted(0, 1, 0, -1)
+        painter.drawLine(rect.topLeft(), rect.topRight())
+        painter.drawLine(rect.bottomLeft(), rect.bottomRight())
+        painter.restore()
+
+
 class TablePanel(BasePanel):
     """A table of items (rows of a DataFrame, identified by its index).
 
@@ -219,6 +242,7 @@ class TablePanel(BasePanel):
         )
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
+        self.table.setItemDelegate(SelectionDelegate(self.table))
         self.table.verticalHeader().hide()
         self.table.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
         self.table.horizontalHeader().setSectionResizeMode(
