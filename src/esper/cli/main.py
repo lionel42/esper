@@ -85,11 +85,37 @@ def build_parser(argv: list[str]) -> argparse.ArgumentParser:
         if command.name == name:
             command.add_arguments(command_parser)
         command_parser.set_defaults(func=command.run)
+    help_parser = sub.add_parser(
+        "help",
+        help="Show this help, or the help of a command (esper help upload)",
+        description="Show the help of esper (as esper --help), or of a command (as "
+        "esper <command> --help).",
+    )
+    help_parser.add_argument(
+        "help_command",
+        nargs="?",
+        metavar="command",
+        choices=[command.name for command in COMMANDS],
+        help="the command to show the help of",
+    )
     return parser
+
+
+def _help_argv(argv: list[str]) -> list[str] | None:
+    """The arguments that show the help asked by ``esper help [command]`` (None: not a help
+    command or an invalid one, which the parser reports)."""
+    rest = argv[argv.index("help") + 1 :]
+    if not rest:
+        return ["--help"]
+    if len(rest) == 1 and rest[0] in {command.name for command in COMMANDS}:
+        return [rest[0], "--help"]
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
+    if _command_name(argv) == "help":
+        argv = _help_argv(argv) or argv
     args = build_parser(argv).parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG
