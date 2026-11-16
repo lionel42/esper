@@ -92,9 +92,9 @@ class Processing:
 
 def read_jdx(file: Path) -> Spectrum:
     """NIST JCAMP-DX spectrum (as ``db_reader.JdxReader``)."""
-    from jcamp import jcamp_readfile
+    from jcamp import readfile
 
-    data = jcamp_readfile(str(file))
+    data = readfile(str(file))
     return Spectrum.from_pairs(data["x"], data["y"])
 
 
@@ -183,6 +183,8 @@ def read_library(
             progress(done, len(files))
         try:
             spectrum = READERS[file.suffix](file)
+        except (ImportError, AttributeError):
+            raise
         except Exception as e:
             logger.warning(f"Skipping unreadable spectrum {file}: {e}")
             continue

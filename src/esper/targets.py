@@ -297,6 +297,8 @@ def _reference_spectrum(names: list[str], libraries: list[Library]):
                     continue
                 try:
                     spectrum = read(file)
+                except (ImportError, AttributeError):
+                    raise
                 except Exception as e:
                     logger.warning(f"Skipping unreadable spectrum {file}: {e}")
                     continue
