@@ -72,6 +72,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help=f"only the runs started before DATE ({DATE_FORMATS}; a year, month or day:"
         " before its start, itself left out)",
     )
+    parser.add_argument(
+        "--newest-first",
+        "--latest-first",
+        "--reverse",
+        dest="newest_first",
+        action="store_true",
+        help="import the runs from the last one (newest) back to the first one",
+    )
 
 
 def run(args: argparse.Namespace) -> int:
@@ -92,6 +100,7 @@ def run(args: argparse.Namespace) -> int:
             after=args.after,
             before=args.before,
             method=args.method,
+            newest_first=args.newest_first,
         )
     except (InstrumentError, TargetError, ProcessingConfigError) as e:
         print(e, file=sys.stderr)

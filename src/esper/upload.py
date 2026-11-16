@@ -242,6 +242,7 @@ def upload(
     after: datetime | None = None,
     before: datetime | None = None,
     method: str | None = None,
+    newest_first: bool = False,
 ) -> UploadSummary:
     """Import the runs of ``source``, and fit their peaks (``esper.fitting``) if ``fit``;
     the runs without peaks are processed (``esper.processing``) with the method of the
@@ -257,6 +258,8 @@ def upload(
     ``after``, ``before``: only the runs started on or after ``after`` and before
     ``before``, from the date in their name (``YYMMDD.HHMM...``; the targets are read
     all the same).
+    ``newest_first``: import the runs from the last one (by name, i.e. by time) instead
+    of the first one, to have the recent runs first.
     """
     from esper.processing.config import (
         ProcessingConfigError,
@@ -303,6 +306,8 @@ def upload(
             processor = Processor(con, data_dir, config)
             pending = {name for _, name in to_process(con, config.method)}
         runs = instrument_source.find_runs(source)
+        if newest_first:
+            runs = sorted(runs, key=lambda run: run.name, reverse=True)
         logger.info(f"{len(runs)} runs of {instrument} in {source}")
         # The processes of the fits, for all the measurements (started at the first fit)
         pool = None
