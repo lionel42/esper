@@ -13,17 +13,21 @@ from esper.fitting import (
     FIT_VERSION,
     SOURCE_EXTRACTION,
     SOURCE_FIT,
+    ExpectedTarget,
     compound_shapes,
     fit_changes,
     fit_measurement,
     fit_peaks,
     fitted_peak_table,
     match_compounds,
+    new_compounds,
     peak_baseline,
     peak_groups,
     peak_shape,
     to_fit,
 )
+from esper.processing.identification import TargetSearch
+from esper.target_index import TargetIndex
 
 DT = 1 / 6
 SIGMA = 1.4
@@ -51,7 +55,7 @@ EXTRACTION = [
     # both: split by the fit. At the apex of the larger one, as the extraction finds
     # it (started between the two, the fit keeps one broad peak)
     (4, C, 43, RT_A, RT_A - 1.6, RT_B + 1.9),
-    # two unknown compounds: split, no compound
+    # two unknown compounds: split; the piece at its apex stays in E, the other in none
     (5, E, 31, T0 + 140.0, T0 + 138.4, T0 + 146.9),
 ]
 # m/z 85 has a peak not extracted at this rt
@@ -155,9 +159,14 @@ def test_coelution_is_split_between_the_compounds(table):
 
 
 def test_no_compound_matches(table):
-    on_31 = table[table["mass"] == 31]
+    on_31 = table[table["mass"] == 31].sort_values("fit_rt_s")
     assert len(on_31) == 2
-    assert on_31["compound_idx"].isna().all()
+    # E has no shape (its only peak was split): the piece keeping the row of its peak
+    # (at its apex) stays in E, it does not lose its peak;
+    # the other matches another compound
+    assert on_31.index[0] == 5
+    assert on_31["compound_idx"].iloc[0] == E
+    assert pd.isna(on_31["compound_idx"].iloc[1])
 
 
 def test_peak_not_extracted_is_added(table):
@@ -219,9 +228,10 @@ def test_prominence_of_the_pieces_is_scipys(table):
 
 def test_largest_peak_of_the_changed_compounds(table):
     largest = table[table["is_max_of_cmp"] == 1]
-    # A and B gained a piece of m/z 43: their largest peak is recomputed (D, E untouched)
-    assert set(largest["compound_idx"].dropna()) == {A, B}
-    for compound_idx in (A, B):
+    # A and B gained a piece of m/z 43, E kept a piece of its split peak: their largest
+    # peak is recomputed (C untouched: no peak left)
+    assert set(largest["compound_idx"].dropna()) == {A, B, E}
+    for compound_idx in (A, B, E):
         peaks = table[table["compound_idx"] == compound_idx]
         assert peaks.loc[peaks["is_max_of_cmp"] == 1].index.tolist() == [
             peaks["prominence"].idxmax()
@@ -321,22 +331,36 @@ def test_fit_measurement(tmp_path):
     compounds = pd.read_sql(
         "SELECT * FROM compound", con, index_col="compound_idx"
     ).sort_index()
-    assert compounds["n_peaks"].to_dict() == {A: 3, B: 3, C: 0, E: 0}
-    # the main ion of A and B: their largest peak; C, E without peaks keep theirs
-    assert compounds["main_ion_mass"].to_dict() == {
-        A: stored.loc[
-            stored[stored["compound_idx"] == A]["prominence"].idxmax(), "mass"
-        ],
-        B: stored.loc[
-            stored[stored["compound_idx"] == B]["prominence"].idxmax(), "mass"
-        ],
-        C: 1,
-        E: 1,
-    }
-    assert con.execute("SELECT n_peaks, fit_version FROM measurement").fetchone() == (
-        len(stored),
-        FIT_VERSION,
+    # E keeps the piece of its split peak at its apex; the pieces matching no compound
+    # (the other piece of E's peak, the peak not extracted on m/z 85, at other rts) are
+    # compounds of their own, made by the fit, after the last one
+    made = compounds[compounds["source"] == SOURCE_FIT]
+    assert list(made.index) == [E + 1, E + 2]
+    assert compounds["n_peaks"].to_dict() == {
+        A: 3, B: 3, C: 0, E: 1, E + 1: 1, E + 2: 1
+    }  # fmt: skip
+    assert compounds.loc[[A, B, C, E], "source"].isna().all()
+    assert made["compound_name"].isna().all() and (made["valid_candidate"] == 0).all()
+    made_peaks = stored[stored["compound_idx"].isin(made.index)].sort_values("rt_s")
+    assert made_peaks["mass"].tolist() == [85, 31]
+    assert made_peaks["rt_s"].tolist() == pytest.approx(
+        [NOT_EXTRACTED, T0 + 145.0], abs=0.2
     )
+    assert stored["compound_idx"].notna().all()  # every peak in a compound
+    # the main ion of A, B, E and the new ones: their largest peak; C without peaks
+    # keeps its own
+    assert compounds["main_ion_mass"].to_dict() == {
+        **{
+            idx: stored.loc[
+                stored[stored["compound_idx"] == idx]["prominence"].idxmax(), "mass"
+            ]
+            for idx in (A, B, E, *made.index)
+        },
+        C: 1,
+    }
+    assert con.execute(
+        "SELECT n_peaks, n_compounds, fit_version FROM measurement"
+    ).fetchone() == (len(stored), len(compounds), FIT_VERSION)
     assert to_fit(con) == []
     assert set(stored["fit_shape"].dropna()) == {FIT_SHAPE}
     # the extraction values replaced by the fit are kept: the split peaks (4, 5) and
@@ -355,6 +379,12 @@ def test_fit_measurement(tmp_path):
     again = pd.read_sql("SELECT * FROM peak", con, index_col="peak_idx")
     columns = ["compound_idx", "mass", "source", "rt_s", "is_max_of_cmp", *FIT_COLUMNS]
     pd.testing.assert_frame_equal(again[columns], stored[columns])
+    # the compounds made by the fit made again, not added to those of the first fit
+    pd.testing.assert_frame_equal(
+        pd.read_sql("SELECT * FROM compound", con, index_col="compound_idx")
+        .sort_index(),
+        compounds,
+    )
     assert (
         pd.read_sql("SELECT * FROM extraction_peak", con, index_col="peak_idx")
         .sort_index()
@@ -451,3 +481,79 @@ def test_peak_baseline():
     np.testing.assert_allclose(peak_baseline(t, row), [120.0, 100.0, 80.0])
     old = pd.Series({"fit_rt_s": 20.0, "fit_baseline": 100.0, "fit_baseline_slope": np.nan})
     np.testing.assert_allclose(peak_baseline(t, old), 100.0)
+
+
+def test_target_keeps_the_piece_nearest_its_expected_rt():
+    # E's only peak (m/z 31, apex at 140 s) is split into 140 s and 145 s: named by
+    # target search with an expected rt of 145 s, E keeps the 145 s piece (whatever the
+    # extracted apex), the other is left to the compounds it matches (none here)
+    peaks = extraction_peaks()
+    fitted = fit_peaks(chromatograms(), peaks, workers=1)
+    target = ExpectedTarget(T0 + 145.0, frozenset({31}))
+    table = fitted_peak_table(peaks, fitted, targets={E: target})
+    on_31 = table[table["mass"] == 31].sort_values("fit_rt_s")
+    assert pd.isna(on_31["compound_idx"].iloc[0])
+    assert on_31["compound_idx"].iloc[1] == E
+    assert on_31.index[1] == 5  # takes the row of the extraction peak
+    # without: the piece at the extracted apex
+    table = fitted_peak_table(peaks, fitted)
+    assert table.at[5, "compound_idx"] == E
+    assert table.at[5, "fit_rt_s"] == pytest.approx(T0 + 140.0, abs=0.2)
+    # m/z 31 not one of the target's ions: judged as without target
+    other_ions = ExpectedTarget(T0 + 145.0, frozenset({85}))
+    table = fitted_peak_table(peaks, fitted, targets={E: other_ions})
+    assert table.at[5, "compound_idx"] == E
+    assert table.at[5, "fit_rt_s"] == pytest.approx(T0 + 140.0, abs=0.2)
+
+
+def test_new_compounds_one_peak_per_mass_and_no_chain():
+    # pieces matching no compound (sigma 1 s: tolerance 0.3 s from the first of a group)
+    rows = [
+        (31, 100.0),
+        (43, 100.2),  # with the 31 one
+        (31, 100.25),  # m/z 31 again: a compound of its own (its first piece)
+        (85, 100.5),  # 0.25 s from that first piece: with it
+        (69, 100.6),  # 0.1 s from the previous one but 0.35 s from the first: its own
+        (85, 110.0),
+    ]
+    table = pd.DataFrame(
+        {
+            "mass": [m for m, _ in rows],
+            "fit_rt_s": [rt for _, rt in rows],
+            "fit_sigma_s": 1.0,
+            "source": SOURCE_FIT,
+            "compound_idx": pd.array([pd.NA] * len(rows), dtype="Int64"),
+        }
+    )
+    assert new_compounds(table, 7) == [7, 8, 9, 10]
+    assert table["compound_idx"].tolist() == [7, 7, 8, 8, 9, 10]
+
+
+def test_compounds_made_by_the_fit_named_by_target_search(tmp_path):
+    con = _measurement(tmp_path)
+    # Identified by target search: E is the target "E-target"; "Other" is a target
+    # on m/z 31 at 145 s, which the detection did not see (one peak with E)
+    con.execute("UPDATE measurement SET identification = 'target'")
+    con.execute("UPDATE compound SET compound_name = 'E-target' WHERE compound_idx = ?", (E,))
+    con.executemany(
+        "INSERT INTO target (name, rt_ref_s) VALUES (?, ?)",
+        [("E-target", T0 + 140.0), ("Other", T0 + 145.0)],
+    )
+    con.executemany(
+        "INSERT INTO target_ion (name, rank, mass) VALUES (?, 0, 31)",
+        [("E-target",), ("Other",)],
+    )
+    con.commit()
+    search = TargetSearch(TargetIndex.from_db(con))
+    fit_measurement(con, 1, tmp_path, workers=1, target_search=search)
+    compounds = pd.read_sql("SELECT * FROM compound", con, index_col="compound_idx")
+    peaks = pd.read_sql("SELECT * FROM peak", con, index_col="peak_idx")
+    on_31 = peaks[peaks["mass"] == 31].sort_values("rt_s")
+    names = compounds.loc[on_31["compound_idx"], "compound_name"].tolist()
+    # E keeps its piece (nearest its expected rt); the other piece is a new compound,
+    # named "Other" (E-target, found already, is not looked for again)
+    assert names == ["E-target", "Other"]
+    other = compounds[compounds["compound_name"] == "Other"]
+    assert other["source"].tolist() == [SOURCE_FIT]
+    assert other["valid_candidate"].tolist() == [1]
+    con.close()

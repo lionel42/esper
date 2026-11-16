@@ -168,9 +168,14 @@ class EsperData:
             ["NULL AS identified_at"]
             + [f"NULL AS identified_{col}" for col in IDENTIFICATION_SCORES]
         )
+        # All the columns of the compound table, whatever the schema version, named
+        # (not c.*: a column added later, e.g. by the CLI with the GUI open, would make
+        # the two parts below differ)
+        columns = self._table_columns("compound")
+        every = ", ".join(f'c."{col}"' for col in columns)
         if not self._has_table("compound_identification"):
             # Database from before the identifications could be edited
-            sql = f"SELECT c.*, {alpinac}, {not_edited} FROM compound c"
+            sql = f"SELECT {every}, {alpinac}, {not_edited} FROM compound c"
         else:
             # Table from before the scores were kept with the identification: none is
             kept = set(self._table_columns("compound_identification"))
@@ -182,15 +187,13 @@ class EsperData:
                 "compound_name": "ci.name",
                 "valid_candidate": "ci.name IS NOT NULL",
             }
-            # All the columns of the compound table, whatever the schema version
-            columns = self._table_columns("compound")
             select = ", ".join(
                 f'{edited[col]} AS "{col}"' if col in edited else f'c."{col}"'
                 for col in columns
             )
             # Two parts, so that a search by name in the compounds not edited uses the index on compound_name
             sql = f"""
-                SELECT c.*, {alpinac}, {not_edited}
+                SELECT {every}, {alpinac}, {not_edited}
                 FROM compound c
                 WHERE NOT EXISTS (
                     SELECT 1 FROM compound_identification ci

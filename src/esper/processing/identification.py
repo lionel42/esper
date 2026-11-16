@@ -21,10 +21,12 @@ is matched against the spectral libraries; the best candidates are kept
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
 
+from esper.fitting import ExpectedTarget
 from esper.processing.config import SuspectScreeningConfig, TargetSearchConfig
 from esper.target_index import TargetIndex, unit_mass
 
@@ -97,15 +99,19 @@ def search_targets(
     targets: TargetIndex,
     time=None,
     config: TargetSearchConfig | None = None,
+    skip=(),
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """The peaks and compounds of a run with the targets found named (see the module
-    docstring); ``time``: of the run (the version of the targets then)."""
+    docstring); ``time``: of the run (the version of the targets then); ``skip``: the
+    targets not looked for (e.g. found already)."""
     config = config or TargetSearchConfig()
     peaks, compounds = peaks.copy(), compounds.copy()
     units = peaks["mass"].map(unit_mass)
     rts = peaks["rt_s"].to_numpy(dtype=float)
     matches = []  # (target, compound_idx, distance, ions)
     for target in targets.table.index:
+        if target in skip:
+            continue
         expected = _expected(targets, target, time, config)
         ions = targets.masses_at(target, time)
         if expected is None or not ions:
@@ -166,6 +172,55 @@ def search_targets(
     found = compounds["compound_name"].notna().sum()
     logger.debug(f"{found} targets found, {len(compounds) - found} other compounds")
     return peaks, compounds
+
+
+@dataclass(frozen=True)
+class TargetSearch:
+    """The target search of a data directory (its targets and ``target:`` config), for
+    the fit of the runs it identified (``esper.fitting.fit_measurement``): built once,
+    passed to the fit of each run."""
+
+    targets: TargetIndex
+    config: TargetSearchConfig = field(default_factory=TargetSearchConfig)
+
+    def expected(self, names: pd.Series, time=None) -> dict[int, ExpectedTarget]:
+        """The compounds named a target (``names``: compound_name by compound_idx) in a
+        run at ``time``: where their target is expected, and its ions."""
+        out = {}
+        for idx, name in names.items():
+            target = self.targets.target_of(name) if isinstance(name, str) else None
+            found = (
+                None
+                if target is None
+                else _expected(self.targets, target, time, self.config)
+            )
+            if found is not None:
+                ions = frozenset(self.targets.masses_at(target, time))
+                out[int(idx)] = ExpectedTarget(found[0], ions)
+        return out
+
+    def name(
+        self, table: pd.DataFrame, made: list[int], names: pd.Series, time=None
+    ) -> dict[int, str]:
+        """Target search among the compounds made by the fit (``made``, in the peak
+        table ``table``), not of the targets found already (``names``: of the other
+        compounds): their names, by compound_idx. ``table`` gets the peaks of the
+        targets found co-eluting split into compounds of their own (numbered after)."""
+        rows = table["compound_idx"].isin(made)
+        peaks = table.loc[rows, ["mass", "rt_s", "compound_idx", "prominence"]].assign(
+            start_s=np.nan, stop_s=np.nan
+        )
+        compounds = pd.DataFrame(
+            {"compound_name": None, "valid_candidate": 0, "is_ref_ri": 0},
+            index=pd.Index(made, name="compound_idx"),
+        ).assign(n_peaks=peaks.groupby("compound_idx").size().reindex(made))
+        found = set(names.dropna().map(self.targets.target_of))
+        peaks, compounds = search_targets(
+            peaks, compounds, self.targets, time, self.config, skip=found
+        )
+        table.loc[peaks.index, "compound_idx"] = peaks["compound_idx"].astype("Int64")
+        named = compounds["compound_name"].dropna()
+        return {int(i): name for i, name in named.items()}
 
 
 # --- suspect screening ------------------------------------------------------------------

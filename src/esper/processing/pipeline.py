@@ -93,6 +93,7 @@ class Processor:
                 f" (--method {'|'.join(METHODS)})"
             )
         self._targets: TargetIndex | None = None
+        self._target_search = None
         self._libraries = None
 
     @property
@@ -106,6 +107,18 @@ class Processor:
             if self._targets.table.empty:
                 logger.warning("no targets: the compounds are not identified")
         return self._targets
+
+    @property
+    def target_search(self):
+        """The target search of the runs (``identification.TargetSearch``), for their
+        fit; None with suspect screening."""
+        from esper.processing.identification import TargetSearch
+
+        if self.method != TARGET:
+            return None
+        if self._target_search is None:
+            self._target_search = TargetSearch(self.targets, self.config.target)
+        return self._target_search
 
     @property
     def libraries(self):
@@ -161,7 +174,13 @@ class Processor:
         if not fit:
             return peaks
         return fit_measurement(
-            self.con, mid, self.data_dir, workers, pool, self.config.fit
+            self.con,
+            mid,
+            self.data_dir,
+            workers,
+            pool,
+            self.config.fit,
+            self.target_search,
         )
 
 

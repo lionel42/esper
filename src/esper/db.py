@@ -27,10 +27,10 @@ CHROMATOGRAMS_DIRNAME = "chromatograms"
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 # Versions that are upgraded by creating the missing tables and columns (3: the area
 # columns of an unreleased version, kept)
-COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
+COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 # Oldest SCHEMA_VERSION of esper that can still use a database of this version, stored in
 # the database so that older esper versions know whether they can use it. A schema change
 # that only adds tables or nullable columns keeps it, a breaking change sets it to SCHEMA_VERSION.
@@ -39,6 +39,8 @@ MIN_READER_VERSION = 9  # 9: measurement.sample_number renamed port
 # (6 keeps it: older versions read the targets of the target lists as before; the
 # versioned ions of the GCwerks targets look to them like several ions per rank)
 # (8 keeps it: measurement.identification, nullable)
+# (10 keeps it: compound.source, nullable; an older esper fitting again keeps the
+# compounds made by the fit, left without peaks)
 # MIN_READER_VERSION of the schema versions written before schema_info existed
 LEGACY_MIN_READER_VERSIONS = {3: 2}  # 3 only adds nullable columns
 
@@ -64,6 +66,12 @@ ADDED_COLUMNS = {
         # search, 'suspect': suspect screening); NULL: by the peak source ('alpinac'), or
         # no peaks. peak_source 'esper': the peaks found by esper.processing
         ("identification", "TEXT"),
+    ],
+    "compound": [
+        # Where the compound comes from: NULL: the peak source (alpinac, esper's
+        # detection); 'fit': made by the fit, of the pieces matching no compound
+        # (esper.fitting: deleted and made again by each fit)
+        ("source", "TEXT"),
     ],
     "mass_cal": [
         ("source_file", "TEXT"),  # the calibration file read

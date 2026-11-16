@@ -42,6 +42,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -49,6 +50,8 @@ import peaxart as px
 
 from esper import db
 from esper.deconvolution import FIT_CONFIG, fit_chromatograms, fit_pool  # noqa: F401 (fit_pool: used from here)
+from esper.processing import TARGET
+from esper.target_index import unit_mass
 from esper.windows import is_continuous, measured_windows
 
 logger = logging.getLogger(__name__)
@@ -70,6 +73,8 @@ MATCH_HWHM = 2.0
 
 SOURCE_EXTRACTION = "extraction"
 SOURCE_FIT = "fit"
+# The compounds of the peak source (compound.source NULL), not made by the fit
+NOT_MADE_BY_THE_FIT = f"source IS NOT '{SOURCE_FIT}'"
 
 # Columns of the peak table filled by the fit, from the columns of peaxart.Fit
 FIT_COLUMNS = {
@@ -332,6 +337,14 @@ def match_compounds(peaks: pd.DataFrame, shapes: pd.DataFrame) -> pd.Series:
 
 # --- peak table ---------------------------------------------------------------------
 
+class ExpectedTarget(NamedTuple):
+    """A compound named by target search, as the fit sees it: the rt where the target is
+    expected and its ions (unit masses), in the run."""
+
+    rt: float
+    ions: frozenset[int]
+
+
 # Columns of the extraction that describe the peak before a split (NULL after it)
 EXTRACTION_ONLY_COLUMNS = [
     "width_scans",
@@ -380,17 +393,38 @@ def fitted_peak_table(
     peaks: pd.DataFrame,
     fitted: pd.DataFrame,
     config: px.ChromatogramFitConfig | None = None,
+    targets: dict[int, ExpectedTarget] | None = None,
 ) -> pd.DataFrame:
     """The peak table of a measurement with the fit (see the module docstring).
 
     ``peaks``: the extraction peaks, indexed by peak_idx; ``fitted``: ``fit_peaks``
     (with ``config``, None: ``FIT_CONFIG``).
     The fitted peaks given to an extraction peak (the nearest) split it when
-    several are within its half maximum crossings; the others are new peaks.
+    several are within its half maximum crossings; the others are new peaks. The pieces
+    go to the compound whose shape they match (``match_compounds``); the one keeping
+    the row of the extraction peak, if it matches none, stays in its compound when that
+    one has no shape (all its peaks split) - else that compound would lose all its peaks.
+
+    ``targets``: the compounds named by target search (by compound_idx). The split
+    peaks of their target's ions are judged by the target: the piece nearest the
+    expected rt keeps the row and stays in the compound (the identification gave it
+    that ion), whatever shape it matches; the other pieces of that peak go to other
+    compounds. The pieces matching no compound are left without one (``new_compounds``
+    makes compounds of them).
     Returns all the peaks, indexed by peak_idx (new peaks after the last one), with
     ``is_max_of_cmp`` of all the compounds again.
     """
     min_hwhm = (config or FIT_CONFIG).hwhm_range[0]
+    targets = targets or {}
+
+    def target_of(peak_idx) -> ExpectedTarget | None:
+        """The target judging an extraction peak: of its compound, on one of its ions."""
+        compound = peaks.at[peak_idx, "compound_idx"]
+        target = targets.get(int(compound)) if pd.notna(compound) else None
+        if target is None or unit_mass(peaks.at[peak_idx, "mass"]) not in target.ions:
+            return None
+        return target
+
     table = peaks.copy()
     table["source"] = SOURCE_EXTRACTION
     for column in FIT_COLUMNS:
@@ -401,7 +435,10 @@ def fitted_peak_table(
     for peak_idx, group in fitted.groupby("peak_idx"):
         peak = peaks.loc[peak_idx]
         inside = _taking_row(peak, group, min_hwhm)
-        distance = (group["fit_rt_s"] - peak["rt_s"]).abs()
+        # nearest the extracted apex, or the expected rt of a target
+        target = target_of(peak_idx)
+        reference = peak["rt_s"] if target is None else target.rt
+        distance = (group["fit_rt_s"] - reference).abs()
         if inside.sum() == 1:
             matched.append((peak_idx, group[inside].iloc[0]))
         elif inside.sum() > 1:
@@ -421,6 +458,27 @@ def fitted_peak_table(
     pieces = pd.DataFrame([row for _, row in to_match], columns=fitted.columns)
     pieces.index = range(len(pieces))
     compounds = match_compounds(pieces, shapes)
+    for k, (peak_idx, row) in enumerate(to_match):
+        source = peaks.at[row["peak_idx"], "compound_idx"]  # of the split peak
+        target = target_of(row["peak_idx"])
+        if target is not None:
+            # A target's ion: the piece keeping the row is the target's (nearest its
+            # expected rt), the other pieces are not
+            if peak_idx is not None:
+                compounds.iloc[k] = int(source)
+            elif pd.notna(compounds.iloc[k]) and compounds.iloc[k] == int(source):
+                compounds.iloc[k] = pd.NA
+        elif (
+            peak_idx is not None
+            and pd.isna(compounds.iloc[k])
+            and pd.notna(source)
+            and int(source) not in shapes.index
+        ):
+            # Matching no compound, the piece keeping the row stays in its compound
+            # when that one has no shape (all its peaks split): else it would lose all
+            # its peaks. Matching another compound, it goes there (e.g. a peak of two
+            # compounds the detection did not separate, given to each)
+            compounds.iloc[k] = int(source)
 
     next_idx = int(peaks.index.max()) + 1 if len(peaks) else 0
     new_rows = []
@@ -450,6 +508,41 @@ def fitted_peak_table(
         table = pd.concat([table, new.reindex(columns=table.columns)])
     _set_max_of_cmp(table, table["compound_idx"].dropna().unique())
     return table
+
+
+def new_compounds(table: pd.DataFrame, first_idx: int) -> list[int]:
+    """Compounds of the pieces of the fit matching no compound (in ``table``, changed),
+    numbered from ``first_idx``; returns their compound_idx.
+
+    In rt order, a piece joins the compound of the first piece of its group when within
+    the rt tolerance of ``match_compounds`` of it (``RT_TOLERANCE_SIGMA`` of the larger
+    width; from the first piece: a group spans no more) and on another mass (one peak
+    per mass); else it starts a compound.
+    """
+    alone = table[
+        (table["source"] == SOURCE_FIT)
+        & table["compound_idx"].isna()
+        & np.isfinite(table["fit_rt_s"].astype(float))
+    ].sort_values("fit_rt_s")
+    made: list[int] = []
+    first, masses = None, set()
+    for peak_idx, row in alone.iterrows():
+        tolerance = (
+            0.0
+            if first is None
+            else RT_TOLERANCE_SIGMA
+            * np.nanmax([row["fit_sigma_s"], first["fit_sigma_s"], 0.0])
+        )
+        if (
+            first is None
+            or row["fit_rt_s"] - first["fit_rt_s"] > tolerance
+            or row["mass"] in masses
+        ):
+            made.append(first_idx + len(made))
+            first, masses = row, set()
+        table.at[peak_idx, "compound_idx"] = made[-1]
+        masses.add(row["mass"])
+    return made
 
 
 def changed_compounds(peaks: pd.DataFrame, table: pd.DataFrame) -> set[int]:
@@ -568,9 +661,10 @@ def extraction(
         params=(mid,),
         index_col="peak_idx",
     )
+    # not those made by the fit: made again
     compounds = pd.read_sql(
         f"SELECT compound_idx, {', '.join(COMPOUND_SUMMARY_COLUMNS)} FROM compound"
-        " WHERE measurement_id = ?",
+        f" WHERE measurement_id = ? AND {NOT_MADE_BY_THE_FIT}",
         con,
         params=(mid,),
         index_col="compound_idx",
@@ -680,15 +774,26 @@ def fit_changes(
 
 
 def _store_fit(
-    con: sqlite3.Connection, mid: int, table: pd.DataFrame, changes: FitChanges
+    con: sqlite3.Connection,
+    mid: int,
+    table: pd.DataFrame,
+    changes: FitChanges,
+    made: pd.DataFrame | None = None,
 ) -> None:
-    """Replace the peaks of a measurement with the fit (single transaction)."""
+    """Replace the peaks of a measurement with the fit, and the compounds made by an
+    earlier fit with ``made`` (indexed by compound_idx), in a single transaction."""
     summaries = changes.summaries[COMPOUND_SUMMARY_COLUMNS]
     assignments = ", ".join(f"{c} = ?" for c in COMPOUND_SUMMARY_COLUMNS)
     db_rows = summaries.astype(object).where(summaries.notna(), None)
     with con:
         for name in ("peak", "extraction_peak", "extraction_compound"):
             con.execute(f"DELETE FROM {name} WHERE measurement_id = ?", (mid,))
+        con.execute(
+            "DELETE FROM compound WHERE measurement_id = ? AND source = ?",
+            (mid, SOURCE_FIT),
+        )
+        if made is not None and len(made):
+            db.insert(con, "compound", made.assign(measurement_id=mid).reset_index())
         for name, df in (
             ("peak", table),
             ("extraction_peak", changes.extraction_peaks),
@@ -705,12 +810,14 @@ def _store_fit(
             ],
         )
         con.execute(
-            "UPDATE measurement SET n_peaks = ?, fit_version = ?, fitted_at = ?"
+            "UPDATE measurement SET n_peaks = ?, fit_version = ?, fitted_at = ?,"
+            " n_compounds = (SELECT COUNT(*) FROM compound WHERE measurement_id = ?)"
             " WHERE measurement_id = ?",
             (
                 len(table),
                 FIT_VERSION,
                 datetime.now().isoformat(timespec="seconds"),
+                mid,
                 mid,
             ),
         )
@@ -723,23 +830,32 @@ def fit_measurement(
     workers: int | None = None,
     pool: Executor | None = None,
     config: px.ChromatogramFitConfig | None = None,
+    target_search=None,
 ) -> pd.DataFrame | None:
     """Fit the peaks of a measurement (again: from the extraction) and store the result.
 
     Single transaction. Returns the new peak table (``attrs["n_warnings"]``: warnings of
     the fits), None if the measurement has no chromatograms. ``workers``, ``pool``,
-    ``config``: see ``fit_peaks``.
+    ``config``: see ``fit_peaks``. ``target_search``: of the data directory
+    (``esper.processing.identification.TargetSearch``), for the runs it identified:
+    their targets judge the split peaks of their ions (``fitted_peak_table``) and name
+    the compounds made by the fit; None: neither.
+
+    The pieces matching no compound are compounds of their own (``new_compounds``,
+    ``compound.source`` 'fit': made again by each fit).
     """
     mid = int(measurement_id)
-    (chromatogram_file,) = con.execute(
-        "SELECT chromatogram_file FROM measurement WHERE measurement_id = ?", (mid,)
-    ).fetchone()
+    chromatogram_file, method, time = _fit_inputs(con, mid)
     if chromatogram_file is None:
         return None
     peaks, compounds = extraction(con, mid)
     frame = pd.read_parquet(Path(data_dir) / chromatogram_file)
     fitted = fit_peaks(frame, peaks, workers, pool, config)
-    table = fitted_peak_table(peaks, fitted, config)
+    if method != TARGET:
+        target_search = None
+    names = _compound_names(con, mid) if target_search is not None else None
+    targets = target_search.expected(names, time) if target_search is not None else None
+    table = fitted_peak_table(peaks, fitted, config, targets)
     table.attrs["n_warnings"] = fitted.attrs.get("n_warnings", 0)
 
     earlier = [
@@ -749,5 +865,47 @@ def fit_measurement(
             (mid,),
         )
     ]
-    _store_fit(con, mid, table, fit_changes(peaks, compounds, table, earlier))
+    changes = fit_changes(peaks, compounds, table, earlier)
+    # the pieces matching no compound: compounds of their own, named by target search
+    # (which may split them: their compounds numbered after)
+    first_idx = int(compounds.index.max()) + 1 if len(compounds) else 0
+    made = new_compounds(table, first_idx)
+    found = {}
+    if target_search is not None and made:
+        found = target_search.name(table, made, names, time)
+    made = sorted(set(table["compound_idx"].dropna().astype(int)) - set(compounds.index))
+    _set_max_of_cmp(table, made)
+    made_rows = (
+        compound_summaries(table, pd.DataFrame(columns=COMPOUND_SUMMARY_COLUMNS), made)
+        .rename_axis("compound_idx")
+        .assign(
+            compound_name=pd.Series(found, dtype=object).reindex(made),
+            valid_candidate=[int(i in found) for i in made],
+            is_ref_ri=0,
+            source=SOURCE_FIT,
+        )
+    )
+    _store_fit(con, mid, table, changes, made_rows)
     return table
+
+
+def _fit_inputs(con: sqlite3.Connection, mid: int) -> tuple:
+    """(chromatogram_file, identification, acq_datetime) of a measurement."""
+    has_method = "identification" in db.table_columns(con, "measurement")
+    method = "identification" if has_method else "NULL"
+    return con.execute(
+        f"SELECT chromatogram_file, {method}, acq_datetime FROM measurement"
+        " WHERE measurement_id = ?",
+        (mid,),
+    ).fetchone()
+
+
+def _compound_names(con: sqlite3.Connection, mid: int) -> pd.Series:
+    """compound_name of the compounds of a measurement (not made by the fit)."""
+    return pd.read_sql(
+        f"SELECT compound_idx, compound_name FROM compound WHERE measurement_id = ?"
+        f" AND {NOT_MADE_BY_THE_FIT}",
+        con,
+        params=(mid,),
+        index_col="compound_idx",
+    )["compound_name"]

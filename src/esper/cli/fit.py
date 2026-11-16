@@ -26,12 +26,14 @@ def run(args: argparse.Namespace) -> int:
     from esper import db
     from esper.fitting import fit_measurement, fit_pool, summary, to_fit
     from esper.processing.config import read_processing_config
+    from esper.processing.identification import TargetSearch
+    from esper.target_index import TargetIndex
 
     if not db.db_path(args.data_dir).is_file():
         print(f"No esper database at {db.db_path(args.data_dir)}", file=sys.stderr)
         return 1
     try:  # the fit of the data directory (processing: fit: of its esper.yaml)
-        config = read_processing_config(args.data_dir).fit
+        processing = read_processing_config(args.data_dir)
     except ValueError as e:
         print(e, file=sys.stderr)
         return 2
@@ -39,13 +41,21 @@ def run(args: argparse.Namespace) -> int:
     con = db.connect(args.data_dir, create=True)
     failed = 0
     try:
+        # the runs identified by target search: their targets in the fit (read once)
+        target_search = TargetSearch(TargetIndex.from_db(con), processing.target)
         todo = to_fit(con, force=args.force)
         print(f"measurements to fit: {len(todo)}")
         with fit_pool(args.workers) as pool:
             for mid, name in todo:
                 try:
                     table = fit_measurement(
-                        con, mid, args.data_dir, workers=1, pool=pool, config=config
+                        con,
+                        mid,
+                        args.data_dir,
+                        workers=1,
+                        pool=pool,
+                        config=processing.fit,
+                        target_search=target_search,
                     )
                 except Exception as e:
                     logger.exception(f"{name}: fit failed")

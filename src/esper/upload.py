@@ -363,12 +363,21 @@ def _fit(
     pool,
     summary: UploadSummary,
     config=None,
+    target_search=None,
 ) -> None:
     from esper.fitting import fit_measurement
     from esper.fitting import summary as fit_summary
 
     try:
-        table = fit_measurement(con, mid, data_dir, workers=1, pool=pool, config=config)
+        table = fit_measurement(
+            con,
+            mid,
+            data_dir,
+            workers=1,
+            pool=pool,
+            config=config,
+            target_search=target_search,
+        )
     except Exception as e:
         logger.exception(f"{name}: fit failed")
         summary.fit_failed.append((name, repr(e)))
@@ -408,4 +417,13 @@ def _process(
     summary.processed.append(name)
     logger.info(f"{name}: {process_summary(table, con, mid)}")
     if fit:
-        _fit(con, name, mid, processor.data_dir, pool, summary, processor.config.fit)
+        _fit(
+            con,
+            name,
+            mid,
+            processor.data_dir,
+            pool,
+            summary,
+            processor.config.fit,
+            processor.target_search,
+        )
