@@ -46,8 +46,11 @@ def test_params_json():
     assert OverrideParams.from_json(params.to_json()) == params
     assert params.keeps_all_peaks
     assert not OverrideParams().keeps_all_peaks
-    # unknown keys (a later version) ignored
-    assert OverrideParams.from_json('{"peak_shape": "emg", "new": 1}') == OverrideParams()
+    # unknown keys (a later version) ignored; saved before the absolute widths: the
+    # relative ones (as they were fitted)
+    assert OverrideParams.from_json('{"peak_shape": "emg", "new": 1}') == OverrideParams(
+        sigma_range_s=None
+    )
     assert OverrideParams.from_config(BASE).peak_shape == FIT_SHAPE
 
 
@@ -175,3 +178,39 @@ def test_fit_window_keeps_every_position():
     # without positions, the default tests: one peak
     single = fit_window(t, y, [E_RT], OverrideParams(peak_shape=FIT_SHAPE), BASE)
     assert len(single) == 1
+
+
+def test_fit_window_diagnostics():
+    """What peaxart drops is recorded: the background kept, the iterations; peaxart's
+    functions are restored after."""
+    import peaxart.rtfit as rtfit
+
+    from esper.fit_overrides import DIAGNOSTIC_COLUMNS
+
+    original = rtfit.fit
+    t, y = _two_peaks()
+    params = OverrideParams(peak_shape=FIT_SHAPE, backgrounds=("constant", "linear"))
+    fitted = fit_window(t, y, [E_RT, E_RT + 5], params, BASE)
+    assert set(DIAGNOSTIC_COLUMNS) <= set(fitted.columns)
+    assert set(fitted["background"]) <= {"constant", "linear"}
+    assert (fitted["iterations"] > 0).all()
+    # peaxart leaves out the end of the window (and outliers)
+    assert fitted["n_points"].between(len(t) - 5, len(t)).all()
+    assert fitted.attrs["n_least_squares"] >= 1
+    assert fitted.attrs["iterations_total"] >= fitted["iterations"].max()
+    assert rtfit.fit is original
+
+
+def test_broad_peak_late_in_the_run():
+    """A broad peak after 1000 s: peaxart's expected width at 1500 s is ~1 s, its bounds
+    (x 5) too narrow for sigma 6 s; the absolute range of the override fits it."""
+    t = np.arange(1440, 1560, DT)
+    rng = np.random.default_rng(3)
+    y = 500 + 2e4 * np.exp(-((t - 1500) ** 2) / (2 * 6.0**2)) + rng.normal(0, 30, len(t))
+    absolute = OverrideParams(peak_shape=FIT_SHAPE, backgrounds=("constant",))
+    fitted = fit_window(t, y, [1500.0], absolute, BASE)
+    assert fitted["rt_sigma"].iloc[0] == pytest.approx(6.0, rel=0.1)
+    assert fitted.attrs["start_sigma"] == pytest.approx(6.0, rel=0.15)
+    relative = OverrideParams(peak_shape=FIT_SHAPE, backgrounds=("constant",), sigma_range_s=None)
+    capped = fit_window(t, y, [1500.0], relative, BASE)
+    assert capped["rt_sigma"].iloc[0] < 5.0

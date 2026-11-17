@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import pandas as pd
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QCheckBox
+from PySide6.QtWidgets import QCheckBox, QMenu
 
 from esper.gui.data import EsperData
 from esper.gui.panels.table import Column, TablePanel, bool_color
+from esper.gui.refit_dialog import RefitDialog
 from esper.gui.selection import Selection
 
 
@@ -92,6 +93,31 @@ class TargetTablePanel(TablePanel):
         if self.found_only.isChecked() and len(df):
             df = df[df["found"]]
         return df
+
+    def add_context_actions(self, menu: QMenu, key) -> None:
+        mid = self.selection.measurement_id
+        if mid is None:
+            return
+        target = str(key)
+        menu.addSeparator()
+        refit = menu.addAction("Refit peaks…", lambda: self._refit(mid, target))
+        # an override needs where the target is in the run
+        row = self._frame.loc[target] if target in self._frame.index else None
+        refit.setEnabled(
+            row is not None and (bool(row["found"]) or pd.notna(row["expected_rt"]))
+        )
+        if not refit.isEnabled():
+            menu.setToolTipsVisible(True)
+            refit.setToolTip("Not found and not expected in this run")
+
+    def _refit(self, measurement_id: int, target: str) -> None:
+        """The fit override of a target (from its compound in the run if found)."""
+        dialog = RefitDialog(
+            self.data, measurement_id, mass=self.selection.mass, parent=self, target=target
+        )
+        dialog.exec()
+        if dialog.saved:  # runs fitted again: their peaks and compounds read again
+            self.selection.identification_edited()
 
     def current_key(self):
         return self.selection.target

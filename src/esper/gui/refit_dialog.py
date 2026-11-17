@@ -11,6 +11,9 @@ the fit of the override (``fit_fill_items``).
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 import pyqtgraph as pg
@@ -45,6 +48,7 @@ from PySide6.QtWidgets import (
 
 from esper import db
 from esper.fit_overrides import (
+    DEFAULT_SIGMA_RANGE_S,
     FitOverride,
     OverrideParams,
     delete_override,
@@ -78,7 +82,102 @@ PLOT_MARGIN_S = 10.0
 PREVIEW_COLOR = "#0050c8"
 PREVIEW_SUM_COLOR = "#e6007e"
 POSITION_COLOR = "#e07000"
-TABLE_COLUMNS = ["fit", "rt [s]", "height", "area", "S/N", "baseline", "slope"]
+
+
+@dataclass(frozen=True)
+class TableColumn:
+    header: str
+    tooltip: str
+    value: Callable  # (kind, peak row) -> text
+
+
+def _get(name: str, digits: int = 0, preview_only: bool = False) -> Callable:
+    def value(kind, p) -> str:
+        if preview_only and kind != "preview":
+            return ""
+        return _number(p.get(name), digits)
+
+    return value
+
+
+def _background(kind, p) -> str:
+    """Kept by the fit (preview); stored: only its slope (constant or not)."""
+    if kind == "preview" and isinstance(p.get("background"), str):
+        return p["background"]
+    slope = p.get("fit_baseline_slope")
+    if slope is None or pd.isna(slope):
+        return "–" if pd.isna(p.get("fit_baseline")) else "constant"
+    return "constant" if slope == 0 else "linear/exp."
+
+
+def _flag(name: str, yes: str) -> Callable:
+    def value(kind, p) -> str:
+        v = p.get(name)
+        return "" if v is None or pd.isna(v) else (yes if v else "")
+
+    return value
+
+
+TABLE_COLUMNS = [
+    TableColumn("fit", "Current fit (stored) or preview", lambda kind, p: kind),
+    TableColumn(
+        "function",
+        "Peak function: EMG (exponentially modified Gaussian) or Pap-Papai",
+        lambda kind, p: str(p.get("fit_shape") or "–"),
+    ),
+    TableColumn(
+        "rt [s]", "Apex", lambda kind, p: _number(p.get("fit_rt_s", p.get("rt_s")), 2)
+    ),
+    TableColumn("± rt", "Standard error of the location [s]", _get("fit_rt_u_s", 2)),
+    TableColumn("height", "Apex above the background", _get("fit_height")),
+    TableColumn("± h", "Uncertainty of the height", _get("fit_height_u")),
+    TableColumn("area", "Area of the peak function [counts s]", _get("fit_area")),
+    TableColumn("± area", "Uncertainty of the area", _get("fit_area_u")),
+    TableColumn("σ [s]", "Width (standard deviation of its Gaussian)", _get("fit_sigma_s", 2)),
+    TableColumn(
+        "tail",
+        "Tail parameter: EMG τ/σ; Pap-Papai a (0: Gaussian)",
+        _get("fit_tailing", 2),
+    ),
+    TableColumn("S/N", "Signal to noise (height over the limit of detection)", _get("fit_sn", 1)),
+    TableColumn("baseline", "Background at the apex", _get("fit_baseline")),
+    TableColumn("slope /s", "Slope of the background at the apex", _get("fit_baseline_slope", 3)),
+    TableColumn(
+        "background",
+        "Background of the window: kept by the fit among those tried (preview);"
+        " stored fits: only constant or not, from the slope",
+        _background,
+    ),
+    TableColumn(
+        "iter.",
+        "Iterations of the least-squares fit kept (preview only, not stored)",
+        _get("iterations", preview_only=True),
+    ),
+    TableColumn(
+        "limit",
+        "Stopped at the iteration limit: the parameters may not be converged",
+        _flag("aborted", "stopped"),
+    ),
+    TableColumn(
+        "line ratio",
+        "Residual with the peak / with a straight line around it (small: a real peak;"
+        " above 0.9 the default fit removes it)",
+        _get("linear_ratio", 2, preview_only=True),
+    ),
+    TableColumn(
+        "coverage",
+        "Fraction of the scans within 1 σ of the apex that are measured",
+        _get("coverage", 2, preview_only=True),
+    ),
+    TableColumn("points", "Points of the window fitted", _get("n_points", preview_only=True)),
+    TableColumn(
+        "override",
+        "Fit override the stored peak was fitted with (none: the data directory's fit)",
+        lambda kind, p: ""
+        if kind == "preview"
+        else ("" if pd.isna(p.get("fit_override_id")) else f"#{int(p['fit_override_id'])}"),
+    ),
+]
 
 
 def _spin(lo, hi, value, decimals=2, step=0.1, suffix="") -> QDoubleSpinBox:
@@ -114,10 +213,13 @@ class RefitDialog(QDialog):
         self,
         data: EsperData,
         measurement_id: int,
-        compound_idx: int,
+        compound_idx: int | None = None,
         mass=None,
         parent=None,
+        target: str | None = None,
     ) -> None:
+        """From a compound of the run (its target, if it is one), or from a ``target``
+        (its compound in the run if found; else its expected masses and rt)."""
         super().__init__(parent)
         self.data = data
         # the run shown (the preview run), at first the one the dialog is opened on
@@ -127,6 +229,8 @@ class RefitDialog(QDialog):
         # has none
         self._relative: tuple | None = None
         self.reference: float | None = None
+        if compound_idx is None and target is not None:
+            compound_idx = data.find_target(measurement_id, target)
         self.compound_idx = compound_idx
         self.base = data.processing.fit
         self.saved = False  # runs fitted again: the caller reloads
@@ -135,19 +239,25 @@ class RefitDialog(QDialog):
         self._extraction = None  # (peaks, frame) of the run, read once
         run = data.measurements.loc[measurement_id]
         self.run_time = run["acq_datetime"]
-        compound = data.compounds(measurement_id).loc[compound_idx]
-        self.compound = compound
-        self.peaks = data.compound_peaks(measurement_id, compound_idx).sort_values(
-            "height", ascending=False
-        )
-        name = compound_label(compound["main_name"], compound_idx)
-        self.setWindowTitle(f"Refit {name} (#{compound_idx}) — {run['name']}")
+        if compound_idx is not None:
+            compound = data.compounds(measurement_id).loc[compound_idx]
+            self.peaks = data.compound_peaks(measurement_id, compound_idx).sort_values(
+                "height", ascending=False
+            )
+            if target is None:
+                target = data.target_index.target_of(compound["main_name"])
+            name = compound_label(compound["main_name"], compound_idx)
+            title = f"{name} (#{compound_idx})"
+        else:  # a target not found in the run
+            self.peaks = data.peaks(measurement_id).iloc[:0]
+            title = f"{target} (not found)"
+        self.setWindowTitle(f"Refit {title} — {run['name']}")
         self.resize(1250, 780)
 
         left = QWidget()
         form = QVBoxLayout(left)
-        form.addWidget(self._target_box(compound))
-        form.addWidget(self._masses_box(mass))
+        form.addWidget(self._target_box(target))
+        form.addWidget(self._masses_box(mass, target))
         form.addWidget(self._window_box())
         form.addWidget(self._peaks_box())
         form.addWidget(self._parameters_box())
@@ -185,13 +295,12 @@ class RefitDialog(QDialog):
 
     # --- parts ----------------------------------------------------------------------
 
-    def _target_box(self, compound) -> QGroupBox:
+    def _target_box(self, target: str | None) -> QGroupBox:
         box = QGroupBox("Target")
         self.target_box = QComboBox()
         targets = sorted(self.data.targets.index)
         self.target_box.addItems(targets)
-        target = self.data.target_index.target_of(compound["main_name"])
-        if target is not None:
+        if target in self.data.targets.index:
             self.target_box.setCurrentText(target)
         else:
             self.target_box.setCurrentIndex(-1)
@@ -206,11 +315,17 @@ class RefitDialog(QDialog):
         layout.addRow(self.existing_label)
         return box
 
-    def _masses_box(self, mass) -> QGroupBox:
+    def _masses_box(self, mass, target: str | None) -> QGroupBox:
         box = QGroupBox("Masses (one override each)")
         self.mass_list = QListWidget()
         self.mass_list.setMaximumHeight(110)
-        masses = list(dict.fromkeys(self.peaks["mass"]))
+        # the masses of the compound, then the expected ions of the target
+        ions = (
+            []
+            if target is None
+            else self.data.target_masses(self.measurement_id, target)
+        )
+        masses = list(dict.fromkeys([*self.peaks["mass"], *ions]))
         if mass is not None and mass not in masses:
             masses.insert(0, mass)
         checked = mass if mass in masses else (masses[0] if masses else None)
@@ -314,11 +429,14 @@ class RefitDialog(QDialog):
             "Several: fitted with the first, another kept where clearly better"
         )
         form.addRow("Backgrounds:", backgrounds)
-        self.sigma_min = _spin(0.01, 100, 0.2)
-        self.sigma_max = _spin(0.01, 100, 5.0)
-        form.addRow(
-            "Sigma bounds:", _row(self.sigma_min, "–", self.sigma_max, "× the start")
+        self.sigma_min = _spin(0.05, 100, DEFAULT_SIGMA_RANGE_S[0], 2, 0.1, " s")
+        self.sigma_max = _spin(0.05, 100, DEFAULT_SIGMA_RANGE_S[1], 2, 0.5, " s")
+        width = _row(self.sigma_min, "–", self.sigma_max)
+        width.setToolTip(
+            "Bounds of the width (σ of the peak function); the fit starts at the half"
+            " width of the highest peak of the window"
         )
+        form.addRow("Width σ:", width)
         self.max_iterations = QSpinBox()
         self.max_iterations.setRange(10, 10000)
         form.addRow("Max iterations:", self.max_iterations)
@@ -405,7 +523,9 @@ class RefitDialog(QDialog):
         self.result_label = QLabel()
         self.result_label.setWordWrap(True)
         self.table = QTableWidget(0, len(TABLE_COLUMNS))
-        self.table.setHorizontalHeaderLabels(TABLE_COLUMNS)
+        self.table.setHorizontalHeaderLabels([c.header for c in TABLE_COLUMNS])
+        for j, column in enumerate(TABLE_COLUMNS):
+            self.table.horizontalHeaderItem(j).setToolTip(column.tooltip)
         self.table.verticalHeader().hide()
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setStretchLastSection(True)
@@ -482,7 +602,7 @@ class RefitDialog(QDialog):
                 name for name, check in self.background_checks.items() if check.isChecked()
             )
             or ("constant",),
-            sigma_bounds=(self.sigma_min.value(), self.sigma_max.value()),
+            sigma_range_s=(self.sigma_min.value(), self.sigma_max.value()),
             max_iterations=self.max_iterations.value(),
             positions=tuple(round(p, 3) for p in self.relative()[2]),
             position_tolerance=None
@@ -539,8 +659,9 @@ class RefitDialog(QDialog):
         self.shape.setCurrentText(str(params.peak_shape))
         for name, check in self.background_checks.items():
             check.setChecked(name in params.backgrounds)
-        self.sigma_min.setValue(params.sigma_bounds[0])
-        self.sigma_max.setValue(params.sigma_bounds[1])
+        sigma = params.sigma_range_s or DEFAULT_SIGMA_RANGE_S
+        self.sigma_min.setValue(sigma[0])
+        self.sigma_max.setValue(sigma[1])
         self.max_iterations.setValue(params.max_iterations)
         self.default_tolerance.setChecked(params.position_tolerance is None)
         if params.position_tolerance is not None:
@@ -567,7 +688,14 @@ class RefitDialog(QDialog):
         stops = self.peaks["stop_s"].to_numpy(dtype=float)
         if np.isfinite(starts).any() and np.isfinite(stops).any():
             return np.nanmin(starts) - RT_MARGIN_S, np.nanmax(stops) + RT_MARGIN_S
-        center = reference if reference is not None else self.compound["rt_mean_s"]
+        if self.target is not None:  # its identification window (GCwerks peakid)
+            window = self.data.target_window(self.measurement_id, self.target)
+            if window is not None:
+                return window[0] - RT_MARGIN_S / 2, window[1] + RT_MARGIN_S / 2
+        if len(self.peaks):
+            center = float(self.peaks["rt_s"].mean())
+        else:
+            center = reference if reference is not None else 0.0
         return center - RT_HALF_WINDOW_S, center + RT_HALF_WINDOW_S
 
     def _on_target_changed(self) -> None:
@@ -825,7 +953,12 @@ class RefitDialog(QDialog):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             fitted = override_fit(
-                frame, peaks, self.override(mass), self.reference, self.base
+                frame,
+                peaks,
+                self.override(mass),
+                self.reference,
+                self.base,
+                diagnostics=True,
             )
         except Exception as e:
             self.result_label.setText(f"<b>The fit failed:</b> {e!r}")
@@ -837,6 +970,7 @@ class RefitDialog(QDialog):
                 f"No extracted peak on {mass_label(mass)}: nothing to refit."
             )
             return
+        summary = self._fit_summary(fitted)
         fitted = fitted.assign(compound_idx=pd.NA)
         t = frame.index.to_numpy(dtype=float)
         items = fit_fill_items(t, fitted, PREVIEW_COLOR)
@@ -849,10 +983,13 @@ class RefitDialog(QDialog):
             self.legend.addItem(sums[0], "preview: sum")
         self._fill_table(self._current_peaks(), fitted)
         self.result_label.setText(
-            f"Preview: {len(fitted)} peak(s) (filled, blue; their sum: magenta);"
-            " current fit: red dashed (sum: purple)."
-            if len(fitted)
-            else "<b>Preview: no peak fitted</b> (the fit was rejected)."
+            (
+                f"Preview: {len(fitted)} peak(s) (filled, blue; their sum: magenta);"
+                " current fit: red dashed (sum: purple)."
+                if len(fitted)
+                else "<b>Preview: no peak fitted</b> (the fit was rejected)."
+            )
+            + (f"<br>{summary}" if summary else "")
         )
 
     def _fill_table(self, current: pd.DataFrame, preview: pd.DataFrame | None) -> None:
@@ -861,21 +998,31 @@ class RefitDialog(QDialog):
             rows += [("preview", p) for _, p in preview.sort_values("fit_rt_s").iterrows()]
         self.table.setRowCount(len(rows))
         for i, (kind, p) in enumerate(rows):
-            values = [
-                kind,
-                _number(p.get("fit_rt_s", p.get("rt_s")), 2),
-                _number(p.get("fit_height")),
-                _number(p.get("fit_area")),
-                _number(p.get("fit_sn")),
-                _number(p.get("fit_baseline")),
-                _number(p.get("fit_baseline_slope"), 3),
-            ]
-            for j, value in enumerate(values):
-                item = QTableWidgetItem(value)
+            for j, column in enumerate(TABLE_COLUMNS):
+                item = QTableWidgetItem(column.value(kind, p))
                 if kind == "preview":
                     item.setForeground(pg.mkColor(PREVIEW_COLOR))
                 self.table.setItem(i, j, item)
         self.table.resizeColumnsToContents()
+
+    def _fit_summary(self, fitted: pd.DataFrame) -> str:
+        """The least-squares fits of the preview and its start positions."""
+        attrs = fitted.attrs
+        if "n_least_squares" not in attrs:
+            return ""
+        starts = ", ".join(f"{s:.2f}" for s in attrs.get("starts", []))
+        if attrs.get("start_sigma") is not None:
+            starts += f" (σ from {attrs['start_sigma']:.2f})"
+        text = (
+            f"{attrs['n_least_squares']} least-squares fits (with the other backgrounds"
+            f" and extra peaks tried), {attrs['iterations_total']} iterations in all"
+        )
+        if attrs.get("n_aborted"):
+            text += (
+                f", <b>{attrs['n_aborted']} stopped at the limit"
+                f" ({self.max_iterations.value()} iterations)</b>"
+            )
+        return f"{text}. Starts: {starts} s."
 
     # --- saving ---------------------------------------------------------------------
 

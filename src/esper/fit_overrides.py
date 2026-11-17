@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
@@ -46,6 +47,8 @@ DEFAULT_TOLERANCE_S = 2.0
 # Confidence level of peaxart's significance test of the peak heights that keeps them all
 # (its Student t factor is 0)
 KEEP_ALL_CONF_INT = 0.5
+# Bounds of the width (sigma of the peak function) of new overrides [s]
+DEFAULT_SIGMA_RANGE_S = (0.3, 10.0)
 # Extra start positions for a minimum number of peaks: at most this many times the
 # minimum tries
 MAX_ADD_TRIES = 3
@@ -57,6 +60,12 @@ class OverrideParams:
 
     peak_shape: str = "emg"
     backgrounds: tuple[str, ...] = ("constant", "linear", "exponential")
+    # The width (sigma) of the peaks between these [s], starting at the half width of
+    # the highest peak of the window. None: as the default fit, ``sigma_bounds`` times
+    # peaxart's expected sigma (its rt model, ``ExtractionConfig.rt_sigma_at``: 2.5 s
+    # before 1000 s, 0.38 s at 1000 s growing to 0.6 s at 1250 s: too narrow for the
+    # broad peaks of a GC-MS)
+    sigma_range_s: tuple[float, float] | None = DEFAULT_SIGMA_RANGE_S
     sigma_bounds: tuple[float, float] = (0.2, 5.0)
     max_iterations: int = 100
     # Start positions of the peaks, relative to the reference rt [s]; empty: the peaks
@@ -104,6 +113,10 @@ class OverrideParams:
         for key in ("backgrounds", "sigma_bounds", "positions"):
             if key in known:
                 known[key] = tuple(known[key])
+        if known.get("sigma_range_s") is not None:
+            known["sigma_range_s"] = tuple(known["sigma_range_s"])
+        elif "sigma_range_s" not in known:
+            known["sigma_range_s"] = None  # saved before: relative bounds
         return cls(**known)
 
     def extraction_config(
@@ -112,11 +125,13 @@ class OverrideParams:
         span: float,
         n_starts: int,
         significance: bool = True,
+        start_sigma: float | None = None,
     ):
         """The ``peaxart.ExtractionConfig`` of the fit of a window of ``span`` s with
         ``n_starts`` start positions (``base``: the fit of the data directory).
         ``significance``: peaxart removes the peaks whose height is not significant
-        (False: kept, its S/N then meaningless)."""
+        (False: kept, its S/N then meaningless). ``start_sigma``: of the peaks, with
+        ``sigma_range_s`` [s]."""
         from peaxart.config import ExtractionConfig
 
         tolerance = self.position_tolerance
@@ -135,6 +150,16 @@ class OverrideParams:
             )
         if not significance:
             extra["conf_int"] = KEEP_ALL_CONF_INT
+        sigma = {"rt_sigma_bounds": tuple(self.sigma_bounds)}
+        if self.sigma_range_s is not None and start_sigma is not None:
+            lo, hi = self.sigma_range_s
+            # bounds: start x rt_sigma_bounds, the lower at least floor[0], the upper
+            # at least floor[1] (peaxart.rtfit.fit_chromato)
+            sigma = {
+                "rt_sigma": start_sigma,
+                "rt_sigma_bounds": (lo / start_sigma, hi / start_sigma),
+                "rt_sigma_floor": (lo, lo),
+            }
         return ExtractionConfig(
             convention=base.convention,
             legacy_numerics=False,
@@ -143,12 +168,12 @@ class OverrideParams:
             rt_background_ratio=base.background_ratio,
             rt_background_noise=base.background_noise,
             rt_max_iterations=self.max_iterations,
-            rt_sigma_bounds=tuple(self.sigma_bounds),
             rt_baseline_max_factor=base.baseline_max_factor,
             rt_tailing_max=base.tailing_max,
             # one window: the whole range
             rt_window=span + 10.0,
             rt_position_bound=tolerance,
+            **sigma,
             **extra,
         )
 
@@ -402,10 +427,28 @@ def _signal_to_noise(
     return fitted["shape_height"].to_numpy(dtype=float) / lod
 
 
+def half_width_sigma(t: np.ndarray, y: np.ndarray) -> float:
+    """sigma of a Gaussian of the width at half maximum of the highest peak of a window
+    (above its 5 % quantile) [s]."""
+    base = float(np.quantile(y, 0.05))
+    top = int(np.argmax(y))
+    half = base + (y[top] - base) / 2
+    above = y >= half
+    left = top
+    while left > 0 and above[left - 1]:
+        left -= 1
+    right = top
+    while right < len(y) - 1 and above[right + 1]:
+        right += 1
+    return float(t[right] - t[left]) / 2.3548
+
+
 def _largest_residual(
-    t: np.ndarray, y: np.ndarray, fitted: pd.DataFrame, shape
-) -> float:
-    """rt of the largest (smoothed) residual of a fit (of the signal without one)."""
+    t: np.ndarray, y: np.ndarray, fitted: pd.DataFrame, shape, starts=()
+) -> float | None:
+    """rt of the largest (smoothed) residual of a fit (of the signal without one), at
+    least 3 scans from the ``starts`` (a start there would be the same peak); None if
+    there is no such point."""
     if fitted.empty:
         resid = y - np.quantile(y, 0.05)
     else:
@@ -414,7 +457,107 @@ def _largest_residual(
     sigma = float(fitted["rt_sigma"].median()) if not fitted.empty else 1.0
     width = min(len(t), max(3, int(round(sigma / dt))))
     smooth = np.convolve(resid, np.ones(width) / width, mode="same")
+    starts = np.asarray(list(starts), dtype=float)
+    if len(starts):
+        near = np.abs(t[:, None] - starts[None, :]).min(axis=1) < 3 * dt
+        smooth = np.where(near, -np.inf, smooth)
+    if not np.isfinite(smooth).any():
+        return None
     return float(t[int(np.argmax(smooth))])
+
+
+# Columns of ``fit_window`` from what peaxart's Fit.integrate drops (``_recording``)
+DIAGNOSTIC_COLUMNS = [
+    "background",  # the background kept for the window (several tried: the best)
+    "n_points",  # points of the window fitted
+    "linear_ratio",  # residual std with the peak / with a line (small: a real peak)
+    "coverage",  # fraction of the scans within 1 sigma of the apex measured
+    "iterations",  # of the least-squares fit kept (analytic Jacobian: 1 evaluation each)
+    "aborted",  # stopped by the iteration limit
+    "converged",  # the least-squares fit reports success
+]
+
+
+@contextmanager
+def _recording():
+    """What peaxart's ``Fit.integrate`` computes and drops, recorded while it runs: the
+    fits of each window (``rtfit.fit_series``: their background, points and per-peak
+    tests) and the least-squares fits (``leastsq.fit``: iterations, aborted). Wraps
+    those functions of peaxart for the duration; nothing recorded (not an error) if
+    they are not there (another peaxart)."""
+    import peaxart.chromatogram as chromatogram
+    import peaxart.rtfit as rtfit
+
+    record = {"series": [], "chromato": [], "n_least_squares": 0, "iterations": 0, "aborted": 0}
+    names = ("fit", "fit_chromato")
+    if not all(hasattr(rtfit, n) for n in names) or not hasattr(chromatogram, "fit_series"):
+        yield record
+        return
+    original_fit, original_chromato = rtfit.fit, rtfit.fit_chromato
+    original_series = chromatogram.fit_series
+    calls: list = []
+
+    def fit(*args, **kwargs):
+        result = original_fit(*args, **kwargs)
+        calls.append(result)
+        record["n_least_squares"] += 1
+        record["iterations"] += int(getattr(result, "nfev", 0))
+        record["aborted"] += int(bool(getattr(result, "aborted", False)))
+        return result
+
+    def fit_chromato(*args, **kwargs):
+        start = len(calls)
+        peaks = original_chromato(*args, **kwargs)
+        if peaks is not None and len(calls) > start:
+            record["chromato"].append((peaks, calls[-1]))  # its last least squares
+        return peaks
+
+    def fit_series(*args, **kwargs):
+        out = original_series(*args, **kwargs)
+        record["series"] = out
+        return out
+
+    rtfit.fit, rtfit.fit_chromato, chromatogram.fit_series = fit, fit_chromato, fit_series
+    try:
+        yield record
+    finally:
+        rtfit.fit, rtfit.fit_chromato = original_fit, original_chromato
+        chromatogram.fit_series = original_series
+
+
+def _diagnostics(fitted: pd.DataFrame, record: dict) -> pd.DataFrame:
+    """``fitted`` (``Fit.integrate``) with the ``DIAGNOSTIC_COLUMNS`` of its peaks (NaN
+    where not recorded), and the totals of the least-squares fits in ``attrs``."""
+    out = fitted.copy()
+    for column in DIAGNOSTIC_COLUMNS:
+        out[column] = None if column == "background" else np.nan
+    results = {id(peaks): result for peaks, result in record["chromato"]}
+    for f, k in record["series"]:
+        rows = np.flatnonzero(np.isclose(out["rt"].to_numpy(dtype=float), f.apex_rt[k]))
+        if not len(rows):
+            continue
+        background = getattr(f, "background", None)
+        result = results.get(id(f))
+        values = {
+            "background": "constant" if background is None else str(background.name),
+            "n_points": f.n_points,
+            "linear_ratio": float(f.linear_ratio[k]),
+            "coverage": float(f.coverage[k]),
+        }
+        if result is not None:
+            values.update(
+                iterations=int(result.nfev),
+                aborted=float(bool(result.aborted)),
+                converged=float(bool(result.success)),
+            )
+        for column, value in values.items():
+            out.loc[out.index[rows[0]], column] = value
+    out.attrs.update(
+        n_least_squares=record["n_least_squares"],
+        iterations_total=record["iterations"],
+        n_aborted=record["aborted"],
+    )
+    return out
 
 
 def fit_window(
@@ -428,14 +571,20 @@ def fit_window(
 
     ``t``, ``y``: the window (finite values); ``starts``: start positions [s] (empty:
     one at the maximum). Returns the ``peaxart.Fit`` peaks, with ``shape``,
-    ``signal_height`` and ``signal_prominence`` (as ``peaxart.fit_chromatogram``).
+    ``signal_height`` and ``signal_prominence`` (as ``peaxart.fit_chromatogram``), and
+    the ``DIAGNOSTIC_COLUMNS`` of the fit kept; in ``attrs``: ``starts`` (the start
+    positions, with those added for ``min_peaks``) and the totals of its least-squares
+    fits (``n_least_squares``, with the trials of other backgrounds and extra peaks,
+    ``iterations_total``, ``n_aborted``).
     """
     from peaxart.chromatogram import Fit
     from peaxart.deconvolution import fitted_signal_peaks
     from peaxart.shapes import peak_shape
 
     t, y = np.asarray(t, dtype=float), np.asarray(y, dtype=float)
-    columns = [*Fit.columns, "shape", "signal_height", "signal_prominence"]
+    columns = [
+        *Fit.columns, "shape", "signal_height", "signal_prominence", *DIAGNOSTIC_COLUMNS
+    ]
     if len(t) < 5:
         return pd.DataFrame(columns=columns)
     shape = peak_shape(params.peak_shape, base.convention)
@@ -448,9 +597,18 @@ def fit_window(
         keep = np.sort(np.argsort(heights)[::-1][: params.max_peaks])
         starts = [starts[i] for i in keep]
 
+    start_sigma = None
+    if params.sigma_range_s is not None:
+        start_sigma = float(np.clip(half_width_sigma(t, y), *params.sigma_range_s))
+
     def fit_with(starts, significance: bool) -> pd.DataFrame:
-        config = params.extraction_config(base, t[-1] - t[0], len(starts), significance)
-        return Fit(config).integrate(t, y, rt=np.asarray(starts))
+        config = params.extraction_config(
+            base, t[-1] - t[0], len(starts), significance, start_sigma
+        )
+        sigma = None if start_sigma is None else np.full(len(starts), start_sigma)
+        with _recording() as record:
+            fitted = Fit(config).integrate(t, y, rt=np.asarray(starts), sigma=sigma)
+        return _diagnostics(fitted, record)
 
     def fit(starts) -> pd.DataFrame:
         """The fit; keeping all the peaks (positions, minimum): those whose height
@@ -459,22 +617,28 @@ def fit_window(
         if not params.keeps_all_peaks or len(fitted) >= len(starts):
             return fitted
         kept = fit_with(starts, False)
-        return kept.assign(sn=_signal_to_noise(t, y, kept, shape), lod=np.nan)
+        out = kept.assign(sn=_signal_to_noise(t, y, kept, shape), lod=np.nan)
+        out.attrs = dict(kept.attrs)
+        return out
 
     fitted = fit(starts)
     tries = 0
     while len(fitted) < params.min_peaks and tries < MAX_ADD_TRIES * params.min_peaks:
         tries += 1
-        added = _largest_residual(t, y, fitted, shape)
-        if any(abs(added - s) < 1e-9 for s in starts):
+        added = _largest_residual(t, y, fitted, shape, starts)
+        if added is None:
             break
         starts = sorted([*starts, added])
         fitted = fit(starts)
+    attrs = {**fitted.attrs, "starts": list(starts), "start_sigma": start_sigma}
     fitted = fitted.assign(shape=str(params.peak_shape))
     if fitted.empty:
-        return fitted.reindex(columns=columns)
-    height, prominence = fitted_signal_peaks(t, fitted, shape)
-    return fitted.assign(signal_height=height, signal_prominence=prominence)
+        out = fitted.reindex(columns=columns)
+    else:
+        height, prominence = fitted_signal_peaks(t, fitted, shape)
+        out = fitted.assign(signal_height=height, signal_prominence=prominence)
+    out.attrs = attrs
+    return out
 
 
 def chromatogram_window(
@@ -502,11 +666,13 @@ def override_fit(
     override: FitOverride,
     reference: float,
     base: px.ChromatogramFitConfig,
+    diagnostics: bool = False,
 ) -> pd.DataFrame:
     """The fit of an override in a run, as ``esper.fitting.FITTED_COLUMNS`` (each
     fitted peak given to the nearest extraction peak of the mass, ``fit_override_id``
     the override's); ``peaks``: the extraction peaks of the run (indexed by peak_idx).
-    Empty if the mass has no chromatogram or no peak."""
+    Empty if the mass has no chromatogram or no peak. ``diagnostics``: with the
+    ``DIAGNOSTIC_COLUMNS`` and the ``attrs`` of ``fit_window`` (not stored)."""
     from esper.fitting import FIT_COLUMNS, FITTED_COLUMNS
 
     lo, hi = override.window(reference)
@@ -530,6 +696,10 @@ def override_fit(
         columns={v: k for k, v in FIT_COLUMNS.items()}
     )
     out["peak_idx"] = on_mass.index.to_numpy()[nearest]
+    if diagnostics:
+        result = out[[*FITTED_COLUMNS, *DIAGNOSTIC_COLUMNS]]
+        result.attrs = dict(fitted.attrs)
+        return result
     return out[FITTED_COLUMNS]
 
 
