@@ -99,3 +99,29 @@ def test_panels_remembered(app, manager):
     again = _View()
     assert again.shown.isHidden() and not again.hidden.isHidden()
     assert [a.isChecked() for a in again.panel_actions()] == [False, True]
+
+
+def test_chromatogram_info_from_json():
+    """The details of the chromatogram: the items changed from their default, the others
+    following it (also the items added later)."""
+    from esper.gui.panels.chromatogram_info import INFO_ITEMS, shown_items
+
+    loaded = Settings.from_json(
+        json.dumps({"chromatogram_info": {"port": False, "flatness": True, "x": 1}})
+    )
+    assert loaded.chromatogram_info == {"port": False, "flatness": True}
+    shown = shown_items(loaded.chromatogram_info)
+    assert "port" not in shown and "flatness" in shown
+    assert {i.key for i in INFO_ITEMS if i.default} - {"port"} <= shown
+    assert Settings.from_json(json.dumps({"chromatogram_info": []})).chromatogram_info == {}
+
+
+def test_settings_dialog_chromatogram_info(app, manager):
+    from esper.gui.settings_dialog import SettingsDialog
+
+    dialog = SettingsDialog()
+    dialog.info_checks["port"].setChecked(False)
+    dialog.info_checks["flatness"].setChecked(True)
+    assert dialog.settings().chromatogram_info == {"port": False, "flatness": True}
+    dialog._fill(Settings())  # restore defaults
+    assert dialog.settings().chromatogram_info == {}

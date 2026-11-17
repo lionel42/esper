@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -21,12 +23,14 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from esper.gui.panels.chromatogram_info import GROUPS, INFO_ITEMS, shown_items
 from esper.gui.settings import Intensity, Settings, settings_manager
 from esper.libraries import Library
 
@@ -58,6 +62,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._libraries_tab(settings), "Libraries")
         tabs.addTab(self._matching_tab(settings), "Matching")
         tabs.addTab(self._mass_cal_tab(settings), "Mass calibration")
+        tabs.addTab(self._chromatogram_tab(settings), "Chromatogram")
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -158,6 +163,47 @@ class SettingsDialog(QDialog):
         form.addRow(note)
         return tab
 
+    def _chromatogram_tab(self, settings: Settings) -> QWidget:
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        note = QLabel(
+            "Details shown at the top left of the chromatogram (those that apply to "
+            "the selection). Peak: the peak of the selected compound at the selected "
+            "mass. Processing: as in the esper.yaml of the data directory now."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self.info_checks: dict[str, QCheckBox] = {}
+        for group in GROUPS:
+            box = QGroupBox(group)
+            grid = QGridLayout(box)
+            items = [item for item in INFO_ITEMS if item.group == group]
+            for i, item in enumerate(items):
+                check = QCheckBox(item.label)
+                check.setToolTip(item.description)
+                grid.addWidget(check, i // 3, i % 3)
+                self.info_checks[item.key] = check
+            layout.addWidget(box)
+        layout.addStretch()
+        self._fill_info(settings)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(content)
+        return scroll
+
+    def _fill_info(self, settings: Settings) -> None:
+        shown = shown_items(settings.chromatogram_info)
+        for key, check in self.info_checks.items():
+            check.setChecked(key in shown)
+
+    def _chromatogram_info(self) -> dict[str, bool]:
+        """The items shown or hidden unlike their default (the others keep following it)."""
+        return {
+            item.key: self.info_checks[item.key].isChecked()
+            for item in INFO_ITEMS
+            if self.info_checks[item.key].isChecked() != item.default
+        }
+
     # --- libraries ------------------------------------------------------------------
 
     def _fill_libraries(self, libraries: list[Library]) -> None:
@@ -225,6 +271,7 @@ class SettingsDialog(QDialog):
         self.normalize.setChecked(settings.normalize)
         self.n_best.setValue(settings.n_best_matches)
         self.drift_masses.setText(_masses_text(settings.mass_drift_masses))
+        self._fill_info(settings)
 
     def settings(self) -> Settings:
         """The current settings with the values of the dialog (other fields kept)."""
@@ -238,6 +285,7 @@ class SettingsDialog(QDialog):
             normalize=self.normalize.isChecked(),
             n_best_matches=self.n_best.value(),
             mass_drift_masses=_parse_masses(self.drift_masses.text()),
+            chromatogram_info=self._chromatogram_info(),
         )
 
     def accept(self) -> None:

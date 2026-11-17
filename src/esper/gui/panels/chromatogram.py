@@ -13,23 +13,25 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import QCheckBox, QVBoxLayout, QWidgetAction
 
-from esper.fitting import SOURCE_FIT
 from esper.gui.chromatogram_store import column_mass, mass_column
 from esper.gui.data import TIC, EsperData
 from esper.gui.labels import (
     NO_COMPOUND,
-    combined_label,
-    compound_label,
     mass_label,
     peak_compound_label,
 )
 from esper.gui.panels.base import BasePanel
+from esper.gui.panels.chromatogram_info import (
+    info_html,
+    info_lines,
+    shown_items,
+)
 from esper.gui.panels.chromatogram_items import (
     fit_fill_items,
     integration_items,
     lowest_near,
 )
-from esper.gui.plotting import add_curve, make_plot
+from esper.gui.plotting import add_curve, centered_text, make_plot
 from esper.gui.selection import Selection
 from esper.gui.settings import CurveStyle, Integration, settings_manager
 from esper.gui.style import TARGET_COLOR, overlay_colors
@@ -65,14 +67,6 @@ CHOICE_MENUS = {
     "chromatogram_integration": ("Integration", Integration),
     "chromatogram_style": ("Draw as", CurveStyle),
 }
-
-
-def _shape_text(p) -> str:
-    """Width and tail of a fitted peak: EMG (tail: tau / sigma) or Pap-Papai (tail: a)."""
-    shape = getattr(p, "fit_shape", None)
-    if shape == "emg":
-        return f"EMG σ = {p.fit_sigma_s:.2f}, τ/σ = {p.fit_tailing:.2f}"
-    return f"σ = {p.fit_sigma_s:.2f}, tail = {p.fit_tailing:.2f}"
 
 
 @dataclass
@@ -296,6 +290,7 @@ class ChromatogramPanel(BasePanel):
         self.draw_options = DrawOptions(self)
         self.draw_options.add_menus(self.plot)
         self.draw_options.changed.connect(self._redraw_keeping_view)
+        settings_manager().changed.connect(self._on_settings_changed)
         # Masses overlaid now, to redraw only when "peaking here" changes them after a pan/zoom
         self._overlaid: list = []
         self._peaking_timer = QTimer(self, singleShot=True, interval=PEAKING_DELAY_MS)
@@ -496,64 +491,22 @@ class ChromatogramPanel(BasePanel):
         self.legend.clear()
 
     def _update_info(self) -> None:
+        """The details of the selection (the items of ``chromatogram_info`` shown in the
+        settings)."""
         sel = self.selection
-        processing = self.data.processing
-        m = self.data.measurements.loc[sel.measurement_id]
-        lines = [
-            ("sample", f"{m.sample_type}"),
-            ("port", "–" if pd.isna(m.port) else f"{m.port:.0f}"),
-            (
-                "acquired",
-                "unknown"
-                if pd.isna(m.acq_datetime)
-                else f"{m.acq_datetime:%Y-%m-%d %H:%M}",
-            ),
-            ("peaks", f"{m.n_peaks}"),
-            ("compounds", f"{m.n_compounds}"),
-            ("mass cal", f"mode {m.mass_cal_mode}, {m.s_per_bin:.4f} s/bin"),
-        ]
-        if sel.compound_idx is not None:
-            c = self.data.compounds(sel.measurement_id).loc[sel.compound_idx]
-            lines += [
-                (
-                    "cmp",
-                    f"{compound_label(c.main_name, sel.compound_idx)} (#{sel.compound_idx}){combined_label(sel.compound_idxs)}",
-                ),
-                ("rt", f"{c.rt_mean_s:.1f} ± {c.rt_std_s:.2f} s"),
-                ("RI", f"{c.retention_index:.1f}"),
-                ("spectrum", f"{c.best_spectrum}"),
-                ("score", f"{c.best_score:.3f} (combined {c.best_score_combined:.3f})"),
-                ("valid", "yes" if c.valid_candidate else "no"),
-            ]
-            if not processing.uses_library:  # e.g. target search: no library match
-                lines = [line for line in lines if line[0] not in ("spectrum", "score")]
-        if sel.target is not None:
-            target = self.data.targets.loc[sel.target]
-            expected_rt = self.data.expected_rt(sel.measurement_id, sel.target)
-            masses = self.data.target_masses(sel.measurement_id, sel.target)
-            lines += [
-                (
-                    "target",
-                    sel.target
-                    + ("" if sel.compound_idx is not None else " (not found)"),
-                ),
-                (
-                    "expected RI",
-                    "unknown"
-                    if not np.isfinite(target["ri"])
-                    else f"{target['ri']:.1f}",
-                ),
-                (
-                    "expected rt",
-                    "unknown" if expected_rt is None else f"{expected_rt:.1f} s",
-                ),
-                ("expected ions", ", ".join(map(str, masses)) or "unknown"),
-            ]
-        if not processing.uses_retention_index:
-            lines = [line for line in lines if line[0] not in ("RI", "expected RI")]
-        self.info_label.setText(
-            "<br>".join(f"{k}&nbsp;&nbsp;{html.escape(str(v))}" for k, v in lines)
+        if sel.measurement_id is None:
+            self.info_label.setText("")
+            return
+        integration = self.draw_options.shown_integration(
+            self.data.is_fitted(sel.measurement_id)
         )
+        shown = shown_items(settings_manager().settings.chromatogram_info)
+        groups = info_lines(self.data, sel, integration, shown)
+        self.info_label.setText(info_html(groups))
+
+    def _on_settings_changed(self) -> None:
+        if self.show_info and self.isVisible():
+            self._update_info()
 
     def _mark_target(self) -> None:
         """Dashed line where the selected target is expected, and its identification
@@ -648,25 +601,24 @@ class ChromatogramPanel(BasePanel):
                     lines.append(
                         "A = –" if np.isnan(areas[i]) else f"A = {areas[i]:.0f}"
                     )
-                if np.isfinite(p.width_s):
-                    lines.append(f"W = {p.width_s:.2f}")
-            if p.source == SOURCE_FIT:
-                lines.append("<i>from the fit</i>")
             color = "#0050c8" if selected else "#000"
             weight = "bold" if selected else "normal"
-            label = pg.TextItem(
-                html=f'<div style="text-align:center; color:{color}; font-weight:{weight}; font-size:8pt">{"<br>".join(lines)}</div>',
-                anchor=(0.5, 0),
+            label = centered_text(
+                f'<span style="color:{color}; font-weight:{weight}; font-size:8pt">'
+                f'{"<br>".join(lines)}</span>'
             )
-            label.setPos(rt[i], y_label[i])
+            # centered below the apex drawn: of the fit when the fit is drawn
+            x = p.fit_rt_s if fitted and np.isfinite(p.fit_rt_s) else rt[i]
+            label.setPos(x, y_label[i])
             self._add(label)
 
     @staticmethod
     def _fit_label_lines(p, names, compound_idx: int) -> list[str]:
-        """Label of a peak in the integration view: the values of its fit."""
+        """Label of a peak in the integration view: rt, compound, height and area of
+        its fit (the other values: in the details of the panel)."""
         compound = html.escape(peak_compound_label(names, compound_idx))
         if pd.isna(p.fit_rt_s):
-            return [f"{p.rt_s:.1f}", compound, f"H = {p.height:.0f}", "not fitted"]
+            return [f"{p.rt_s:.1f}", compound, f"H = {p.height:.0f}", "A = –"]
         area = f"A = {p.fit_area:.0f}"
         if np.isfinite(p.fit_area_u):
             area += f" ± {p.fit_area_u:.0f}"
@@ -675,8 +627,6 @@ class ChromatogramPanel(BasePanel):
             compound,
             f"H = {p.height:.0f}",
             area,
-            _shape_text(p),
-            f"S/N = {p.fit_sn:.0f}",
         ]
 
     def _on_apex_clicked(self, item, points, ev=None) -> None:

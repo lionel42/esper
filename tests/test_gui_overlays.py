@@ -58,3 +58,15 @@ def test_menu_of_a_deleted_plot(app):
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
     overlays.set("tic", True)  # no RuntimeError from the deleted checkboxes
     assert checks["tic"].isChecked()
+
+
+def test_centered_text_lines(app):
+    """The lines of a peak label are centered on its position (Qt centers them only in a
+    fixed text width)."""
+    from esper.gui.plotting import centered_text
+
+    item = centered_text("a long first line<br>x")
+    document = item.textItem.document()
+    assert item.textItem.textWidth() == pytest.approx(document.idealWidth())
+    rect = item.textItem.mapRectToParent(item.textItem.boundingRect())
+    assert rect.center().x() == pytest.approx(0, abs=1)

@@ -98,3 +98,13 @@ def time_values(df: pd.DataFrame, column: str = "acq_datetime") -> np.ndarray:
     return ((df[column] - pd.Timestamp(0)) / pd.Timedelta(seconds=1)).to_numpy(
         dtype=float
     )
+
+
+def centered_text(html: str, anchor=(0.5, 0)) -> pg.TextItem:
+    """A TextItem of several lines of ``html``, each line centered: Qt centers the lines
+    (text-align) only in a fixed text width, the widest of them."""
+    item = pg.TextItem(html=f'<div style="text-align:center">{html}</div>', anchor=anchor)
+    document = item.textItem.document()
+    item.textItem.setTextWidth(document.idealWidth())
+    item.updateTextPos()
+    return item

@@ -97,6 +97,9 @@ class Settings:
     chromatogram_integration: Integration = Integration.FIT
     # How the chromatograms are drawn
     chromatogram_style: CurveStyle = CurveStyle.LINES
+    # Details shown in the chromatogram panel: item key -> shown (gui.panels.
+    # chromatogram_info.INFO_ITEMS; the items not in it have their default)
+    chromatogram_info: dict[str, bool] = field(default_factory=dict)
     # Spectral libraries, by priority
     libraries: list[Library] = field(default_factory=default_libraries)
     # Matching (alpinac's processing)
@@ -144,6 +147,11 @@ class Settings:
             view: {p: v for p, v in shown.items() if isinstance(v, bool)}
             for view, shown in settings.panels.items()
             if isinstance(shown, dict)
+        }
+        if not isinstance(settings.chromatogram_info, dict):
+            settings.chromatogram_info = {}
+        settings.chromatogram_info = {
+            k: v for k, v in settings.chromatogram_info.items() if isinstance(v, bool)
         }
         if not isinstance(settings.compare, dict):
             settings.compare = {}
