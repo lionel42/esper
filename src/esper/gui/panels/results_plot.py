@@ -31,8 +31,8 @@ Y_SYMBOLS = {"y": CROSS, "y2": "o", "y3": "t"}
 Y_SIGNS = {"y": "✕", "y2": "○", "y3": "△"}
 # Shown on the other y axes when they are checked first
 EXTRA_DEFAULTS = {
-    "y2": Axis(ion_element(1), ion_element(1).variable("fit area")),
-    "y3": Axis(ion_element(1), ion_element(1).variable("fit S/N")),
+    "y2": Axis(ion_element(1), ion_element(1).variable("area")),
+    "y3": Axis(ion_element(1), ion_element(1).variable("S/N")),
 }
 POINT_COLUMNS = ["measurement_id", "compound_idx", "name", "rt_mean_s"]
 

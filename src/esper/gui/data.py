@@ -793,13 +793,15 @@ class EsperData:
     ) -> pd.DataFrame:
         """Peaks of the compounds of ``results`` (the compounds without peaks left out).
 
-        ``n_peaks``, ``prominence_sum``, ``fit_area_sum`` and ``n_fitted`` (the fitted
+        ``n_peaks``, ``prominence_sum``, ``fit_area_sum`` (its uncertainty
+        ``fit_area_u_sum``: in quadrature, relative ``fit_area_rel_u`` [%]),
+        ``fit_rt_mean_s`` (of the fitted rts, detected where not fitted) and ``n_fitted`` (the fitted
         peaks), and the ``ion{k}_*`` columns (``ION_COLUMNS``) of its ions (``MAX_IONS``)
         (k = 1: main ion): the most prominent peak on each. The ions of a ``target``
         are its ions at the time of the run (``target_masses``, as unit masses; NaN
         where the compound has no peak on one), else the unit masses of its peaks,
         most prominent first. ``ion{k}_fit_area_rel_u``: the relative uncertainty of
-        the fitted area; ``ion{k}_ratio_*``: of ion k to the main ion (k > 1).
+        the fitted area [%]; ``ion{k}_ratio_*``: of ion k to the main ion (k > 1).
         """
         keys = ["measurement_id", "compound_idx"]
         peak_columns = set(self._table_columns("peak"))
@@ -816,14 +818,27 @@ class EsperData:
             tuple(candidates),
         ).reindex(columns=keys + ION_COLUMNS)
         grouped = peaks.groupby(keys)
+        by = [peaks[k] for k in keys]
+
+        def number(column: str) -> pd.Series:  # all NULL (not fitted): objects
+            return pd.to_numeric(peaks[column], errors="coerce")
+
         df = pd.DataFrame(
             {
                 "n_peaks": grouped.size(),
                 "prominence_sum": grouped["prominence"].sum(),
                 "fit_area_sum": grouped["fit_area"].sum(min_count=1),
+                "fit_area_u_sum": np.sqrt(
+                    (number("fit_area_u") ** 2).groupby(by).sum(min_count=1)
+                ),
                 "n_fitted": grouped["fit_area"].count(),
+                "fit_rt_mean_s": number("fit_rt_s")
+                .fillna(number("rt_s"))
+                .groupby(by)
+                .mean(),
             }
         )
+        df["fit_area_rel_u"] = 100 * df["fit_area_u_sum"] / df["fit_area_sum"]
         # The most prominent peak of each compound on each unit mass
         peaks["unit_mass"] = peaks["mass"].map(unit_mass)
         best = peaks.sort_values("prominence", ascending=False).drop_duplicates(
@@ -851,7 +866,9 @@ class EsperData:
             df = df.join(ion.add_prefix(f"ion{rank + 1}_"))
         df = df.reset_index()
         for k in range(1, n_ions + 1):
-            df[f"ion{k}_fit_area_rel_u"] = df[f"ion{k}_fit_area_u"] / df[f"ion{k}_fit_area"]
+            df[f"ion{k}_fit_area_rel_u"] = (
+                100 * df[f"ion{k}_fit_area_u"] / df[f"ion{k}_fit_area"]
+            )
             if k > 1:
                 for column in RATIO_COLUMNS:
                     df[f"ion{k}_ratio_{column}"] = df[f"ion{k}_{column}"] / df[f"ion1_{column}"]

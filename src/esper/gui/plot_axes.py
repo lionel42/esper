@@ -29,6 +29,7 @@ class Variable:
     label: str
     column: str  # of the element (an ion: after its prefix)
     time: bool = False  # a datetime column, on a date axis
+    tip: str = ""  # in the list of the variables
 
 
 @dataclass(frozen=True)
@@ -48,7 +49,7 @@ class Axis:
     element: Element
     variable: Variable
     # Comparing compounds: the compound of the axis (None: the compound plotted; the
-    # measurement has none)
+    # run has none)
     compound: str | None = None
 
     @property
@@ -64,8 +65,10 @@ class Axis:
 
     @property
     def label(self) -> str:
+        """'time' (of the run), 'Compound area', 'Ion 1 (119) area'; comparing:
+        'SF6 Ion 1 (89) area'."""
         if self.element.key == "measurement":
-            return f"measurement {self.variable.label}"
+            return self.variable.label
         label = f"{self.element.label} {self.variable.label}"
         return label if self.compound is None else f"{self.compound} {label}"
 
@@ -82,14 +85,18 @@ class Axis:
         return f"{value:.4g}"
 
 
+# The variables have the same label on every element where they mean the same (the
+# compound: of all its peaks; an ion: of its peak), so that changing the element keeps
+# the variable. The values of the fit have the plain names, those of the peak detection
+# (before the fit) end with 'detected'.
 MEASUREMENT = Element(
     "measurement",
-    "Measurement",
+    "Run",
     (
-        Variable("time", "acq_datetime", time=True),
-        Variable("position", "measurement_pos"),
-        Variable("id", "measurement_id"),
-        Variable("port", "port"),
+        Variable("time", "acq_datetime", time=True, tip="Start of the acquisition"),
+        Variable("position", "measurement_pos", tip="Position in the runs, by time"),
+        Variable("id", "measurement_id", tip="measurement_id in the database"),
+        Variable("port", "port", tip="Inlet port"),
     ),
     tip="The run of the compound",
 )
@@ -97,37 +104,63 @@ COMPOUND = Element(
     "compound",
     "Compound",
     (
-        Variable("prominence sum", "prominence_sum"),
-        Variable("fit area sum", "fit_area_sum"),
-        Variable("rt [s]", "rt_mean_s"),
-        Variable("retention index", "retention_index"),
-        Variable("score", "best_score"),
-        Variable("score combined", "best_score_combined"),
-        Variable("n peaks", "n_peaks"),
-        Variable("n fitted peaks", "n_fitted"),
+        Variable("area", "fit_area_sum", tip="Sum of the fitted areas of its peaks"),
+        Variable(
+            "area ±",
+            "fit_area_u_sum",
+            tip="Uncertainty of the area: of its peaks, added in quadrature",
+        ),
+        Variable("area ± %", "fit_area_rel_u", tip="Relative uncertainty of the area"),
+        Variable(
+            "rt [s]",
+            "fit_rt_mean_s",
+            tip="Mean of the fitted rts of its peaks (detected where not fitted)",
+        ),
+        Variable("RI", "retention_index", tip="Retention index"),
+        Variable("score", "best_score", tip="Score of the best library match"),
+        Variable(
+            "score + RI",
+            "best_score_combined",
+            tip="Score combined with the retention index difference",
+        ),
+        Variable("peaks", "n_peaks", tip="Number of peaks (masses)"),
+        Variable("fitted peaks", "n_fitted", tip="Number of fitted peaks"),
+        Variable(
+            "prominence detected",
+            "prominence_sum",
+            tip="Sum of the prominences of its peaks (peak detection)",
+        ),
     ),
     tip="The compound: all its peaks",
 )
 # Variables of an ion: of its most prominent peak
 ION_VARIABLES = (
-    Variable("prominence", "prominence"),
-    Variable("height", "height"),
-    Variable("fit area", "fit_area"),
-    Variable("fit area u", "fit_area_u"),
-    Variable("fit area rel. u", "fit_area_rel_u"),
-    Variable("fit height", "fit_height"),
-    Variable("fit rt [s]", "fit_rt_s"),
-    Variable("fit sigma [s]", "fit_sigma_s"),
-    Variable("fit tailing", "fit_tailing"),
-    Variable("fit baseline", "fit_baseline"),
-    Variable("fit S/N", "fit_sn"),
-    Variable("rt [s]", "rt_s"),
-    Variable("width [s]", "width_s"),
-    Variable("mass", "mass"),
+    Variable("area", "fit_area", tip="Fitted area"),
+    Variable("area ±", "fit_area_u", tip="Uncertainty of the fitted area"),
+    Variable("area ± %", "fit_area_rel_u", tip="Relative uncertainty of the area"),
+    Variable("height", "fit_height", tip="Fitted height, above the baseline"),
+    Variable("S/N", "fit_sn", tip="Signal to noise of the fit"),
+    Variable("rt [s]", "fit_rt_s", tip="Fitted apex"),
+    Variable("σ [s]", "fit_sigma_s", tip="Fitted width (sigma of its Gaussian)"),
+    Variable("tailing", "fit_tailing", tip="Tail parameter (EMG: τ/σ)"),
+    Variable("baseline", "fit_baseline", tip="Fitted background at the apex"),
+    Variable("m/z", "mass", tip="Mass of the peak"),
+    Variable(
+        "prominence detected", "prominence", tip="Prominence (peak detection)"
+    ),
+    Variable("height detected", "height", tip="Height (peak detection)"),
+    Variable("rt detected [s]", "rt_s", tip="Apex (peak detection)"),
+    Variable(
+        "FWHM detected [s]", "width_s", tip="Width at half maximum (peak detection)"
+    ),
 )
 # Of the other ions: their ratio to the main ion
 RATIO_VARIABLES = tuple(
-    Variable(f"{v.label} / main ion", f"ratio_{v.column}")
+    Variable(
+        f"{v.label} / main",
+        f"ratio_{v.column}",
+        tip=f"{v.tip}, over the one of the main ion (ion 1)",
+    )
     for v in ION_VARIABLES
     if v.column in RATIO_COLUMNS
 )
@@ -143,10 +176,9 @@ def _ordinal(k: int) -> str:
 def ion_element(k: int, mass: int | None = None) -> Element:
     """Ion ``k`` (1: the main ion) of the compounds; ``mass``: its unit mass when the
     same in all the runs (in its label)."""
-    name = "Main ion" if k == 1 else f"{_ordinal(k)} ion"
     return Element(
         f"ion{k}",
-        name if mass is None else f"{name} (m/z {mass})",
+        f"Ion {k}" if mass is None else f"Ion {k} ({mass})",
         ION_VARIABLES + (RATIO_VARIABLES if k > 1 else ()),
         prefix=f"ion{k}_",
         tip=f"Ion {k} of the target at the time of the run (by rank of its ions); "
@@ -173,7 +205,7 @@ def results_elements(df: pd.DataFrame | None) -> tuple[Element, ...]:
 
 RESULTS_ELEMENTS = results_elements(None)
 RESULTS_X = Axis(MEASUREMENT, MEASUREMENT.variables[0])
-RESULTS_Y = Axis(COMPOUND, COMPOUND.variables[0])
+RESULTS_Y = Axis(COMPOUND, COMPOUND.variable("area"))
 
 
 class AxisSelector(QWidget):
@@ -375,7 +407,9 @@ class AxisSelector(QWidget):
         combo = self.variable_combo
         combo.blockSignals(True)
         combo.clear()
-        combo.addItems([v.label for v in self.element.variables])
+        for i, variable in enumerate(self.element.variables):
+            combo.addItem(variable.label)
+            combo.setItemData(i, variable.tip, Qt.ItemDataRole.ToolTipRole)
         combo.setCurrentIndex(max(combo.findText(keep), 0))
         combo.blockSignals(False)
 

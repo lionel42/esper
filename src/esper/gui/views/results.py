@@ -37,7 +37,7 @@ class ResultsView(BaseView):
 
         # What each plots: chosen above it (the compound, run type and validity: here)
         self.results = self.add_panel(ResultsPlotPanel(data, selection), stretch=2)
-        main_area = Axis(ion_element(1), ion_element(1).variable("fit area"))
+        main_area = Axis(ion_element(1), ion_element(1).variable("area"))
         self.results2 = self.add_panel(
             ResultsPlotPanel(data, selection, title="Results 2", y=main_area),
             stretch=2,
