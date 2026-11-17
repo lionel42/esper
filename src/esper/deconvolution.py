@@ -33,7 +33,7 @@ import pandas as pd
 import peaxart as px
 import xarray as xr
 
-FIT_CONFIG = px.ChromatogramFitConfig()
+FIT_CONFIG = px.ChromatogramFitConfig(sigma_from_detection=True)
 """Default fit of the chromatograms (also of ``esper.fitting``)."""
 # dataset variable -> column of px.fit_chromatogram
 FIT_VARIABLES = {
