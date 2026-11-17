@@ -22,6 +22,8 @@ FIT_ALPHA_SELECTED = 90
 # Integration view: bases of a fitted peak where it falls to this fraction of its height
 FIT_BASE_FRACTION = 0.01
 INTEGRATION_COLOR = "#c80000"
+# Sum of the fitted peaks of a group of overlapping peaks, on their background
+SUM_COLOR = "#7b1fa2"
 # Integration of the extraction (ips)
 IPS_COLOR = "r"
 # Peak labels without a baseline: below the lowest signal within this of the apex [s]
@@ -109,6 +111,38 @@ def fit_integration_items(t: np.ndarray, peaks) -> list:
     return items
 
 
+def fit_sum_items(t: np.ndarray, peaks, color=SUM_COLOR) -> list:
+    """The sum of the fitted peaks of one mass on their background, where two or more
+    overlap (where their shapes are above ``FIT_VISIBLE`` of their height): one curve
+    per group of overlapping peaks. The background at each time is the one of the
+    nearest apex (each peak has the background of its group at its apex)."""
+    shapes = sorted(fitted_shapes(t, peaks, FIT_VISIBLE), key=lambda s: s[1].start)
+    groups: list[list] = []
+    for shape in shapes:
+        if groups and shape[1].start < max(s[1].stop for s in groups[-1]):
+            groups[-1].append(shape)
+        else:
+            groups.append([shape])
+    items = []
+    for group in groups:
+        if len(group) < 2:
+            continue
+        lo = min(part.start for _, part, _ in group)
+        hi = max(part.stop for _, part, _ in group)
+        tt = t[lo:hi]
+        total = np.zeros(len(tt))
+        for _, part, shape in group:
+            total[part.start - lo : part.stop - lo] += shape
+        rts = np.array([p.fit_rt_s for p, _, _ in group])
+        bases = np.array([peak_baseline(tt, p) for p, _, _ in group])
+        nearest = np.abs(tt[:, None] - rts[None, :]).argmin(axis=1)
+        base = bases[nearest, np.arange(len(tt))]
+        curve = pg.PlotCurveItem(tt, base + total, pen=pg.mkPen(color, width=1.5))
+        curve.setZValue(-1)
+        items.append(curve)
+    return items
+
+
 def ips_items(
     t: np.ndarray, y: np.ndarray, peaks
 ) -> tuple[list, np.ndarray, np.ndarray]:
@@ -172,9 +206,11 @@ def integration_items(
     if integration == Integration.EXTRACTION:
         return ips_items(t, y, peaks)
     if integration == Integration.FIT:
-        items = fit_integration_items(t, peaks)
+        items = fit_integration_items(t, peaks) + fit_sum_items(t, peaks)
     elif integration == Integration.FIT_SHAPES:
-        items = fit_fill_items(t, peaks, "k", selected=selected)
+        items = fit_fill_items(t, peaks, "k", selected=selected) + fit_sum_items(
+            t, peaks
+        )
     else:
         nan = np.full(len(peaks), np.nan)
         return [], nan, nan.copy()

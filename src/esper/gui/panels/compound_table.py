@@ -14,6 +14,7 @@ from esper.gui.identification_dialog import IdentificationDialog
 from esper.gui.labels import compound_label
 from esper.gui.panels.table import Column, TablePanel, bool_color, score_color
 from esper.gui.references import identification_candidate
+from esper.gui.refit_dialog import RefitDialog
 from esper.gui.selection import Selection
 
 
@@ -154,6 +155,9 @@ class CompoundTablePanel(TablePanel):
             lambda: self._write(self.data.reset_identification, mid, compound_idx),
         )
         reset.setEnabled(isinstance(compound["identified_at"], str))
+        menu.addSeparator()
+        refit = menu.addAction("Refit peaks…", lambda: self._refit(mid, compound_idx))
+        refit.setEnabled(bool(compound["n_peaks"] > 0))
 
     def _edit_identification(self, measurement_id: int, compound_idx: int) -> None:
         dialog = IdentificationDialog(self.data, measurement_id, compound_idx, self)
@@ -178,6 +182,15 @@ class CompoundTablePanel(TablePanel):
                 dialog.name,
                 *candidate,
             )
+
+    def _refit(self, measurement_id: int, compound_idx: int) -> None:
+        """The fit override of the target of a compound: previewed, saved, applied."""
+        dialog = RefitDialog(
+            self.data, measurement_id, compound_idx, self.selection.mass, self
+        )
+        dialog.exec()
+        if dialog.saved:  # runs fitted again: their peaks and compounds read again
+            self.selection.identification_edited()
 
     def _merge(self, measurement_id: int, compound_idxs: tuple[int, ...]) -> None:
         main, *others = compound_idxs

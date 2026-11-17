@@ -208,6 +208,11 @@ class EsperData:
 
     # --- editing ----------------------------------------------------------------------
 
+    def reload(self) -> None:
+        """Read the database again after another connection wrote it (e.g. a refit)."""
+        self.invalidate()
+        self._create_compound_view()
+
     def _write(self, *statements: tuple[str, tuple]) -> None:
         """Write to the database in one transaction, with its own connection (the one of the GUI is read-only).
 

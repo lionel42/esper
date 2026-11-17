@@ -28,5 +28,8 @@ def peak_compound_label(names, compound_idx: int) -> str:
     return compound_label(names.get(compound_idx), compound_idx)
 
 
-def mass_label(mass: int | None) -> str:
-    return "TIC" if mass is TIC else f"m/z {mass}"
+def mass_label(mass: int | float | None) -> str:
+    """'m/z 119' (a whole mass read as a float too), 'm/z 68.5', or 'TIC'."""
+    if mass is TIC:
+        return "TIC"
+    return f"m/z {mass:g}" if isinstance(mass, float) else f"m/z {mass}"

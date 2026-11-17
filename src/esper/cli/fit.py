@@ -18,6 +18,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-f", "--force", action="store_true", help="fit all the measurements again"
     )
+    parser.add_argument(
+        "--overrides",
+        action="store_true",
+        help="also fit again the measurements that a fit override applies to (made in"
+        " the GUI: right click on a compound, Refit peaks)",
+    )
     add_data_dir(parser)
     add_workers(parser)
 
@@ -44,6 +50,12 @@ def run(args: argparse.Namespace) -> int:
         # the runs identified by target search: their targets in the fit (read once)
         target_search = TargetSearch(TargetIndex.from_db(con), processing.target)
         todo = to_fit(con, force=args.force)
+        if args.overrides and not args.force:
+            from esper.fit_overrides import read_overrides, runs_covered
+
+            known = set(todo)
+            covered = runs_covered(con, read_overrides(con))
+            todo += [run for run in covered if run not in known]
         print(f"measurements to fit: {len(todo)}")
         with fit_pool(args.workers) as pool:
             for mid, name in todo:

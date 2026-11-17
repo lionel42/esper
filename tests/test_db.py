@@ -3,7 +3,6 @@
 from esper import db
 
 
-
 def test_new_data_dir_gitignore(tmp_path):
     """A new data directory gets a .gitignore keeping only its configuration; an
     existing one is left as it is."""

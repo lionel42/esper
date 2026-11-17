@@ -36,10 +36,10 @@ GITIGNORE = f"""\
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 # Versions that are upgraded by creating the missing tables and columns (3: the area
 # columns of an unreleased version, kept)
-COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
 # Oldest SCHEMA_VERSION of esper that can still use a database of this version, stored in
 # the database so that older esper versions know whether they can use it. A schema change
 # that only adds tables or nullable columns keeps it, a breaking change sets it to SCHEMA_VERSION.
@@ -50,6 +50,8 @@ MIN_READER_VERSION = 9  # 9: measurement.sample_number renamed port
 # (8 keeps it: measurement.identification, nullable)
 # (10 keeps it: compound.source, nullable; an older esper fitting again keeps the
 # compounds made by the fit, left without peaks)
+# (11 keeps it: the fit_override table and peak.fit_override_id, nullable; an older
+# esper fitting again does not apply the overrides)
 # MIN_READER_VERSION of the schema versions written before schema_info existed
 LEGACY_MIN_READER_VERSIONS = {3: 2}  # 3 only adds nullable columns
 
@@ -121,6 +123,8 @@ ADDED_COLUMNS = {
         ("fit_shape_height", "REAL"),  # its amplitude
         # derivative of the background at the apex [counts / s] (NULL: constant)
         ("fit_baseline_slope", "REAL"),
+        # the fit_override the peak was fitted with (NULL: the fit of the data directory)
+        ("fit_override_id", "INTEGER"),
     ],
     "compound_identification": [
         # Best library spectrum of the name given by hand, and its scores
@@ -367,6 +371,24 @@ CREATE TABLE IF NOT EXISTS target_rt (
 CREATE TABLE IF NOT EXISTS target_alias (
     alias               TEXT PRIMARY KEY,
     name                TEXT REFERENCES target ON DELETE CASCADE
+);
+
+-- Fit parameters of the peaks of a target on one mass, overriding the fit of the data
+-- directory in a window around the target (esper.fit_overrides): applied to the runs
+-- acquired from valid_from up to valid_to (NULL: no limit, also the future runs)
+-- of the sample_types, each time they are fitted
+CREATE TABLE IF NOT EXISTS fit_override (
+    override_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    target              TEXT NOT NULL,          -- a target name
+    mass                REAL NOT NULL,          -- the chromatogram (peak.mass)
+    rt_from_s           REAL NOT NULL,          -- window, relative to the reference rt
+    rt_to_s             REAL NOT NULL,          -- of the target in the run
+    valid_from          TEXT,                   -- ISO, as measurement.acq_datetime
+    valid_to            TEXT,                   -- included
+    sample_types        TEXT,                   -- JSON list, NULL: all
+    params              TEXT NOT NULL,          -- JSON, esper.fit_overrides.OverrideParams
+    created_at          TEXT NOT NULL,
+    note                TEXT
 );
 
 -- Key/value information about the database, e.g. where the targets come from

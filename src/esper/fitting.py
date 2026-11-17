@@ -92,6 +92,8 @@ FIT_COLUMNS = {
     "fit_shape_rt_s": "shape_rt",
     "fit_shape_height": "shape_height",
     "fit_baseline_slope": "baseline_slope",
+    # the override the peak was fitted with (esper.fit_overrides), NaN: the default fit
+    "fit_override_id": "override_id",
 }
 # Columns of fit_mass / fit_peaks
 FITTED_COLUMNS = ["peak_idx", *FIT_COLUMNS, "signal_height", "signal_prominence"]
@@ -147,7 +149,7 @@ def _as_fitted(
     nearest extraction peak of the mass: it becomes a new peak (``fitted_peak_table``).
     """
     shape = (config or FIT_CONFIG).peak_shape
-    fitted = fitted.assign(shape=fitted.attrs.get("peak_shape", shape))
+    fitted = fitted.assign(shape=fitted.attrs.get("peak_shape", shape), override_id=np.nan)
     out = fitted.rename(
         columns={v: k for k, v in FIT_COLUMNS.items()} | {"peak": "peak_idx"}
     )
@@ -851,6 +853,7 @@ def fit_measurement(
     peaks, compounds = extraction(con, mid)
     frame = pd.read_parquet(Path(data_dir) / chromatogram_file)
     fitted = fit_peaks(frame, peaks, workers, pool, config)
+    fitted = _with_overrides(con, mid, fitted, frame, peaks, config, time)
     if method != TARGET:
         target_search = None
     names = _compound_names(con, mid) if target_search is not None else None
@@ -887,6 +890,44 @@ def fit_measurement(
     )
     _store_fit(con, mid, table, changes, made_rows)
     return table
+
+
+def _with_overrides(
+    con: sqlite3.Connection,
+    mid: int,
+    fitted: pd.DataFrame,
+    frame: pd.DataFrame,
+    peaks: pd.DataFrame,
+    config: px.ChromatogramFitConfig | None,
+    time,
+) -> pd.DataFrame:
+    """The fit of a run with the fit overrides that apply to it (esper.fit_overrides)."""
+    from esper import fit_overrides
+    from esper.target_index import TargetIndex
+
+    overrides = fit_overrides.read_overrides(con)
+    if not overrides:
+        return fitted
+    (sample_type,) = con.execute(
+        "SELECT sample_type FROM measurement WHERE measurement_id = ?", (mid,)
+    ).fetchone()
+    applying = fit_overrides.run_overrides(overrides, time, sample_type)
+    if not applying:
+        return fitted
+    targets = TargetIndex.from_db(con)
+    located = []
+    for override in applying:
+        reference = fit_overrides.reference_rt(con, mid, override.target, targets, time)
+        if reference is None:
+            logger.info(
+                f"measurement {mid}: no rt of {override.target}, override"
+                f" {override.override_id} not applied"
+            )
+            continue
+        located.append((override, reference))
+    return fit_overrides.apply_overrides(
+        fitted, frame, peaks, located, config or FIT_CONFIG
+    )
 
 
 def _fit_inputs(con: sqlite3.Connection, mid: int) -> tuple:

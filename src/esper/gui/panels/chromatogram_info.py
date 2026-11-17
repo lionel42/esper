@@ -84,6 +84,9 @@ INFO_ITEMS: tuple[InfoItem, ...] = (
     ),
     InfoItem("integration", PEAK, "integration", "Integration drawn"),
     InfoItem(
+        "peak_override", PEAK, "override", "Fit override the peak was fitted with"
+    ),
+    InfoItem(
         "peak_source", PEAK, "from", "Extraction peak, or split by the fit", False
     ),
     InfoItem("prominence", PEAK, "prominence", "Prominence (extraction)", False),
@@ -303,6 +306,12 @@ def _peak_values(p, integration: Integration, fit_config) -> dict[str, str]:
     if _finite(p.get("width_s")):
         values["peak_width"] = f"{p.width_s:.2f} s"
     values["integration"] = _INTEGRATION_TEXTS[integration]
+    override = p.get("fit_override_id")
+    values["peak_override"] = (
+        f"#{int(override)} (right click on the compound: Refit peaks)"
+        if _finite(override)
+        else "none (fit of the data directory)"
+    )
     values["peak_source"] = "split by the fit" if p.get("source") == SOURCE_FIT else (
         "extraction"
     )
