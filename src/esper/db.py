@@ -24,6 +24,15 @@ import yaml
 DB_FILENAME = "esper.sqlite"
 CONFIG_FILENAME = "esper.yaml"
 CHROMATOGRAMS_DIRNAME = "chromatograms"
+GITIGNORE_FILENAME = ".gitignore"
+GITIGNORE = f"""\
+# esper data directory: only the configuration is versioned, not the data (database,
+# chromatograms, ...). Add here (!<file>) the other files to version.
+*
+!{GITIGNORE_FILENAME}
+!*.yaml
+!*.yml
+"""
 
 logger = logging.getLogger(__name__)
 
@@ -485,6 +494,8 @@ def connect(
     path = db_path(data_dir)
     if not create and not path.is_file():
         raise FileNotFoundError(f"No esper database at {path}")
+    if create and not readonly and not path.is_file():
+        write_gitignore(data_dir)
     if readonly:
         con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     else:
@@ -499,6 +510,17 @@ def connect(
         con.close()
         raise
     return con
+
+
+def write_gitignore(data_dir: Path) -> None:
+    """Write the .gitignore of a new data directory (none yet): git keeps only its
+    configuration (the yaml files), not its data."""
+    path = Path(data_dir) / GITIGNORE_FILENAME
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(GITIGNORE)
+    logger.info(f"{path}: written, git keeps only the configuration of {data_dir}")
 
 
 def min_reader_version(con: sqlite3.Connection) -> int | None:
