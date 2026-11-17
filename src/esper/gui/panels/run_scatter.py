@@ -57,6 +57,9 @@ class RunScatterPanel(BasePanel):
         self.plotted: pd.DataFrame | None = None
         # The points with an x value, whatever their y (e.g. for other y axes)
         self.with_x: pd.DataFrame | None = None
+        # The x axis of the points drawn (``x_key``): redrawn with the same one, its
+        # range is kept (another y, run type...)
+        self._x_key = None
 
         self.plot = make_plot()
         self.legend = self.plot.addLegend(offset=(-10, 10))
@@ -123,6 +126,10 @@ class RunScatterPanel(BasePanel):
         """The label of an axis (None: none)."""
         return None
 
+    def x_key(self):
+        """What the x values are: the range of the x axis is kept while it is the same."""
+        return self.options["x"]
+
     def select_point(self, data: tuple) -> None:
         """Select the point clicked (its ``data`` in ``add_points``)."""
         raise NotImplementedError
@@ -131,6 +138,8 @@ class RunScatterPanel(BasePanel):
 
     def redraw(self) -> None:
         df = self.load()
+        x_key = self.x_key() if df is not None else None
+        x_range = self.plot.viewRange()[0] if x_key == self._x_key else None
         self.plot.clear()
         self.legend.clear()
         for which, side in (("x", "bottom"), ("y", "left")):
@@ -145,6 +154,7 @@ class RunScatterPanel(BasePanel):
             self.plot.setTitle(title, color="k")
         self.plot.addItem(self.highlight)
         self.plotted = self.with_x = None
+        self._x_key = x_key
         if df is None:
             self.highlight.clear()
             return
@@ -156,6 +166,12 @@ class RunScatterPanel(BasePanel):
         self.draw_points(df)
         self._update_highlight()
         self.plot.autoRange()
+        if x_range is not None and len(df):
+            # the same x: its range kept, y fitted to the points in it
+            view = self.plot.getViewBox()
+            view.setXRange(*x_range, padding=0)
+            view.setAutoVisible(y=True)
+            view.enableAutoRange(axis=pg.ViewBox.YAxis)
 
     def add_points(
         self,

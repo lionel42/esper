@@ -269,6 +269,14 @@ class ResultsPlotPanel(RunScatterPanel):
         df = self._loaded
         return None if df is None or df.empty else df
 
+    def x_key(self):
+        """The x axis, and the compound plotted when its values are of the compound
+        (not the measurement's, not comparing: the axis names its compound)."""
+        x = self.options["x"]
+        if self.options["compare"] or x.element.key == "measurement":
+            return x
+        return x, self.selection.label
+
     def _ys(self) -> dict[str, Axis]:
         """The y axes shown: y, and y2, y3 if checked."""
         return {
