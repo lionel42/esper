@@ -2,7 +2,9 @@
 
 The peaks of each mass are found in each window where it was measured
 (:mod:`esper.windows`), after its baseline is removed (``peaxart.remove_baseline``, of
-the window), with the legacy detection of alpinac (``peaxart.find_chromatogram_peaks``).
+the window), with the legacy detection of alpinac (``peaxart.find_chromatogram_peaks``),
+its prominence threshold relative to the noise of the window
+(``esper.processing.config.DetectionConfig``).
 The peaks of all masses are then grouped into compounds of co-eluting peaks
 (``peaxart.group_peaks_legacy``), whatever the method that identifies them.
 
@@ -14,13 +16,18 @@ is done on the stored chromatograms, with its own background.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 import peaxart as px
+from peaxart.chromatogram import noise_std
 
 from esper.deconvolution import chromatogram_masses
 from esper.windows import is_continuous, measured_windows
+
+if TYPE_CHECKING:
+    from esper.processing.config import DetectionConfig
 
 logger = logging.getLogger(__name__)
 
@@ -79,13 +86,14 @@ def _mass(column: str) -> int | float:
 def find_peaks(
     frame: pd.DataFrame,
     baseline: px.BaselineConfig | None,
-    detection: px.LegacyDeconvolutionConfig,
+    detection: DetectionConfig,
 ) -> pd.DataFrame:
     """The peaks of all the masses of a run (``peaxart.find_chromatogram_peaks`` columns),
     found in each window of each mass; their scans are those of the whole run.
 
     ``frame``: the chromatograms (index: rt [s], one column per mass; ``tic`` left out).
     ``baseline``: removed from each window before (None: not removed).
+    ``detection``: its prominence threshold relative to the noise of each window.
     """
     t = frame.index.to_numpy(dtype=float)
     continuous = is_continuous(frame)
@@ -94,6 +102,8 @@ def find_peaks(
         y = frame[column].to_numpy(dtype=float)
         for index in measured_windows(y, continuous, MIN_WINDOW_POINTS):
             values = y[index]
+            # of the measured values: the baseline removal smooths them
+            min_prominence = detection.min_prominence(noise_std(values))
             if baseline is not None:
                 values = px.remove_baseline(values, baseline)
             peaks = px.find_chromatogram_peaks(
@@ -102,7 +112,7 @@ def find_peaks(
                 [_mass(column)],
                 detection.width,
                 detection.height,
-                detection.prominence,
+                min_prominence,
             )
             if len(peaks):
                 for scans in ("left_bases", "right_bases"):  # of the run
@@ -116,7 +126,7 @@ def find_peaks(
 def detect(
     frame: pd.DataFrame,
     baseline: px.BaselineConfig | None,
-    detection: px.LegacyDeconvolutionConfig,
+    detection: DetectionConfig,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """The peaks (indexed by peak_idx) and compounds (indexed by compound_idx) of a run,
     with the columns of the database; the compounds not identified yet."""

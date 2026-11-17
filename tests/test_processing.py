@@ -4,6 +4,8 @@ suspect screening, and the pipeline (esper peaks, esper upload)."""
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pandas as pd
 import peaxart as px
@@ -12,6 +14,7 @@ import pytest
 from esper import db
 from esper.processing import PEAK_SOURCE
 from esper.processing.config import (
+    DetectionConfig,
     ProcessingConfigError,
     SuspectScreeningConfig,
     TargetSearchConfig,
@@ -33,7 +36,8 @@ def test_defaults():
     config = processing_config(None)
     assert config.method is None
     assert config.baseline == px.BaselineConfig()
-    assert config.detection == px.LegacyDeconvolutionConfig(width=5)
+    assert config.detection == DetectionConfig()
+    assert (config.detection.width, config.detection.min_snr) == (5, 10)
     assert config.fit.peak_shape == "emg"
 
 
@@ -135,6 +139,22 @@ def test_peaks_grouped_into_compounds():
     assert compounds["compound_name"].isna().all()
     assert set(compounds["valid_candidate"]) == {0}
     assert peaks["width_s"].between(1.5, 4).all()  # sigma 1 s: FWHM 2.35 s
+
+
+def test_prominence_relative_to_the_noise():
+    """A small peak on a quiet mass is found (legacy: 120 counts), the same peak in
+    noise of its size is not."""
+    rng = np.random.default_rng(1)
+    quiet = 48 + rng.normal(0, 0.7, len(T)) + _gauss(T, 100, 60, sigma=2)
+    noisy = 48 + rng.normal(0, 15, len(T)) + _gauss(T, 100, 60, sigma=2)
+    frame = pd.DataFrame({"173": quiet, "174": noisy}, index=pd.Index(T, name="rt"))
+    config = processing_config(None)
+    peaks = find_peaks(frame, config.baseline, config.detection)
+    assert sorted(zip(peaks["mass"], peaks["peak_rt"].round(0))) == [(173, 100)]
+    legacy = dataclasses.replace(config.detection, prominence=120, min_snr=0)
+    assert find_peaks(frame, config.baseline, legacy).empty
+    # the floor: no noise, no threshold of 0
+    assert DetectionConfig().min_prominence(0.0) == 20
 
 
 def test_scan_runs_one_window_per_mass():

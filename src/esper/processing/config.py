@@ -8,8 +8,8 @@
                               # with target search)
       baseline:               # peaxart.BaselineConfig, before the detection (false: none)
         lam: 1.0e+6
-      detection:              # peaxart.LegacyDeconvolutionConfig (DETECTION_CONFIG)
-        prominence: 200
+      detection:              # DetectionConfig (peaxart's legacy keys, + min_snr)
+        min_snr: 10
       fit:                    # peaxart.ChromatogramFitConfig
         peak_shape: emg
       target:                 # target search (TargetSearchConfig)
@@ -45,13 +45,45 @@ logger = logging.getLogger(__name__)
 
 PROCESSING_KEY = "processing"
 
-# Detection of esper: peaxart's legacy thresholds, but a minimum width of 5 scans, not 9
-# (half prominence): narrow peaks (e.g. CS2 at ~8 scans of a 6 Hz quadrupole) were lost
-DETECTION_CONFIG = px.LegacyDeconvolutionConfig(width=5)
-
-
 class ProcessingConfigError(ValueError):
     """The ``processing:`` of an esper.yaml is not valid."""
+
+
+_LEGACY = px.LegacyDeconvolutionConfig()
+
+
+@dataclass(frozen=True)
+class DetectionConfig:
+    """The peak detection of esper (:mod:`esper.processing.detection`): the legacy
+    detection of alpinac (``peaxart.LegacyDeconvolutionConfig``, same keys) with a
+    threshold relative to the noise of each window.
+
+    A peak is kept if its prominence is at least ``max(prominence, min_snr * noise)`` and
+    its height at least ``height`` (both after the baseline is removed). ``noise``: the
+    standard deviation of the noise of the window (``peaxart.chromatogram.noise_std``,
+    from its second differences, before the baseline and the smoothing).
+    The absolute thresholds are floors (e.g. a window without noise: integer counts of a
+    flat baseline); peaxart's legacy ones (prominence 120 counts, width 9 scans) lost the
+    small peaks of quiet masses (e.g. CHBr3 in SIM, 50 x its noise) and narrow peaks (e.g.
+    CS2 at ~8 scans of a 6 Hz quadrupole).
+    """
+
+    #: minimum width of a peak at half prominence, scans (``find_peaks`` ``width``)
+    width: float = 5
+    #: minimum height, signal units (``find_peaks`` ``height``)
+    height: float = 20
+    #: minimum prominence, signal units: floor of the noise-relative threshold
+    prominence: float = 20
+    #: minimum prominence in noise standard deviations of the window (0: absolute only)
+    min_snr: float = 10
+    #: grouping of the peaks into compounds (``peaxart.group_peaks_legacy``)
+    rt_threshold: float = _LEGACY.rt_threshold
+    rt_threshold_start_ip: float = _LEGACY.rt_threshold_start_ip
+    rt_threshold_stopp_ip: float = _LEGACY.rt_threshold_stopp_ip
+
+    def min_prominence(self, noise: float) -> float:
+        """The prominence a peak needs in a window of this ``noise``."""
+        return max(self.prominence, self.min_snr * noise)
 
 
 @dataclass(frozen=True)
@@ -78,7 +110,7 @@ class ProcessingConfig:
     retention_index: bool | None = None
     # None: the baseline is not removed before the detection
     baseline: px.BaselineConfig | None = field(default_factory=px.BaselineConfig)
-    detection: px.LegacyDeconvolutionConfig = DETECTION_CONFIG
+    detection: DetectionConfig = field(default_factory=DetectionConfig)
     fit: px.ChromatogramFitConfig = FIT_CONFIG
     target: TargetSearchConfig = field(default_factory=TargetSearchConfig)
     suspect: SuspectScreeningConfig = field(default_factory=SuspectScreeningConfig)

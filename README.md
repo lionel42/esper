@@ -149,10 +149,11 @@ processing:
   retention_index: false    # retention indices used (default: not with target search)
   baseline:                 # peaxart.BaselineConfig, before the detection (false: none)
     lam: 1.0e+7
-  detection:                # peaxart.LegacyDeconvolutionConfig: thresholds in counts,
-    width: 5                # minimum width (half prominence), scans (default 5)
-    height: 20
-    prominence: 60
+  detection:                # peak detection (defaults shown)
+    min_snr: 10             # prominence >= min_snr x the noise of the window, and
+    prominence: 20          # >= this floor (counts); 0 min_snr: the floor only
+    height: 20              # counts, after the baseline removal
+    width: 5                # minimum width (half prominence), scans
   fit:                      # peaxart.ChromatogramFitConfig
     peak_shape: emg
   target:
