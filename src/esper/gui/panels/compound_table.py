@@ -61,9 +61,15 @@ class CompoundTablePanel(TablePanel):
 
     columns = [
         Column("compound_idx", "#", "{:d}", "Compound index in pipeline.nc"),
-        Column("rt_mean_s", "rt", "{:.1f}", "Mean retention time of the peaks [s]"),
-        Column("retention_index", "RI", "{:.1f}", "Retention index"),
-        Column("name", "name"),
+        Column(
+            "rt_mean_s",
+            "rt",
+            "{:.1f}",
+            "Mean retention time of the peaks [s]",
+            fits="0000.0",
+        ),
+        Column("retention_index", "RI", "{:.1f}", "Retention index", fits="00000.0"),
+        Column("name", "name", stretch=True),
         Column(
             "best_score",
             "score",

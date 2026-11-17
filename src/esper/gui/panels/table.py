@@ -81,6 +81,9 @@ class Column:
     ``key`` is the column of the loaded DataFrame, ``fmt`` a format string
     (e.g. ``"{:.1f}"``) or a function giving the displayed text, ``color`` a
     function giving the background color of a (non missing) value.
+    ``fits``: the column has a fixed width, enough for this text (e.g. ``"0000.0"``:
+    the largest value), not sized on the rows shown first; ``stretch``: the column
+    takes the width left by the others (e.g. names).
     """
 
     key: str
@@ -88,6 +91,8 @@ class Column:
     fmt: str | Callable[[Any], str] | None = None
     tooltip: str = ""
     color: Callable[[Any], str | None] | None = None
+    fits: str | None = None
+    stretch: bool = False
 
     def text(self, value) -> str:
         if _missing(value):
@@ -252,6 +257,8 @@ class TablePanel(BasePanel):
         self.table.selectionModel().selectionChanged.connect(self._on_rows_selected)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
+        if any(c.stretch for c in self.columns):
+            self.table.horizontalHeader().setStretchLastSection(False)
         if self.default_sort is not None:
             key, order = self.default_sort
             column = [c.key for c in self.columns].index(key)
@@ -322,14 +329,34 @@ class TablePanel(BasePanel):
         self._updating = True
         self.model.set_frame(df, self.columns)
         self._updating = False
+        # per column: lost when the model makes its columns (from none)
+        header = self.table.horizontalHeader()
+        for i, column in enumerate(self.columns):
+            if column.stretch:
+                header.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch)
         if first_fill and len(df):
-            self.table.resizeColumnsToContents()
-            for i in range(len(self.columns)):
+            for i, column in enumerate(self.columns):
+                if column.stretch:
+                    continue
+                if column.fits is not None:
+                    self.table.setColumnWidth(i, self._fitting_width(column))
+                    continue
+                self.table.resizeColumnToContents(i)
                 self.table.setColumnWidth(
                     i, min(self.table.columnWidth(i), MAX_COLUMN_WIDTH)
                 )
         self._update_count()
         self.show_current()
+
+    def _fitting_width(self, column: Column) -> int:
+        """Width of a column with ``fits``: its text or its header, and the margins."""
+        metrics = self.table.fontMetrics()
+        header = self.table.horizontalHeader().fontMetrics()
+        # margins of the cells, and the sort indicator of the header
+        return max(
+            metrics.horizontalAdvance(column.fits) + 16,
+            header.horizontalAdvance(column.header) + 28,
+        )
 
     def _update_count(self) -> None:
         if self.search_reloads:
