@@ -54,6 +54,7 @@ def run(args: argparse.Namespace) -> int:
         resolve_method,
     )
     from esper.processing.pipeline import Processor, summary, to_process
+    from esper.sources import run_label
 
     if not db.db_path(args.data_dir).is_file():
         print(f"No esper database at {db.db_path(args.data_dir)}", file=sys.stderr)
@@ -75,6 +76,7 @@ def run(args: argparse.Namespace) -> int:
     try:
         todo = to_process(con, processor.method, force=args.force)
         print(f"measurements to process ({processor.method}): {len(todo)}")
+        width = max((len(name) for _, name in todo), default=0)
         with fit_pool(1 if args.no_fit else args.workers) as pool:
             for mid, name in todo:
                 try:
@@ -87,9 +89,9 @@ def run(args: argparse.Namespace) -> int:
                     failed += 1
                     continue
                 if table is None:
-                    print(f"  {name}: no chromatograms")
+                    print(f"  {run_label(name, width)} no chromatograms")
                     continue
-                print(f"  {name}: {summary(table, con, mid)}")
+                print(f"  {run_label(name, width)} {summary(table, con, mid)}")
     finally:
         con.close()
     return 1 if failed else 0

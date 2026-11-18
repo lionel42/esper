@@ -384,7 +384,7 @@ def test_esper_peaks(data_dir, capsys):
     assert main(["peaks", str(data_dir), "--method", "target", "-j", "1"]) == 0
     out = capsys.readouterr().out
     assert "measurements to process (target): 1" in out
-    assert "3 compounds, 1 identified" in out
+    assert "250101.0000.air.1:   3 compounds,   1 identified" in out
     assert main(["peaks", str(data_dir)]) == 0
     assert "to process (target): 0" in capsys.readouterr().out
     # esper fit fits the peaks found by esper too, with the fit of the data directory

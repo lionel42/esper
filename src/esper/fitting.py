@@ -608,8 +608,8 @@ def compound_summaries(
 def summary(table: pd.DataFrame) -> str:
     """One line on the fit of a measurement (``fit_measurement``)."""
     text = (
-        f"{int(table['fit_rt_s'].notna().sum())} of {len(table)} peaks fitted,"
-        f" {int((table['source'] == SOURCE_FIT).sum())} split or added by the fit"
+        f"{int(table['fit_rt_s'].notna().sum()):4} of {len(table):4} peaks fitted,"
+        f" {int((table['source'] == SOURCE_FIT).sum()):3} split or added by the fit"
     )
     n_warnings = table.attrs.get("n_warnings")
     return f"{text}, {n_warnings} warnings" if n_warnings else text

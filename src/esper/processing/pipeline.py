@@ -351,5 +351,5 @@ def summary(table: pd.DataFrame, con: sqlite3.Connection, mid: int) -> str:
         "SELECT count(*), count(compound_name) FROM compound WHERE measurement_id = ?",
         (int(mid),),
     ).fetchone()
-    fitted = fit_summary(table) if "fit_rt_s" in table else f"{len(table)} peaks"
-    return f"{n_compounds} compounds, {n_named} identified; {fitted}"
+    fitted = fit_summary(table) if "fit_rt_s" in table else f"{len(table):4} peaks"
+    return f"{n_compounds:3} compounds, {n_named:3} identified; {fitted}"

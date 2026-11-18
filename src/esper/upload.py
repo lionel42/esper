@@ -23,6 +23,7 @@ from esper.sources import (
     get_source,
     parse_measurement_name,
     resolve_instrument,
+    run_label,
 )
 
 logger = logging.getLogger(__name__)
@@ -322,6 +323,13 @@ def upload(
         if newest_first:
             runs = sorted(runs, key=lambda run: run.name, reverse=True)
         logger.info(f"{len(runs)} runs of {instrument} in {source}")
+        if names:
+            logger.info(f"compounds: {', '.join(names)}")
+        # of the run names in the log: those uploaded
+        width = max(
+            (len(run.name) for run in runs if in_dates(run.name, after, before)),
+            default=0,
+        )
         # The processes of the fits, for all the measurements (started at the first fit)
         pool = None
         if fit_imported or (process and fit):
@@ -330,46 +338,61 @@ def upload(
             pool = stack.enter_context(fit_pool(workers))
         for run in runs:
             name = run.name
+            label = run_label(name, width)
             if not in_dates(name, after, before):
                 summary.skipped_dates.append(name)
                 continue
             if run.file is None:
-                logger.warning(f"{name}: not complete, skipped")
+                logger.warning(f"{label} not complete, skipped")
                 summary.skipped_incomplete.append(name)
                 continue
             # with compounds, force does not import the unchanged runs again: their
             # compounds of the targets are found again, their others are kept
             if (not force or names) and _is_unchanged(con, name, run.file):
-                logger.debug(f"{name}: unchanged, skipped")
+                logger.debug(f"{label} unchanged, skipped")
                 summary.skipped_unchanged.append(name)
                 try:
                     instrument_source.refresh(con, run)
                 except Exception as e:
-                    logger.exception(f"{name}: refresh failed")
+                    logger.exception(f"{label} refresh failed")
                     summary.failed.append((name, f"refresh: {e!r}"))
                 # imported before, not processed yet; or its compounds again (force)
                 if name in pending or (names and force):
-                    _process(con, processor, name, fit, pool, summary, names=names)
+                    _process(
+                        con,
+                        processor,
+                        name,
+                        fit,
+                        pool,
+                        summary,
+                        names=names,
+                        width=width,
+                    )
                 continue
             try:
                 imported = instrument_source.read(run)
                 for w in imported.warnings:
-                    logger.warning(f"{name}: {w}")
+                    logger.warning(f"{label} {w}")
                 chromatogram_file = store_chromatograms(imported, data_dir)
                 mid = store_measurement(con, imported, chromatogram_file)
             except Exception as e:
-                logger.debug(f"{name}: import failed", exc_info=True)
-                logger.warning(f"{name}: import failed: {e!r}")
+                logger.debug(f"{label} import failed", exc_info=True)
+                logger.warning(f"{label} import failed: {e!r}")
                 summary.failed.append((name, repr(e)))
                 continue
-            n_peaks = 0 if imported.peaks is None else len(imported.peaks)
-            n_compounds = 0 if imported.compounds is None else len(imported.compounds)
-            logger.info(f"{name}: {n_peaks} peaks, {n_compounds} compounds")
+            if imported.peaks is None:  # found by the processing, logged then
+                logger.info(f"{label} imported")
+            else:
+                n_compounds = len(imported.compounds)
+                logger.info(
+                    f"{label} imported, {len(imported.peaks):4} peaks,"
+                    f" {n_compounds:3} compounds"
+                )
             summary.imported.append(name)
             if imported.peaks is None and processor is not None:
-                _process(con, processor, name, fit, pool, summary, mid, names)
+                _process(con, processor, name, fit, pool, summary, mid, names, width)
             elif imported.peaks is not None and fit_imported:
-                _fit(con, name, mid, data_dir, pool, summary, config.fit)
+                _fit(con, name, mid, data_dir, pool, summary, config.fit, width=width)
     finally:
         stack.close()
         con.close()
@@ -385,7 +408,9 @@ def _fit(
     summary: UploadSummary,
     config=None,
     target_search=None,
+    width: int = 0,
 ) -> None:
+    """``width``: of the run names in the log (``run_label``)."""
     from esper.fitting import fit_measurement
     from esper.fitting import summary as fit_summary
 
@@ -400,13 +425,13 @@ def _fit(
             target_search=target_search,
         )
     except Exception as e:
-        logger.exception(f"{name}: fit failed")
+        logger.exception(f"{run_label(name, width)} fit failed")
         summary.fit_failed.append((name, repr(e)))
         return
     if table is None:
-        logger.warning(f"{name}: no chromatograms, not fitted")
+        logger.warning(f"{run_label(name, width)} no chromatograms, not fitted")
         return
-    logger.info(f"{name}: {fit_summary(table)}")
+    logger.info(f"{run_label(name, width)} {fit_summary(table)}")
 
 
 def _compound_names(con: sqlite3.Connection, mid: int) -> list[str]:
@@ -429,34 +454,40 @@ def _process(
     summary: UploadSummary,
     mid: int | None = None,
     names: list[str] | None = None,
+    width: int = 0,
 ) -> None:
     """Find and identify the peaks of a measurement (``esper.processing``), then fit them
     if ``fit`` (each failure counted apart); ``names``: of the compounds of these
-    targets only (fitted with them: a failure counted as of the processing)."""
+    targets only (fitted with them: a failure counted as of the processing). ``width``:
+    of the run names in the log (``run_label``)."""
     from esper.processing.pipeline import summary as process_summary
 
     if mid is None:
         (mid,) = con.execute(
             "SELECT measurement_id FROM measurement WHERE name = ?", (name,)
         ).fetchone()
+    label = run_label(name, width)
     try:
         if names:  # fitted with them
             table = processor.process_compounds(mid, names, pool=pool, fit=fit)
         else:
             table = processor.process(mid, fit=False)
     except Exception as e:
-        logger.exception(f"{name}: processing failed")
+        logger.exception(f"{label} processing failed")
         summary.processing_failed.append((name, repr(e)))
         return
     if table is None:
-        logger.warning(f"{name}: no chromatograms, not processed")
+        logger.warning(f"{label} no chromatograms, not processed")
         return
     summary.processed.append(name)
     if names:
-        found = sorted(set(names) & set(_compound_names(con, mid)))
-        logger.info(f"{name}: found {', '.join(found) or 'none'} of {', '.join(names)}")
+        # one column per target (logged once, ``upload``), "-" if not found
+        found = set(_compound_names(con, mid))
+        columns = "  ".join(f"{n if n in found else '-':<{len(n)}}" for n in names)
+        n_found = len(found & set(names))
+        logger.info(f"{label} found {n_found}/{len(names)}: {columns.rstrip()}")
         return
-    logger.info(f"{name}: {process_summary(table, con, mid)}")
+    logger.info(f"{label} {process_summary(table, con, mid)}")
     if fit:
         _fit(
             con,
@@ -467,4 +498,5 @@ def _process(
             summary,
             processor.config.fit,
             processor.target_search,
+            width,
         )

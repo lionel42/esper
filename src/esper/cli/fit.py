@@ -33,6 +33,7 @@ def run(args: argparse.Namespace) -> int:
     from esper.fitting import fit_measurement, fit_pool, summary, to_fit
     from esper.processing.config import read_processing_config
     from esper.processing.identification import TargetSearch
+    from esper.sources import run_label
     from esper.target_index import TargetIndex
 
     if not db.db_path(args.data_dir).is_file():
@@ -57,6 +58,7 @@ def run(args: argparse.Namespace) -> int:
             covered = runs_covered(con, read_overrides(con))
             todo += [run for run in covered if run not in known]
         print(f"measurements to fit: {len(todo)}")
+        width = max((len(name) for _, name in todo), default=0)
         with fit_pool(args.workers) as pool:
             for mid, name in todo:
                 try:
@@ -75,9 +77,9 @@ def run(args: argparse.Namespace) -> int:
                     failed += 1
                     continue
                 if table is None:
-                    print(f"  {name}: no chromatograms")
+                    print(f"  {run_label(name, width)} no chromatograms")
                     continue
-                print(f"  {name}: {summary(table)}")
+                print(f"  {run_label(name, width)} {summary(table)}")
     finally:
         con.close()
     return 1 if failed else 0

@@ -125,6 +125,12 @@ class InstrumentError(ValueError):
     """The instrument of a data directory is unknown, not declared, or not the one asked."""
 
 
+def run_label(name: str, width: int = 0) -> str:
+    """``name:`` padded to ``width`` + 1 (``width``: of the longest run name printed), so
+    that what is printed after the names of the runs is aligned."""
+    return f"{name}:".ljust(width + 1)
+
+
 def get_source(instrument: str):
     """The module of an instrument."""
     if instrument not in INSTRUMENTS:
