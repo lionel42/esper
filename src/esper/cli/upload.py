@@ -7,11 +7,14 @@ import sys
 from pathlib import Path
 
 from esper.cli.common import (
-    DATE_FORMATS,
     Command,
+    add_compounds,
     add_data_dir,
+    add_dates,
+    add_method,
     add_workers,
-    date_argument,
+    print_processing,
+    print_processing_failures,
 )
 
 HELP = (
@@ -21,7 +24,6 @@ HELP = (
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    from esper.processing import METHODS
     from esper.sources import INSTRUMENTS
 
     parser.add_argument(
@@ -35,23 +37,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "-f", "--force", action="store_true", help="reimport unchanged measurements"
     )
     parser.add_argument(
-        "--no-fit", action="store_true", help="do not fit the peaks (see esper fit)"
+        "--no-fit", action="store_true", help="do not fit the peaks (see esper process)"
     )
-    parser.add_argument(
-        "--method",
-        choices=METHODS,
-        help="how the compounds of the runs imported without peaks (gcwerks) are "
-        "identified, declared in the esper.yaml of the data directory (then optional); "
-        "without a method their peaks are not found (see esper peaks)",
-    )
-    parser.add_argument(
-        "--compounds",
-        nargs="+",
-        metavar="NAME",
-        help="find, identify and fit the peaks of these targets only (target search;"
-        " the chromatograms are imported whole). The runs already processed are left"
-        " as they are; with -f they are not imported again, these compounds are"
-        " found again in them and their other compounds kept",
+    add_method(parser)
+    add_compounds(
+        parser,
+        "The chromatograms are imported whole. The runs already processed are left as"
+        " they are; with -f they are not imported again, these compounds are found"
+        " again in them",
     )
     add_workers(parser)
     parser.add_argument(
@@ -67,20 +60,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "of the esper.yaml, as not targets (null; map the targets among them to their "
         "peak.list name), instead of stopping",
     )
-    parser.add_argument(
-        "--after",
-        type=date_argument,
-        metavar="DATE",
-        help=f"only the runs started on or after DATE ({DATE_FORMATS}; a year or a"
-        " month: from its start, included), from the date in their name",
-    )
-    parser.add_argument(
-        "--before",
-        type=date_argument,
-        metavar="DATE",
-        help=f"only the runs started before DATE ({DATE_FORMATS}; a year, month or day:"
-        " before its start, itself left out)",
-    )
+    add_dates(parser)
     parser.add_argument(
         "--newest-first",
         "--latest-first",
@@ -119,14 +99,9 @@ def run(args: argparse.Namespace) -> int:
         f"imported: {len(summary.imported)}, "
         f"unchanged: {len(summary.skipped_unchanged)}, "
         f"incomplete: {len(summary.skipped_incomplete)}, "
-        f"failed: {len(summary.failed)}, "
-        f"fit failed: {len(summary.fit_failed)}"
+        f"failed: {len(summary.failed)}"
     )
-    if summary.processed or summary.processing_failed:
-        print(
-            f"peaks found and identified: {len(summary.processed)},"
-            f" failed: {len(summary.processing_failed)}"
-        )
+    print_processing(summary)
     if args.after is not None or args.before is not None:
         print(f"outside the dates: {len(summary.skipped_dates)}")
     if summary.added_aliases:
@@ -137,12 +112,8 @@ def run(args: argparse.Namespace) -> int:
         )
     for name, error in summary.failed:
         print(f"  FAILED {name}: {error}", file=sys.stderr)
-    for name, error in summary.processing_failed:
-        print(f"  PEAKS FAILED {name}: {error}", file=sys.stderr)
-    for name, error in summary.fit_failed:
-        print(f"  FIT FAILED {name}: {error}", file=sys.stderr)
-    failed = summary.failed or summary.processing_failed or summary.fit_failed
-    return 1 if failed else 0
+    print_processing_failures(summary)
+    return 1 if summary.failed or summary.any_failed else 0
 
 
 COMMAND = Command(

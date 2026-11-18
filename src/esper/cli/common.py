@@ -70,6 +70,50 @@ def add_workers(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_method(parser: argparse.ArgumentParser) -> None:
+    """``--method``: how the compounds are identified (``esper.processing``)."""
+    from esper.processing import METHODS
+
+    parser.add_argument(
+        "--method",
+        choices=METHODS,
+        help="how the compounds of the runs imported without peaks (gcwerks) are "
+        "identified, declared in the esper.yaml of the data directory (then optional, "
+        "must be the same): target (expected rt and ions of the targets) or suspect "
+        "(spectra in the libraries); without a method their peaks are not found",
+    )
+
+
+def add_compounds(parser: argparse.ArgumentParser, note: str) -> None:
+    """``--compounds``: the targets whose peaks alone are found (``note``: added to the
+    help, e.g. what ``-f`` does with them)."""
+    parser.add_argument(
+        "--compounds",
+        nargs="+",
+        metavar="NAME",
+        help="find, identify and fit the peaks of these targets only (target search;"
+        f" the other compounds of the runs are kept). {note}",
+    )
+
+
+def add_dates(parser: argparse.ArgumentParser) -> None:
+    """``--after`` and ``--before``: the runs started between, from their name."""
+    parser.add_argument(
+        "--after",
+        type=date_argument,
+        metavar="DATE",
+        help=f"only the runs started on or after DATE ({DATE_FORMATS}; a year or a"
+        " month: from its start, included), from the date in their name",
+    )
+    parser.add_argument(
+        "--before",
+        type=date_argument,
+        metavar="DATE",
+        help=f"only the runs started before DATE ({DATE_FORMATS}; a year, month or day:"
+        " before its start, itself left out)",
+    )
+
+
 def add_files(
     parser: argparse.ArgumentParser, help: str = "h5 files (glob patterns allowed)"
 ) -> None:
@@ -156,3 +200,25 @@ def segments(value: str | None) -> tuple[int, int] | None:
         raise argparse.ArgumentTypeError(
             f"not segments: {value!r} (1, or 1:3 for 1 and 2)"
         ) from None
+
+
+# --- output ----------------------------------------------------------------------------
+
+
+def print_processing(summary) -> None:
+    """The counts of the processing of the runs (``esper.process.ProcessSummary``)."""
+    if summary.processed or summary.processing_failed:
+        print(
+            f"peaks found and identified: {len(summary.processed)},"
+            f" failed: {len(summary.processing_failed)}"
+        )
+    if summary.fitted or summary.fit_failed:
+        print(f"fitted: {len(summary.fitted)}, failed: {len(summary.fit_failed)}")
+
+
+def print_processing_failures(summary) -> None:
+    """The runs whose processing failed (``esper.process.ProcessSummary``), stderr."""
+    for name, error in summary.processing_failed:
+        print(f"  PEAKS FAILED {name}: {error}", file=sys.stderr)
+    for name, error in summary.fit_failed:
+        print(f"  FIT FAILED {name}: {error}", file=sys.stderr)

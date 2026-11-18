@@ -19,7 +19,7 @@
 
 Every key is optional: what is not given has its default (peaxart's, and esper's
 ``FIT_CONFIG`` for the fit). The method is the data directory's, not the instrument's:
-``esper peaks --method`` declares it.
+``esper process --method`` declares it.
 
 What is used to identify the compounds follows (``uses_library``, ``uses_retention_index``,
 e.g. the columns shown in the GUI): the spectral libraries with suspect screening (and

@@ -1105,7 +1105,7 @@ class RefitDialog(QDialog):
         if len(done) + len(failed) < len(runs):
             message += (
                 "\nStopped: the others keep their fit until fitted again"
-                " (esper fit --overrides)."
+                " (esper process --overrides)."
             )
         if failed:
             message += "\nFailed: " + ", ".join(name for name, _ in failed)

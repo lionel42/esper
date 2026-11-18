@@ -17,10 +17,13 @@ from datetime import datetime
 from pathlib import Path
 
 from esper import db, mass_cal
+from esper.process import FIT, PEAKS, ProcessSummary, RunProcessing, check_method
 from esper.sources import (
     InstrumentError,
     MeasurementImport,
     get_source,
+    in_dates,
+    name_width,
     parse_measurement_name,
     resolve_instrument,
     run_label,
@@ -30,36 +33,18 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class UploadSummary:
-    imported: list[str]
-    skipped_unchanged: list[str]
-    skipped_incomplete: list[str]
-    failed: list[tuple[str, str]]
-    # Imported, but the fit failed
-    fit_failed: list[tuple[str, str]] = field(default_factory=list)
-    # Processed (esper.processing): imported, or unchanged but not processed before
-    processed: list[str] = field(default_factory=list)
-    # Imported, but finding or identifying their peaks failed (esper.processing)
-    processing_failed: list[tuple[str, str]] = field(default_factory=list)
+class UploadSummary(ProcessSummary):
+    """The runs imported, and processed (``ProcessSummary``: imported, or unchanged but
+    not processed before)."""
+
+    imported: list[str] = field(default_factory=list)
+    skipped_unchanged: list[str] = field(default_factory=list)
+    skipped_incomplete: list[str] = field(default_factory=list)
+    failed: list[tuple[str, str]] = field(default_factory=list)
     # Names of the targets of the instrument added to the esper.yaml (add_aliases)
     added_aliases: list[str] = field(default_factory=list)
     # Not imported: before ``after`` or not before ``before`` (or no date in the name)
     skipped_dates: list[str] = field(default_factory=list)
-
-
-def in_dates(
-    name: str, after: datetime | None = None, before: datetime | None = None
-) -> bool:
-    """Whether the run ``name`` (``YYMMDD.HHMM...``) was started on or after ``after``
-    and before ``before`` (None: no limit). Without a date in its name: only without
-    limits."""
-    if after is None and before is None:
-        return True
-    started = parse_measurement_name(name)["acq_datetime"]
-    if started is None:
-        return False
-    started = datetime.fromisoformat(started)
-    return (after is None or started >= after) and (before is None or started < before)
 
 
 def _is_unchanged(con: sqlite3.Connection, name: str, file: Path) -> bool:
@@ -277,11 +262,7 @@ def upload(
     data_dir = Path(data_dir)
     instrument = resolve_instrument(data_dir, instrument, source)
     instrument_source = get_source(instrument)
-    if method is not None and instrument_source.PEAK_SOURCE is not None:
-        raise ProcessingConfigError(
-            f"--method: the runs of {instrument} are imported with their peaks"
-            f" ({instrument_source.PEAK_SOURCE}), esper does not find them"
-        )
+    check_method(instrument, method)
     resolve_method(data_dir, method)
     config = read_processing_config(data_dir)
     # The fit of the imported peaks (and its dependencies) only for the instruments with
@@ -295,9 +276,15 @@ def upload(
     if instrument_source.PEAK_SOURCE is None and config.method is None:
         logger.info(
             f"{data_dir}: no processing method, the peaks of the runs are not found"
-            " (esper peaks --method ...)"
+            " (esper process --method ...)"
         )
-    summary = UploadSummary([], [], [], [])
+    if compounds and not process:
+        raise ProcessingConfigError(
+            f"--compounds: the peaks of the runs of {instrument} are not found by"
+            f" esper (no method, or imported with their peaks)"
+        )
+    steps = {PEAKS, FIT} if fit else {PEAKS}
+    summary = UploadSummary()
     con = db.connect(data_dir, create=True)
     stack = contextlib.ExitStack()
     try:
@@ -306,36 +293,31 @@ def upload(
             summary.added_aliases = _store_targets(
                 con, instrument_source, source, data_dir, add_aliases
             )
-        processor, pending, names = None, set(), None
+        pending = set()
         if process:
-            from esper.processing.pipeline import Processor, to_process
+            from esper.processing.pipeline import to_process
 
-            processor = Processor(con, data_dir, config)
             pending = {name for _, name in to_process(con, config.method)}
-            if compounds:
-                names = processor.target_names(compounds)
-        elif compounds:
-            raise ProcessingConfigError(
-                f"--compounds: the peaks of the runs of {instrument} are not found by"
-                f" esper (no method, or imported with their peaks)"
-            )
         runs = instrument_source.find_runs(source)
         if newest_first:
             runs = sorted(runs, key=lambda run: run.name, reverse=True)
         logger.info(f"{len(runs)} runs of {instrument} in {source}")
-        if names:
-            logger.info(f"compounds: {', '.join(names)}")
-        # of the run names in the log: those uploaded
-        width = max(
-            (len(run.name) for run in runs if in_dates(run.name, after, before)),
-            default=0,
-        )
         # The processes of the fits, for all the measurements (started at the first fit)
         pool = None
         if fit_imported or (process and fit):
             from esper.fitting import fit_pool
 
             pool = stack.enter_context(fit_pool(workers))
+        # of the run names in the log: those uploaded
+        width = name_width(
+            run.name for run in runs if in_dates(run.name, after, before)
+        )
+        processing = RunProcessing(
+            con, data_dir, config, pool, compounds, summary, width
+        )
+        names = processing.names
+        if names:
+            logger.info(f"compounds: {', '.join(names)}")
         for run in runs:
             name = run.name
             label = run_label(name, width)
@@ -358,16 +340,7 @@ def upload(
                     summary.failed.append((name, f"refresh: {e!r}"))
                 # imported before, not processed yet; or its compounds again (force)
                 if name in pending or (names and force):
-                    _process(
-                        con,
-                        processor,
-                        name,
-                        fit,
-                        pool,
-                        summary,
-                        names=names,
-                        width=width,
-                    )
+                    processing.run(name, _measurement_id(con, name), steps)
                 continue
             try:
                 imported = instrument_source.read(run)
@@ -389,114 +362,18 @@ def upload(
                     f" {n_compounds:3} compounds"
                 )
             summary.imported.append(name)
-            if imported.peaks is None and processor is not None:
-                _process(con, processor, name, fit, pool, summary, mid, names, width)
+            if imported.peaks is None and process:
+                processing.run(name, mid, steps)
             elif imported.peaks is not None and fit_imported:
-                _fit(con, name, mid, data_dir, pool, summary, config.fit, width=width)
+                processing.fit(name, mid)
     finally:
         stack.close()
         con.close()
     return summary
 
 
-def _fit(
-    con: sqlite3.Connection,
-    name: str,
-    mid: int,
-    data_dir: Path,
-    pool,
-    summary: UploadSummary,
-    config=None,
-    target_search=None,
-    width: int = 0,
-) -> None:
-    """``width``: of the run names in the log (``run_label``)."""
-    from esper.fitting import fit_measurement
-    from esper.fitting import summary as fit_summary
-
-    try:
-        table = fit_measurement(
-            con,
-            mid,
-            data_dir,
-            workers=1,
-            pool=pool,
-            config=config,
-            target_search=target_search,
-        )
-    except Exception as e:
-        logger.exception(f"{run_label(name, width)} fit failed")
-        summary.fit_failed.append((name, repr(e)))
-        return
-    if table is None:
-        logger.warning(f"{run_label(name, width)} no chromatograms, not fitted")
-        return
-    logger.info(f"{run_label(name, width)} {fit_summary(table)}")
-
-
-def _compound_names(con: sqlite3.Connection, mid: int) -> list[str]:
-    return [
-        row[0]
-        for row in con.execute(
-            "SELECT compound_name FROM compound WHERE measurement_id = ?"
-            " AND compound_name IS NOT NULL",
-            (mid,),
-        )
-    ]
-
-
-def _process(
-    con: sqlite3.Connection,
-    processor,
-    name: str,
-    fit: bool,
-    pool,
-    summary: UploadSummary,
-    mid: int | None = None,
-    names: list[str] | None = None,
-    width: int = 0,
-) -> None:
-    """Find and identify the peaks of a measurement (``esper.processing``), then fit them
-    if ``fit`` (each failure counted apart); ``names``: of the compounds of these
-    targets only (fitted with them: a failure counted as of the processing). ``width``:
-    of the run names in the log (``run_label``)."""
-    from esper.processing.pipeline import summary as process_summary
-
-    if mid is None:
-        (mid,) = con.execute(
-            "SELECT measurement_id FROM measurement WHERE name = ?", (name,)
-        ).fetchone()
-    label = run_label(name, width)
-    try:
-        if names:  # fitted with them
-            table = processor.process_compounds(mid, names, pool=pool, fit=fit)
-        else:
-            table = processor.process(mid, fit=False)
-    except Exception as e:
-        logger.exception(f"{label} processing failed")
-        summary.processing_failed.append((name, repr(e)))
-        return
-    if table is None:
-        logger.warning(f"{label} no chromatograms, not processed")
-        return
-    summary.processed.append(name)
-    if names:
-        # one column per target (logged once, ``upload``), "-" if not found
-        found = set(_compound_names(con, mid))
-        columns = "  ".join(f"{n if n in found else '-':<{len(n)}}" for n in names)
-        n_found = len(found & set(names))
-        logger.info(f"{label} found {n_found}/{len(names)}: {columns.rstrip()}")
-        return
-    logger.info(f"{label} {process_summary(table, con, mid)}")
-    if fit:
-        _fit(
-            con,
-            name,
-            mid,
-            processor.data_dir,
-            pool,
-            summary,
-            processor.config.fit,
-            processor.target_search,
-            width,
-        )
+def _measurement_id(con: sqlite3.Connection, name: str) -> int:
+    (mid,) = con.execute(
+        "SELECT measurement_id FROM measurement WHERE name = ?", (name,)
+    ).fetchone()
+    return mid

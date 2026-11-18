@@ -134,7 +134,7 @@ def _measurements(con: sqlite3.Connection, config: dict) -> Section:
     )
     processing = config.get("processing")
     method = processing.get("method") if isinstance(processing, dict) else None
-    section.add("Processing method", method or "none (esper peaks --method)")
+    section.add("Processing method", method or "none (esper process --method)")
     if "peak_source" in columns:
         sources = con.execute(
             "SELECT peak_source, count(*) FROM measurement GROUP BY peak_source"
@@ -173,7 +173,7 @@ def _measurements(con: sqlite3.Connection, config: dict) -> Section:
             section.add(
                 "Fitted",
                 f"{current or 0} (fit version {FIT_VERSION}), {older or 0} by an older"
-                f" esper, {never or 0} not fitted (esper fit)",
+                f" esper, {never or 0} not fitted (esper process)",
             )
             section.add("Last fit", _when(last_fit))
     return section

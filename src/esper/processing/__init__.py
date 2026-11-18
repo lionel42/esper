@@ -1,5 +1,5 @@
 """Processing of the chromatograms of a data directory: from the chromatograms to the
-identified, fitted peaks (``esper peaks``, and ``esper upload`` for the runs imported
+identified, fitted peaks (``esper process``, and ``esper upload`` for the runs imported
 without peaks).
 
 1. detection: the peaks of each mass, grouped into compounds (:mod:`.detection`);

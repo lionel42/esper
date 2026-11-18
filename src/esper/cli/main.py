@@ -19,12 +19,11 @@ import sys
 from esper.cli import (
     calibrate,
     chromatograms,
-    fit,
     gui,
     info,
     install,
-    peaks,
     plot_calibration,
+    process,
     targets,
     upload,
 )
@@ -33,8 +32,7 @@ from esper.cli.common import Command
 COMMANDS: list[Command] = [
     gui.COMMAND,
     upload.COMMAND,
-    peaks.COMMAND,
-    fit.COMMAND,
+    process.COMMAND,
     info.COMMAND,
     targets.COMMAND,
     calibrate.COMMAND,

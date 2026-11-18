@@ -16,15 +16,15 @@ from esper.cli import main as cli
 @pytest.mark.parametrize(
     ("argv", "level"),
     [
-        (["-v", "fit", "data"], logging.INFO),
-        (["fit", "data", "-v"], logging.INFO),
-        (["fit", "--verbose", "data"], logging.INFO),
-        (["fit", "data"], logging.WARNING),
+        (["-v", "process", "data"], logging.INFO),
+        (["process", "data", "-v"], logging.INFO),
+        (["process", "--verbose", "data"], logging.INFO),
+        (["process", "data"], logging.WARNING),
         (["upload", "src", "data", "-v"], logging.INFO),
         (["chromatograms", "run.h5", "-v"], logging.INFO),
-        (["--debug", "fit", "data"], logging.DEBUG),
-        (["fit", "data", "-d"], logging.DEBUG),
-        (["fit", "data", "-v", "--debug"], logging.DEBUG),
+        (["--debug", "process", "data"], logging.DEBUG),
+        (["process", "data", "-d"], logging.DEBUG),
+        (["process", "data", "-v", "--debug"], logging.DEBUG),
     ],
 )
 def test_verbose_before_or_after_the_command(monkeypatch, argv, level):

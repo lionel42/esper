@@ -1,6 +1,6 @@
 """Processing of the chromatograms (esper.processing): the configuration of a data
 directory, the detection per measured window, the identification by target search or
-suspect screening, and the pipeline (esper peaks, esper upload)."""
+suspect screening, and the pipeline (esper process, esper upload)."""
 
 from __future__ import annotations
 
@@ -376,20 +376,60 @@ def test_no_method_no_processing(data_dir):
     con.close()
 
 
-def test_esper_peaks(data_dir, capsys):
+def test_esper_process(data_dir, capsys, caplog):
     from esper.cli.main import main
 
-    assert main(["peaks", str(data_dir)]) == 2  # no method
-    assert "--method" in capsys.readouterr().err
-    assert main(["peaks", str(data_dir), "--method", "target", "-j", "1"]) == 0
-    out = capsys.readouterr().out
-    assert "measurements to process (target): 1" in out
+    def run(*args) -> tuple[int, str]:
+        code = main(["process", str(data_dir), "-j", "1", *args])
+        return code, capsys.readouterr().out
+
+    def refused(*args) -> str:
+        assert main(["process", str(data_dir), *args]) == 2
+        return capsys.readouterr().err
+
+    # no method
+    assert "--method" in refused("--steps", "peaks")
+    assert "--method" in refused("--compounds", "CF4")
+    # checked before the method is declared
+    args = ("--method", "target", "--compounds", "CF4")
+    assert "needs the peaks step" in refused(*args, "--steps", "fit")
+    assert "--overrides" in refused(*args, "--overrides")
+    assert "target search" in refused("--method", "suspect", "--compounds", "CF4")
+    assert "not targets: CF-4" in refused("--method", "target", "--compounds", "CF-4")
+    assert read_processing_config(data_dir).method is None
+    # no method: the fit only, and a warning about the runs left without peaks
+    assert run() == (0, "runs to process: 0\n")
+    assert "1 runs without peaks" in caplog.text
+    code, out = run("--method", "target")
+    assert code == 0
     assert "250101.0000.air.1:   3 compounds,   1 identified" in out
-    assert main(["peaks", str(data_dir)]) == 0
-    assert "to process (target): 0" in capsys.readouterr().out
-    # esper fit fits the peaks found by esper too, with the fit of the data directory
-    assert main(["fit", str(data_dir), "--force", "-j", "1"]) == 0
-    assert "measurements to fit: 1" in capsys.readouterr().out
+    assert "peaks found and identified: 1, failed: 0" in out
+    assert "fitted: 1, failed: 0" in out
+    assert run() == (0, "runs to process: 0\n")
+    # the fit alone, again: of the peaks found by esper too
+    code, out = run("--steps", "fit", "-f")
+    assert code == 0 and out.startswith("runs to process: 1\n")
+    assert out.endswith("fitted: 1, failed: 0\n") and "peaks found" not in out
+    assert run("-f", "--before", "2025-01-01") == (0, "runs to process: 0\n")
+
+
+def test_esper_process_compounds(data_dir, capsys):
+    from esper.cli.main import main
+
+    assert main(["process", str(data_dir), "--method", "target", "-j", "1"]) == 0
+    con = db.connect(data_dir)
+    before = _compounds(con)
+    con.close()
+    # processed: left as it is without -f
+    assert main(["process", str(data_dir), "--compounds", "CF4", "-j", "1"]) == 0
+    assert "runs to process: 0" in capsys.readouterr().out
+    assert main(["process", str(data_dir), "--compounds", "CF4", "-f", "-j", "1"]) == 0
+    assert "peaks found and identified: 1" in capsys.readouterr().out
+    con = db.connect(data_dir)
+    after = _compounds(con)
+    con.close()
+    assert [c for c in after if c[1] != "CF4"] == [c for c in before if c[1] != "CF4"]
+    assert [c[1] for c in after].count("CF4") == 1
 
 
 def test_upload_processes_the_runs_without_peaks(tmp_path, monkeypatch):
@@ -484,26 +524,31 @@ def test_width_of_a_scan_run_peak_in_seconds():
     assert peaks.loc[peaks["mass"] == 69, "width_s"].between(2.0, 2.8).all()
 
 
-def test_upload_counts_the_processing_failures_apart(tmp_path, monkeypatch):
-    from esper.processing.pipeline import Processor as Pipeline
-    from esper.upload import UploadSummary, _process
+def test_processing_failures_counted_apart(data_dir, monkeypatch):
+    from esper.process import RunProcessing
 
     def fail(self, mid, **kwargs):
         raise RuntimeError("detection")
 
-    monkeypatch.setattr(Pipeline, "process", fail)
-    summary = UploadSummary([], [], [], [])
-    _process(None, Pipeline.__new__(Pipeline), "run", True, None, summary, mid=1)
-    assert summary.processing_failed == [("run", "RuntimeError('detection')")]
-    assert summary.fit_failed == [] and summary.processed == []
+    resolve_method(data_dir, "target")
+    monkeypatch.setattr(Processor, "process", fail)
+    con = db.connect(data_dir)
+    runs = RunProcessing(con, data_dir, read_processing_config(data_dir))
+    runs.run("run", 1)
+    con.close()
+    assert runs.summary.processing_failed == [("run", "RuntimeError('detection')")]
+    assert runs.summary.fit_failed == [] and runs.summary.processed == []
 
 
 def test_method_only_for_the_runs_without_peaks(tmp_path):
+    from esper.process import process
     from esper.upload import upload
 
     (tmp_path / "esper.yaml").write_text("instrument: tofwerk\n")
     with pytest.raises(ProcessingConfigError, match="imported with their peaks"):
         upload(tmp_path / "runs", tmp_path, method="suspect")
+    with pytest.raises(ProcessingConfigError, match="imported with their peaks"):
+        process(tmp_path, method="suspect")
     assert read_processing_config(tmp_path).method is None
 
 

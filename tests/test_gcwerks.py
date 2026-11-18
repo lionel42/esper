@@ -297,7 +297,7 @@ def test_upload_between_dates(tmp_path, monkeypatch, capsys):
     from datetime import datetime
 
     from esper.cli.main import main
-    from esper.upload import in_dates
+    from esper.sources import in_dates
 
     names = ["260111.2300.air.7", "260112.0000.air.7", "260112.2114.air.7", "260113.0800.air.7"]
     root = _gcdir(tmp_path, names)

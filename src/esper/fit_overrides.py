@@ -12,7 +12,7 @@ assigned to a target and a mass and applied to the runs:
   (NULL: no end, also the runs imported later),
 - of the ``sample_types`` (NULL: all),
 
-each time such a run is fitted (``fit_measurement``: ``esper fit``, ``esper upload``,
+each time such a run is fitted (``fit_measurement``: ``esper process``, ``esper upload``,
 the GUI). Their peaks replace those of the default fit in the window, and keep the
 override they come from (``peak.fit_override_id``).
 

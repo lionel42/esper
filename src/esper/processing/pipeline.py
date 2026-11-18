@@ -36,6 +36,14 @@ def to_process(
     ).fetchall()
 
 
+def no_method(data_dir: Path) -> ProcessingConfigError:
+    """The error of a data directory without a method, for a step that needs one."""
+    return ProcessingConfigError(
+        f"{data_dir}: no method to identify the compounds; declare it"
+        f" (--method {'|'.join(METHODS)})"
+    )
+
+
 def load_targets(con: sqlite3.Connection) -> TargetIndex:
     """The targets of the database, with their ions, aliases and retention times."""
     return TargetIndex.from_db(con)
@@ -163,10 +171,7 @@ class Processor:
         self.data_dir = Path(data_dir)
         self.config = config or read_processing_config(data_dir)
         if self.config.method is None:
-            raise ProcessingConfigError(
-                f"{data_dir}: no method to identify the compounds; declare it"
-                f" (--method {'|'.join(METHODS)})"
-            )
+            raise no_method(data_dir)
         self._targets: TargetIndex | None = None
         self._target_search = None
         self._libraries = None

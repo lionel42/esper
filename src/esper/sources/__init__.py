@@ -33,6 +33,7 @@ from __future__ import annotations
 import importlib
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -123,6 +124,26 @@ class MeasurementImport:
 
 class InstrumentError(ValueError):
     """The instrument of a data directory is unknown, not declared, or not the one asked."""
+
+
+def in_dates(
+    name: str, after: datetime | None = None, before: datetime | None = None
+) -> bool:
+    """Whether the run ``name`` (``YYMMDD.HHMM...``) was started on or after ``after``
+    and before ``before`` (None: no limit). Without a date in its name: only without
+    limits."""
+    if after is None and before is None:
+        return True
+    started = parse_measurement_name(name)["acq_datetime"]
+    if started is None:
+        return False
+    started = datetime.fromisoformat(started)
+    return (after is None or started >= after) and (before is None or started < before)
+
+
+def name_width(names: Iterable[str]) -> int:
+    """The width of the longest run name, for ``run_label``."""
+    return max(map(len, names), default=0)
 
 
 def run_label(name: str, width: int = 0) -> str:
