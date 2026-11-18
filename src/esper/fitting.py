@@ -396,6 +396,7 @@ def fitted_peak_table(
     fitted: pd.DataFrame,
     config: px.ChromatogramFitConfig | None = None,
     targets: dict[int, ExpectedTarget] | None = None,
+    next_peak_idx: int | None = None,
 ) -> pd.DataFrame:
     """The peak table of a measurement with the fit (see the module docstring).
 
@@ -412,7 +413,8 @@ def fitted_peak_table(
     expected rt keeps the row and stays in the compound (the identification gave it
     that ion), whatever shape it matches; the other pieces of that peak go to other
     compounds. The pieces matching no compound are left without one (``new_compounds``
-    makes compounds of them).
+    makes compounds of them). ``next_peak_idx``: of the first peak added (None: after the
+    last of ``peaks``).
     Returns all the peaks, indexed by peak_idx (new peaks after the last one), with
     ``is_max_of_cmp`` of all the compounds again.
     """
@@ -482,7 +484,10 @@ def fitted_peak_table(
             # compounds the detection did not separate, given to each)
             compounds.iloc[k] = int(source)
 
-    next_idx = int(peaks.index.max()) + 1 if len(peaks) else 0
+    if next_peak_idx is not None:  # e.g. the peaks of some compounds only
+        next_idx = next_peak_idx
+    else:
+        next_idx = int(peaks.index.max()) + 1 if len(peaks) else 0
     new_rows = []
     for k, (peak_idx, row) in enumerate(to_match):
         values = {column: row[column] for column in FIT_COLUMNS}
@@ -654,26 +659,17 @@ def extraction(
     Raises if the measurement was fitted without keeping the extraction (FIT_VERSION 1).
     """
     mid = int(measurement_id)
-    columns = [
-        c for c in db.table_columns(con, "extraction_peak") if c != "measurement_id"
-    ]
+    columns = _extraction_columns(con)
     peaks = pd.read_sql(
         "SELECT * FROM peak WHERE measurement_id = ?",
         con,
         params=(mid,),
         index_col="peak_idx",
     )
-    # not those made by the fit: made again
-    compounds = pd.read_sql(
-        f"SELECT compound_idx, {', '.join(COMPOUND_SUMMARY_COLUMNS)} FROM compound"
-        f" WHERE measurement_id = ? AND {NOT_MADE_BY_THE_FIT}",
-        con,
-        params=(mid,),
-        index_col="compound_idx",
-    )
+    compounds = _read_compounds(con, mid)  # not those made by the fit: made again
     version = fit_version(con, mid)
     if version is None:
-        return peaks[[c for c in columns if c != "peak_idx"]], compounds
+        return peaks[columns], compounds
     if version < 2 and (peaks["source"] == SOURCE_FIT).any():
         raise ValueError(
             f"measurement {mid} was fitted without keeping the extraction,"
@@ -695,12 +691,38 @@ def extraction(
     extracted = peaks[
         (peaks["source"] == SOURCE_EXTRACTION) & ~peaks.index.isin(kept.index)
     ]
-    columns = [c for c in columns if c != "peak_idx"]
     # Not with an empty frame: its columns (object) would make all of them object
     parts = [extracted[columns]] + ([kept[columns]] if len(kept) else [])
     peaks = pd.concat(parts).sort_index()
     compounds.update(kept_compounds)
     return peaks, compounds
+
+
+def _extraction_columns(con: sqlite3.Connection) -> list[str]:
+    """The columns of a peak as extracted (extraction_peak), but its keys."""
+    return [
+        c
+        for c in db.table_columns(con, "extraction_peak")
+        if c not in ("measurement_id", "peak_idx")
+    ]
+
+
+def _read_compounds(
+    con: sqlite3.Connection, mid: int, idxs: list[int] | None = None
+) -> pd.DataFrame:
+    """COMPOUND_SUMMARY_COLUMNS of the compounds of a measurement (indexed by
+    compound_idx): of ``idxs``, or all those not made by the fit (None)."""
+    if idxs is None:
+        where, params = NOT_MADE_BY_THE_FIT, ()
+    else:
+        where, params = f"compound_idx IN ({', '.join('?' * len(idxs))})", tuple(idxs)
+    return pd.read_sql(
+        f"SELECT compound_idx, {', '.join(COMPOUND_SUMMARY_COLUMNS)} FROM compound"
+        f" WHERE measurement_id = ? AND {where}",
+        con,
+        params=(mid, *params),
+        index_col="compound_idx",
+    )
 
 
 def _same(a, b):
@@ -784,9 +806,6 @@ def _store_fit(
 ) -> None:
     """Replace the peaks of a measurement with the fit, and the compounds made by an
     earlier fit with ``made`` (indexed by compound_idx), in a single transaction."""
-    summaries = changes.summaries[COMPOUND_SUMMARY_COLUMNS]
-    assignments = ", ".join(f"{c} = ?" for c in COMPOUND_SUMMARY_COLUMNS)
-    db_rows = summaries.astype(object).where(summaries.notna(), None)
     with con:
         for name in ("peak", "extraction_peak", "extraction_compound"):
             con.execute(f"DELETE FROM {name} WHERE measurement_id = ?", (mid,))
@@ -796,33 +815,106 @@ def _store_fit(
         )
         if made is not None and len(made):
             db.insert(con, "compound", made.assign(measurement_id=mid).reset_index())
-        for name, df in (
-            ("peak", table),
-            ("extraction_peak", changes.extraction_peaks),
-            ("extraction_compound", changes.extraction_compounds),
-        ):
-            db.insert(con, name, df.assign(measurement_id=mid).reset_index())
-        con.executemany(
-            f"UPDATE compound SET {assignments} WHERE measurement_id = ? AND compound_idx = ?",
-            [
-                (*row, mid, int(idx))
-                for idx, row in zip(
-                    db_rows.index, db_rows.itertuples(index=False, name=None)
-                )
-            ],
-        )
+        _insert_fit(con, mid, table, changes)
         con.execute(
-            "UPDATE measurement SET n_peaks = ?, fit_version = ?, fitted_at = ?,"
-            " n_compounds = (SELECT COUNT(*) FROM compound WHERE measurement_id = ?)"
+            "UPDATE measurement SET fit_version = ?, fitted_at = ?"
             " WHERE measurement_id = ?",
-            (
-                len(table),
-                FIT_VERSION,
-                datetime.now().isoformat(timespec="seconds"),
-                mid,
-                mid,
-            ),
+            (FIT_VERSION, datetime.now().isoformat(timespec="seconds"), mid),
         )
+        db.update_counts(con, mid)
+
+
+def _insert_fit(
+    con: sqlite3.Connection, mid: int, table: pd.DataFrame, changes: FitChanges
+) -> None:
+    """Insert the peaks of a fit and what it changed of the extraction, and write the
+    summaries of its compounds (in the caller's transaction)."""
+    for name, df in (
+        ("peak", table),
+        ("extraction_peak", changes.extraction_peaks),
+        ("extraction_compound", changes.extraction_compounds),
+    ):
+        db.insert(con, name, df.assign(measurement_id=mid).reset_index())
+    summaries = changes.summaries[COMPOUND_SUMMARY_COLUMNS]
+    assignments = ", ".join(f"{c} = ?" for c in COMPOUND_SUMMARY_COLUMNS)
+    db_rows = summaries.astype(object).where(summaries.notna(), None)
+    con.executemany(
+        f"UPDATE compound SET {assignments} WHERE measurement_id = ? AND compound_idx = ?",
+        [
+            (*row, mid, int(idx))
+            for idx, row in zip(db_rows.index, db_rows.itertuples(index=False, name=None))
+        ],
+    )
+
+
+def fit_compounds(
+    con: sqlite3.Connection,
+    measurement_id: int,
+    data_dir: Path,
+    compound_idxs,
+    workers: int | None = None,
+    pool: Executor | None = None,
+    config: px.ChromatogramFitConfig | None = None,
+    target_search=None,
+) -> pd.DataFrame | None:
+    """Fit the peaks of some compounds of a measurement only, not fitted yet (e.g. found
+    again alone: ``Processor.process_compounds``); the other peaks are kept as they are.
+
+    As ``fit_measurement``, but the pieces only go to these compounds: those matching
+    none of them are dropped (kept as extracted in extraction_peak: a fit of the whole
+    measurement finds them again). The measurement is marked fitted if it has no other
+    peaks. Single transaction. Returns their peak table, None without chromatograms.
+    """
+    mid = int(measurement_id)
+    idxs = [int(i) for i in compound_idxs]
+    inputs = _fit_inputs(con, mid)
+    if inputs[0] is None:
+        return None
+    marks = ", ".join("?" * len(idxs))
+    peaks = pd.read_sql(
+        f"SELECT * FROM peak WHERE measurement_id = ? AND compound_idx IN ({marks})",
+        con,
+        params=(mid, *idxs),
+        index_col="peak_idx",
+    )[_extraction_columns(con)]
+    compounds = _read_compounds(con, mid, idxs)
+    names = _compound_names(con, mid).reindex(idxs)
+    first_new = db.next_peak_idx(con, mid)  # after all the peaks, not only these
+    fitted = _fitted_table(
+        con,
+        mid,
+        data_dir,
+        inputs,
+        peaks,
+        names,
+        workers,
+        pool,
+        config,
+        target_search,
+        first_new,
+    )
+    changes = fit_changes(peaks, compounds, fitted)
+    table = fitted[fitted["compound_idx"].notna()].copy()
+    table.attrs = dict(fitted.attrs)
+    with con:
+        con.execute(
+            f"DELETE FROM peak WHERE measurement_id = ? AND compound_idx IN ({marks})",
+            (mid, *idxs),
+        )
+        _insert_fit(con, mid, table, changes)
+        (others,) = con.execute(
+            "SELECT count(*) FROM peak WHERE measurement_id = ?"
+            f" AND (compound_idx IS NULL OR compound_idx NOT IN ({marks}))",
+            (mid, *idxs),
+        ).fetchone()
+        if not others:  # its only peaks: the measurement is fitted
+            con.execute(
+                "UPDATE measurement SET fit_version = coalesce(fit_version, ?),"
+                " fitted_at = coalesce(fitted_at, ?) WHERE measurement_id = ?",
+                (FIT_VERSION, datetime.now().isoformat(timespec="seconds"), mid),
+            )
+        db.update_counts(con, mid)
+    return table
 
 
 def fit_measurement(
@@ -847,19 +939,17 @@ def fit_measurement(
     ``compound.source`` 'fit': made again by each fit).
     """
     mid = int(measurement_id)
-    chromatogram_file, method, time = _fit_inputs(con, mid)
-    if chromatogram_file is None:
+    inputs = _fit_inputs(con, mid)
+    if inputs[0] is None:
         return None
-    peaks, compounds = extraction(con, mid)
-    frame = pd.read_parquet(Path(data_dir) / chromatogram_file)
-    fitted = fit_peaks(frame, peaks, workers, pool, config)
-    fitted = _with_overrides(con, mid, fitted, frame, peaks, config, time)
+    _, method, time = inputs
     if method != TARGET:
         target_search = None
-    names = _compound_names(con, mid) if target_search is not None else None
-    targets = target_search.expected(names, time) if target_search is not None else None
-    table = fitted_peak_table(peaks, fitted, config, targets)
-    table.attrs["n_warnings"] = fitted.attrs.get("n_warnings", 0)
+    peaks, compounds = extraction(con, mid)
+    names = _compound_names(con, mid)
+    table = _fitted_table(
+        con, mid, data_dir, inputs, peaks, names, workers, pool, config, target_search
+    )
 
     earlier = [
         row[0]
@@ -889,6 +979,35 @@ def fit_measurement(
         )
     )
     _store_fit(con, mid, table, changes, made_rows)
+    return table
+
+
+def _fitted_table(
+    con: sqlite3.Connection,
+    mid: int,
+    data_dir: Path,
+    inputs: tuple,
+    peaks: pd.DataFrame,
+    names: pd.Series,
+    workers: int | None,
+    pool: Executor | None,
+    config: px.ChromatogramFitConfig | None,
+    target_search,
+    next_peak_idx: int | None = None,
+) -> pd.DataFrame:
+    """The peak table of the fit of ``peaks`` of a measurement (``fitted_peak_table``):
+    fitted in its chromatograms, with the fit overrides that apply to it, and its
+    targets (of ``names``) if it was identified by target search (``inputs``:
+    ``_fit_inputs``). ``attrs["n_warnings"]``: warnings of the fits."""
+    chromatogram_file, method, time = inputs
+    frame = pd.read_parquet(Path(data_dir) / chromatogram_file)
+    fitted = fit_peaks(frame, peaks, workers, pool, config)
+    fitted = _with_overrides(con, mid, fitted, frame, peaks, config, time)
+    targets = None
+    if target_search is not None and method == TARGET:
+        targets = target_search.expected(names, time)
+    table = fitted_peak_table(peaks, fitted, config, targets, next_peak_idx)
+    table.attrs["n_warnings"] = fitted.attrs.get("n_warnings", 0)
     return table
 
 

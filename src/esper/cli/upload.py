@@ -44,6 +44,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "identified, declared in the esper.yaml of the data directory (then optional); "
         "without a method their peaks are not found (see esper peaks)",
     )
+    parser.add_argument(
+        "--compounds",
+        nargs="+",
+        metavar="NAME",
+        help="find, identify and fit the peaks of these targets only (target search;"
+        " the chromatograms are imported whole). The runs already processed are left"
+        " as they are; with -f they are not imported again, these compounds are"
+        " found again in them and their other compounds kept",
+    )
     add_workers(parser)
     parser.add_argument(
         "--instrument",
@@ -100,6 +109,7 @@ def run(args: argparse.Namespace) -> int:
             after=args.after,
             before=args.before,
             method=args.method,
+            compounds=args.compounds,
             newest_first=args.newest_first,
         )
     except (InstrumentError, TargetError, ProcessingConfigError) as e:

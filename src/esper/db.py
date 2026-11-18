@@ -646,6 +646,30 @@ def add_columns(con: sqlite3.Connection) -> None:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
 
 
+def next_peak_idx(con: sqlite3.Connection, measurement_id: int) -> int:
+    """The first peak_idx free in a measurement: after those of its peaks and of its
+    peaks as extracted (extraction_peak: also of peaks no longer in its peak table)."""
+    mid = int(measurement_id)
+    return con.execute(
+        "SELECT coalesce(max(peak_idx) + 1, 0) FROM (SELECT peak_idx FROM peak"
+        " WHERE measurement_id = ? UNION ALL SELECT peak_idx FROM extraction_peak"
+        " WHERE measurement_id = ?)",
+        (mid, mid),
+    ).fetchone()[0]
+
+
+def update_counts(con: sqlite3.Connection, measurement_id: int) -> None:
+    """Set n_peaks and n_compounds of a measurement from its peak and compound tables."""
+    mid = int(measurement_id)
+    con.execute(
+        "UPDATE measurement"
+        " SET n_peaks = (SELECT count(*) FROM peak WHERE measurement_id = ?),"
+        " n_compounds = (SELECT count(*) FROM compound WHERE measurement_id = ?)"
+        " WHERE measurement_id = ?",
+        (mid, mid, mid),
+    )
+
+
 def insert(con: sqlite3.Connection, table: str, df: pd.DataFrame) -> None:
     """Insert the rows of a data frame (columns named as in the table, NaN/NA as NULL)."""
     if df.empty:

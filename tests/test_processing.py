@@ -511,3 +511,77 @@ def test_method_in_a_processing_on_one_line(tmp_path):
     (tmp_path / "esper.yaml").write_text("processing: {fit: {peak_shape: emg}}\n")
     with pytest.raises(ProcessingConfigError, match="add 'method: target'"):
         resolve_method(tmp_path, "target")
+
+
+def _compounds(con) -> list[tuple]:
+    return con.execute(
+        "SELECT compound_idx, compound_name, n_peaks, round(rt_mean_s, 3), source"
+        " FROM compound ORDER BY compound_idx"
+    ).fetchall()
+
+
+def test_process_compounds_of_a_run_not_processed(data_dir):
+    resolve_method(data_dir, "target")
+    con = db.connect(data_dir, create=True)
+    processor = Processor(con, data_dir)
+    ((mid, _),) = to_process(con, "target")
+    table = processor.process_compounds(mid, ["CF4"], workers=1)
+    # CF4 alone: found on its ion (m/z 69) only, fitted
+    assert [(n, k) for _, n, k, _, _ in _compounds(con)] == [("CF4", 1)]
+    assert set(table["mass"]) == {69} and table["fit_rt_s"].notna().all()
+    row = con.execute(
+        "SELECT peak_source, identification, n_compounds, n_peaks, fit_version"
+        " FROM measurement"
+    ).fetchone()
+    assert row[:4] == (PEAK_SOURCE, "target", 1, len(table)) and row[4] is not None
+    assert to_process(con, "target") == []  # processed (with CF4 only)
+    con.close()
+
+
+def test_process_compounds_keeps_the_others(data_dir):
+    resolve_method(data_dir, "target")
+    con = db.connect(data_dir, create=True)
+    processor = Processor(con, data_dir)
+    ((mid, _),) = to_process(con, "target")
+    processor.process(mid, workers=1)
+    before = _compounds(con)
+    (n_compounds,) = con.execute("SELECT n_compounds FROM measurement").fetchone()
+    processor.process_compounds(mid, ["CF4"], workers=1)
+    after = _compounds(con)
+    # the other compounds as they were; CF4 found again, numbered after them
+    assert [c for c in after if c[1] != "CF4"] == [c for c in before if c[1] != "CF4"]
+    (cf4,) = [c for c in after if c[1] == "CF4"]
+    assert cf4[0] > max(c[0] for c in before if c[1] != "CF4")
+    assert abs(cf4[3] - 150) < 0.5
+    row = con.execute("SELECT n_compounds, n_peaks, fit_version FROM measurement")
+    n_compounds_after, n_peaks, fit_version = row.fetchone()
+    assert n_compounds_after == n_compounds and fit_version is not None
+    assert n_peaks == con.execute("SELECT count(*) FROM peak").fetchone()[0]
+    con.close()
+
+
+def test_target_names(data_dir):
+    resolve_method(data_dir, "target")
+    con = db.connect(data_dir, create=True)
+    with con:
+        con.execute("INSERT INTO target_alias (alias, name) VALUES ('CF-4', 'CF4')")
+    processor = Processor(con, data_dir)
+    assert processor.target_names(["CF-4", "CF4"]) == ["CF4"]
+    with pytest.raises(ProcessingConfigError, match="not targets: Unknown"):
+        processor.target_names(["CF4", "Unknown"])
+    con.close()
+    suspect = data_dir / "suspect"
+    suspect.mkdir()
+    (suspect / "esper.yaml").write_text("processing:\n  method: suspect\n")
+    con = db.connect(suspect, create=True)
+    with pytest.raises(ProcessingConfigError, match="only with target search"):
+        Processor(con, suspect).target_names(["CF4"])
+    con.close()
+
+
+def test_upload_compounds_only_when_esper_finds_the_peaks(tmp_path):
+    # tofwerk runs are imported with their peaks
+    from esper.upload import upload
+
+    with pytest.raises(ProcessingConfigError, match="--compounds"):
+        upload(tmp_path, tmp_path / "esper", instrument="tofwerk", compounds=["CF4"])

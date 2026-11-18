@@ -243,6 +243,7 @@ def upload(
     before: datetime | None = None,
     method: str | None = None,
     newest_first: bool = False,
+    compounds: list[str] | None = None,
 ) -> UploadSummary:
     """Import the runs of ``source``, and fit their peaks (``esper.fitting``) if ``fit``;
     the runs without peaks are processed (``esper.processing``) with the method of the
@@ -260,6 +261,11 @@ def upload(
     all the same).
     ``newest_first``: import the runs from the last one (by name, i.e. by time) instead
     of the first one, to have the recent runs first.
+    ``compounds``: targets (or their aliases) whose peaks alone are found, identified and
+    fitted (target search: ``Processor.process_compounds``); the chromatograms are
+    imported whole. The runs already processed are left as they are, unless ``force``:
+    then they are not imported again, their compounds of these targets are replaced
+    and their other compounds kept.
     """
     from esper.processing.config import (
         ProcessingConfigError,
@@ -299,12 +305,19 @@ def upload(
             summary.added_aliases = _store_targets(
                 con, instrument_source, source, data_dir, add_aliases
             )
-        processor, pending = None, set()
+        processor, pending, names = None, set(), None
         if process:
             from esper.processing.pipeline import Processor, to_process
 
             processor = Processor(con, data_dir, config)
             pending = {name for _, name in to_process(con, config.method)}
+            if compounds:
+                names = processor.target_names(compounds)
+        elif compounds:
+            raise ProcessingConfigError(
+                f"--compounds: the peaks of the runs of {instrument} are not found by"
+                f" esper (no method, or imported with their peaks)"
+            )
         runs = instrument_source.find_runs(source)
         if newest_first:
             runs = sorted(runs, key=lambda run: run.name, reverse=True)
@@ -324,7 +337,9 @@ def upload(
                 logger.warning(f"{name}: not complete, skipped")
                 summary.skipped_incomplete.append(name)
                 continue
-            if not force and _is_unchanged(con, name, run.file):
+            # with compounds, force does not import the unchanged runs again: their
+            # compounds of the targets are found again, their others are kept
+            if (not force or names) and _is_unchanged(con, name, run.file):
                 logger.debug(f"{name}: unchanged, skipped")
                 summary.skipped_unchanged.append(name)
                 try:
@@ -332,8 +347,9 @@ def upload(
                 except Exception as e:
                     logger.exception(f"{name}: refresh failed")
                     summary.failed.append((name, f"refresh: {e!r}"))
-                if name in pending:  # imported before, not processed yet
-                    _process(con, processor, name, fit, pool, summary)
+                # imported before, not processed yet; or its compounds again (force)
+                if name in pending or (names and force):
+                    _process(con, processor, name, fit, pool, summary, names=names)
                 continue
             try:
                 imported = instrument_source.read(run)
@@ -351,7 +367,7 @@ def upload(
             logger.info(f"{name}: {n_peaks} peaks, {n_compounds} compounds")
             summary.imported.append(name)
             if imported.peaks is None and processor is not None:
-                _process(con, processor, name, fit, pool, summary, mid)
+                _process(con, processor, name, fit, pool, summary, mid, names)
             elif imported.peaks is not None and fit_imported:
                 _fit(con, name, mid, data_dir, pool, summary, config.fit)
     finally:
@@ -393,6 +409,17 @@ def _fit(
     logger.info(f"{name}: {fit_summary(table)}")
 
 
+def _compound_names(con: sqlite3.Connection, mid: int) -> list[str]:
+    return [
+        row[0]
+        for row in con.execute(
+            "SELECT compound_name FROM compound WHERE measurement_id = ?"
+            " AND compound_name IS NOT NULL",
+            (mid,),
+        )
+    ]
+
+
 def _process(
     con: sqlite3.Connection,
     processor,
@@ -401,9 +428,11 @@ def _process(
     pool,
     summary: UploadSummary,
     mid: int | None = None,
+    names: list[str] | None = None,
 ) -> None:
     """Find and identify the peaks of a measurement (``esper.processing``), then fit them
-    if ``fit`` (each failure counted apart)."""
+    if ``fit`` (each failure counted apart); ``names``: of the compounds of these
+    targets only (fitted with them: a failure counted as of the processing)."""
     from esper.processing.pipeline import summary as process_summary
 
     if mid is None:
@@ -411,7 +440,10 @@ def _process(
             "SELECT measurement_id FROM measurement WHERE name = ?", (name,)
         ).fetchone()
     try:
-        table = processor.process(mid, fit=False)
+        if names:  # fitted with them
+            table = processor.process_compounds(mid, names, pool=pool, fit=fit)
+        else:
+            table = processor.process(mid, fit=False)
     except Exception as e:
         logger.exception(f"{name}: processing failed")
         summary.processing_failed.append((name, repr(e)))
@@ -420,6 +452,10 @@ def _process(
         logger.warning(f"{name}: no chromatograms, not processed")
         return
     summary.processed.append(name)
+    if names:
+        found = sorted(set(names) & set(_compound_names(con, mid)))
+        logger.info(f"{name}: found {', '.join(found) or 'none'} of {', '.join(names)}")
+        return
     logger.info(f"{name}: {process_summary(table, con, mid)}")
     if fit:
         _fit(

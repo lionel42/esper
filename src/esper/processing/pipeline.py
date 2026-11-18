@@ -74,6 +74,81 @@ def _store(
         )
 
 
+def _replace_compounds(
+    con: sqlite3.Connection,
+    mid: int,
+    method: str,
+    names: list[str],
+    peaks: pd.DataFrame,
+    compounds: pd.DataFrame,
+) -> list[int]:
+    """Replace the compounds of a measurement named one of ``names`` (and their peaks,
+    with their pieces given to other compounds by the fit) with ``compounds`` and
+    ``peaks`` (renumbered after the others); the other compounds are kept. Single
+    transaction. Returns the compound_idx given to ``compounds``."""
+    name_marks = ", ".join("?" * len(names))
+    with con:
+        old = [
+            row[0]
+            for row in con.execute(
+                "SELECT compound_idx FROM compound WHERE measurement_id = ?"
+                f" AND compound_name IN ({name_marks})",
+                (mid, *names),
+            )
+        ]
+        if old:
+            marks = ", ".join("?" * len(old))
+            old_peaks = [
+                row[0]
+                for row in con.execute(
+                    f"SELECT peak_idx FROM peak WHERE measurement_id = ?"
+                    f" AND compound_idx IN ({marks})"
+                    f" UNION SELECT peak_idx FROM extraction_peak WHERE measurement_id = ?"
+                    f" AND compound_idx IN ({marks})",
+                    (mid, *old, mid, *old),
+                )
+            ]
+            peak_marks = ", ".join("?" * len(old_peaks))
+            for table in ("peak", "extraction_peak"):
+                con.execute(
+                    f"DELETE FROM {table} WHERE measurement_id = ?"
+                    f" AND peak_idx IN ({peak_marks})",
+                    (mid, *old_peaks),
+                )
+            for table in ("extraction_compound", "compound"):  # compound: cascades
+                con.execute(
+                    f"DELETE FROM {table} WHERE measurement_id = ?"
+                    f" AND compound_idx IN ({marks})",
+                    (mid, *old),
+                )
+        (first_compound,) = con.execute(
+            "SELECT coalesce(max(compound_idx) + 1, 0) FROM compound"
+            " WHERE measurement_id = ?",
+            (mid,),
+        ).fetchone()
+        first_peak = db.next_peak_idx(con, mid)
+        numbers = {
+            int(old_idx): first_compound + i
+            for i, old_idx in enumerate(compounds.index)
+        }
+        compounds = compounds.rename(index=numbers).rename_axis("compound_idx")
+        peaks = peaks.assign(
+            compound_idx=peaks["compound_idx"].map(numbers).astype("Int64")
+        )
+        peaks.index = pd.RangeIndex(
+            first_peak, first_peak + len(peaks), name="peak_idx"
+        )
+        db.insert(con, "compound", compounds.reset_index().assign(measurement_id=mid))
+        db.insert(con, "peak", peaks.reset_index().assign(measurement_id=mid))
+        con.execute(
+            "UPDATE measurement SET peak_source = coalesce(peak_source, ?),"
+            " identification = coalesce(identification, ?) WHERE measurement_id = ?",
+            (PEAK_SOURCE, method, mid),
+        )
+        db.update_counts(con, mid)
+    return list(numbers.values())
+
+
 class Processor:
     """Processes the measurements of a data directory with its configuration (the targets
     and the libraries are read once, when first needed)."""
@@ -120,6 +195,23 @@ class Processor:
             self._target_search = TargetSearch(self.targets, self.config.target)
         return self._target_search
 
+    def target_names(self, names: list[str]) -> list[str]:
+        """The targets of ``names`` (aliases resolved), for ``process_compounds``.
+
+        Raises ProcessingConfigError if the method is not target search or a name is
+        no target.
+        """
+        if self.method != TARGET:
+            raise ProcessingConfigError(
+                f"{self.data_dir}: compounds are processed alone only with target"
+                f" search, not {self.method}"
+            )
+        found = {name: self.targets.target_of(name) for name in names}
+        unknown = sorted(name for name, target in found.items() if target is None)
+        if unknown:
+            raise ProcessingConfigError(f"not targets: {', '.join(unknown)}")
+        return list(dict.fromkeys(found.values()))
+
     @property
     def libraries(self):
         if self._libraries is None:
@@ -144,6 +236,17 @@ class Processor:
         )
         return peaks, compounds, candidates
 
+    def _chromatograms(self, mid: int) -> tuple[pd.DataFrame, object] | None:
+        """(chromatograms, acquisition time) of a measurement, None without them."""
+        chromatogram_file, time = self.con.execute(
+            "SELECT chromatogram_file, acq_datetime FROM measurement"
+            " WHERE measurement_id = ?",
+            (mid,),
+        ).fetchone()
+        if chromatogram_file is None:
+            return None
+        return pd.read_parquet(self.data_dir / chromatogram_file), time
+
     def process(
         self,
         measurement_id: int,
@@ -160,14 +263,10 @@ class Processor:
         from esper.processing.detection import detect
 
         mid = int(measurement_id)
-        chromatogram_file, time = self.con.execute(
-            "SELECT chromatogram_file, acq_datetime FROM measurement"
-            " WHERE measurement_id = ?",
-            (mid,),
-        ).fetchone()
-        if chromatogram_file is None:
+        run = self._chromatograms(mid)
+        if run is None:
             return None
-        frame = pd.read_parquet(self.data_dir / chromatogram_file)
+        frame, time = run
         peaks, compounds = detect(frame, self.config.baseline, self.config.detection)
         peaks, compounds, candidates = self.identify(peaks, compounds, time)
         _store(self.con, mid, self.method, peaks, compounds, candidates)
@@ -177,6 +276,66 @@ class Processor:
             self.con,
             mid,
             self.data_dir,
+            workers,
+            pool,
+            self.config.fit,
+            self.target_search,
+        )
+
+    def process_compounds(
+        self,
+        measurement_id: int,
+        names: list[str],
+        workers: int | None = None,
+        pool: Executor | None = None,
+        fit: bool = True,
+    ) -> pd.DataFrame | None:
+        """Find, identify and fit (if ``fit``) only the compounds of some targets in a
+        measurement (``names``: targets, see ``target_names``), replacing those it has;
+        its other compounds are kept as they are.
+
+        The peaks are found on the ions of these targets only, and target search looks
+        for these targets only; the compounds it names are kept. Returns their peaks
+        (fitted: see ``esper.fitting.fit_compounds``), None if the measurement has no
+        chromatograms.
+        """
+        from esper.deconvolution import chromatogram_masses
+        from esper.fitting import fit_compounds
+        from esper.processing.detection import detect
+        from esper.processing.identification import search_targets
+        from esper.target_index import unit_mass
+
+        mid = int(measurement_id)
+        run = self._chromatograms(mid)
+        if run is None:
+            return None
+        frame, time = run
+        ions = {mass for name in names for mass in self.targets.masses_at(name, time)}
+        on_ions = [c for c in chromatogram_masses(frame) if unit_mass(float(c)) in ions]
+        alone = frame[on_ions]
+        alone.attrs = dict(frame.attrs)  # e.g. a scan run (esper.sources.CONTINUOUS)
+        peaks, compounds = detect(alone, self.config.baseline, self.config.detection)
+        others = set(self.targets.table.index) - set(names)
+        peaks, compounds = search_targets(
+            peaks, compounds, self.targets, time, self.config.target, skip=others
+        )
+        compounds = compounds[compounds["compound_name"].isin(names)]
+        peaks = peaks[peaks["compound_idx"].isin(compounds.index)]
+        made = _replace_compounds(self.con, mid, self.method, names, peaks, compounds)
+        if not fit:
+            # the run's fit, if any, is no longer of all its compounds
+            with self.con:
+                self.con.execute(
+                    "UPDATE measurement SET fit_version = NULL, fitted_at = NULL"
+                    " WHERE measurement_id = ?",
+                    (mid,),
+                )
+            return peaks
+        return fit_compounds(
+            self.con,
+            mid,
+            self.data_dir,
+            made,
             workers,
             pool,
             self.config.fit,
