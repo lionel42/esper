@@ -75,3 +75,32 @@ def test_chromatogram_store(tmp_path):
     assert store.frame(3) is None
     store.clear()
     assert store.series(1, "tic").tolist() == [3.0, 4.0]
+
+
+def test_main_ion_of_a_measured_mass(tmp_path):
+    # GCwerks scan runs: measured masses, e.g. 69.4
+    from esper import db
+    from esper.gui.data import EsperData
+
+    con = db.connect(tmp_path, create=True)
+    con.execute(
+        "INSERT INTO measurement (measurement_id, name, source_dir, source_mtime,"
+        " source_size, imported_at) VALUES (1, '250101.0000.air.1', '', 0, 0, '')"
+    )
+    con.execute(
+        "INSERT INTO compound (measurement_id, compound_idx, compound_name)"
+        " VALUES (1, 0, 'Unknown')"
+    )
+    con.executemany(
+        "INSERT INTO peak (measurement_id, peak_idx, compound_idx, mass, rt_s,"
+        " prominence) VALUES (1, ?, 0, ?, 100, ?)",
+        [(0, 69.4, 10.0), (1, 70.0, 5.0)],
+    )
+    con.commit()
+    con.close()
+    data = EsperData(tmp_path)
+    try:
+        # the unit mass of its most prominent peak
+        assert data.main_ions(1).tolist() == [69]
+    finally:
+        data.close()

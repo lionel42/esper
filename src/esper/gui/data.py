@@ -513,7 +513,9 @@ class EsperData:
         return int(peaks.loc[peaks["prominence"].idxmax(), "mass"])
 
     def main_ions(self, measurement_id: int) -> pd.Series:
-        """``main_ion`` of all the compounds of a measurement (Int64, NA without peaks)."""
+        """``main_ion`` of all the compounds of a measurement, as a unit mass (Int64, NA
+        without peaks): its target's, else the unit mass of its most prominent peak (a
+        measured mass, e.g. 69.4 in a GCwerks scan run: 69)."""
         compounds = self.compounds(measurement_id)
         main = (
             compounds["main_name"]
@@ -524,7 +526,8 @@ class EsperData:
         largest = peaks.loc[
             peaks.groupby("compound_idx")["prominence"].idxmax().dropna()
         ]
-        largest = largest.set_index("compound_idx")["mass"].astype("Int64")
+        largest = largest.set_index("compound_idx")["mass"].map(unit_mass)
+        largest = largest.astype("Int64")
         return main.fillna(largest.reindex(compounds.index))
 
     def find_compound(
