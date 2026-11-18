@@ -70,3 +70,26 @@ def test_centered_text_lines(app):
     assert item.textItem.textWidth() == pytest.approx(document.idealWidth())
     rect = item.textItem.mapRectToParent(item.textItem.boundingRect())
     assert rect.center().x() == pytest.approx(0, abs=1)
+
+
+def test_masses_instead_of_main():
+    """The masses of a compound drawn as the main one when it has no peak there (a target
+    found on another of its ions), most prominent first."""
+    import pandas as pd
+
+    from esper.gui.panels.chromatogram import masses_instead_of_main
+
+    peaks = pd.DataFrame(
+        {
+            "compound_idx": [0, 0, 1, 1],
+            "mass": [117.0, 119.0, 82.0, 117.0],
+            "prominence": [100.0, 300.0, 50.0, 200.0],
+        }
+    )
+    # compound 0: no peak on the main ion 82
+    assert masses_instead_of_main(peaks, (0,), {82}) == [119, 117]
+    # compound 1 has one: nothing instead
+    assert masses_instead_of_main(peaks, (1,), {82}) == []
+    # a GCwerks scan: the main unit mass stands for the masses measured around it
+    assert masses_instead_of_main(peaks, (0,), {117, 116.9, 117.1}) == []
+    assert masses_instead_of_main(peaks, (2,), {82}) == []

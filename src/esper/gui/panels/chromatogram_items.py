@@ -197,9 +197,15 @@ def fit_fill_items(t: np.ndarray, peaks, color, selected=()) -> list:
 
 
 def integration_items(
-    t: np.ndarray, y: np.ndarray, peaks, integration: Integration, selected=()
+    t: np.ndarray,
+    y: np.ndarray,
+    peaks,
+    integration: Integration,
+    selected=(),
+    color="k",
 ) -> tuple[list, np.ndarray, np.ndarray]:
-    """Items of the peaks of one mass in an integration view.
+    """Items of the peaks of one mass in an integration view (the fitted shapes filled
+    in ``color``).
 
     Returns the items, the areas and the baselines below the apex (NaN where none).
     """
@@ -208,7 +214,7 @@ def integration_items(
     if integration == Integration.FIT:
         items = fit_integration_items(t, peaks) + fit_sum_items(t, peaks)
     elif integration == Integration.FIT_SHAPES:
-        items = fit_fill_items(t, peaks, "k", selected=selected) + fit_sum_items(
+        items = fit_fill_items(t, peaks, color, selected=selected) + fit_sum_items(
             t, peaks
         )
     else:

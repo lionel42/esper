@@ -117,6 +117,17 @@ def draw_curve(
     )
 
 
+def masses_instead_of_main(peaks: pd.DataFrame, compound_idxs, main_masses) -> list:
+    """The masses of the peaks of the selected compounds when none is on the main
+    masses (e.g. a target whose main ion was not detected in the run, found on another
+    of its ions), by decreasing prominence; else none."""
+    own = peaks[peaks["compound_idx"].isin(compound_idxs)]
+    if own.empty or own["mass"].isin(list(main_masses)).any():
+        return []
+    own = own.sort_values("prominence", ascending=False)
+    return [column_mass(f"{m:g}") for m in own["mass"].drop_duplicates()]
+
+
 class OverlayOptions(QObject):
     """The overlays checked (keys of ``OVERLAYS``), with a 'Masses' menu in several plots.
 
@@ -273,6 +284,9 @@ class ChromatogramPanel(BasePanel):
         self._keep_range = False
         self._annotations: list = []
         self._curve_items: list = []
+        # the masses of the selected compounds drawn as the main one, which has no
+        # peak of them (``masses_instead_of_main``)
+        self.instead_of_main: list = []
 
         self.plot = make_plot()
 
@@ -336,12 +350,26 @@ class ChromatogramPanel(BasePanel):
             masses.extend(self.data.target_masses(sel.measurement_id, sel.target))
         if "tic" in checked:
             masses.append(TIC)
+        # the masses with the peaks of the compound, when the main one has none
+        masses.extend(self._masses_instead_of_main())
         # a unit mass: the masses measured for it (GCwerks), each its own curve
         measured = [
             m for mass in masses for m in self.data.measured_masses(sel.measurement_id, mass)
         ]
         shown = set(self.data.measured_masses(sel.measurement_id, sel.mass)) | {sel.mass}
         return [m for m in dict.fromkeys(measured) if m not in shown]
+
+    def _masses_instead_of_main(self) -> list:
+        """``masses_instead_of_main`` of the selection (none for the TIC)."""
+        sel = self.selection
+        if sel.compound_idx is None or sel.mass is TIC:
+            return []
+        measured = self.data.measured_masses(sel.measurement_id, sel.mass)
+        return masses_instead_of_main(
+            self.data.peaks(sel.measurement_id),
+            sel.compound_idxs,
+            {sel.mass, *measured},
+        )
 
     def _peaking_masses(self) -> list[int]:
         """Masses with a peak apex in the visible rt range, most prominent first."""
@@ -378,6 +406,7 @@ class ChromatogramPanel(BasePanel):
         sel = self.selection
         view_range = self.plot.viewRange()
         self._clear()
+        self.instead_of_main = []
         if sel.measurement_id is None:
             self.info_label.setText("")
             self.title_label.setText("")
@@ -433,6 +462,8 @@ class ChromatogramPanel(BasePanel):
             curve.z = 1 if curve is main else 0
         for curve, color in zip(overlays, colors[len(selected) * several :]):
             curve.color = color
+        self.instead_of_main = self._masses_instead_of_main()
+        instead = [c for c in overlays if c.mass in self.instead_of_main]
         curves = selected + overlays
         show_legend = len(curves) > 1 and len(curves) - (not several) <= MAX_LEGEND_ENTRIES
 
@@ -445,6 +476,7 @@ class ChromatogramPanel(BasePanel):
             # Fitted peaks of the overlaid masses, unless there are too many
             if (
                 curve in overlays
+                and curve not in instead  # annotated below
                 and self.draw_options.integration == Integration.FIT_SHAPES
                 and curve.mass is not TIC
                 and show_legend
@@ -454,16 +486,16 @@ class ChromatogramPanel(BasePanel):
                         curve.t, peaks[peaks["mass"] == curve.mass], curve.color
                     )
                 )
-        self._annotate(main.t, main.y)
+        self._annotate(main.t, main.y, sel.mass)
+        # the main mass has no peak of the compound: its peaks on the other masses
+        for curve in instead:
+            self._annotate(curve.t, curve.y, curve.mass, color=curve.color)
         self._mark_target()
         if keep_range:
             self.plot.setRange(xRange=view_range[0], yRange=view_range[1], padding=0)
         else:
-            # the range of all the selected masses
-            t = np.concatenate([c.t for c in selected])
-            order = np.argsort(t, kind="stable")
-            y = np.concatenate([c.y for c in selected])
-            self._set_range(t[order], y[order])
+            # the range of all the selected masses (and of those drawn instead)
+            self._set_range(selected + instead)
         self.curves_changed.emit(main, curves[1:])
 
     def _curve(self, mass, frame: pd.DataFrame | None = None) -> Curve | None:
@@ -546,13 +578,14 @@ class ChromatogramPanel(BasePanel):
         for item in items:
             self._add(item)
 
-    def _annotate(self, t: np.ndarray, y: np.ndarray) -> None:
-        """Integration (``self.draw_options``), apex marker and label of each peak at this mass."""
+    def _annotate(self, t: np.ndarray, y: np.ndarray, mass, color="k") -> None:
+        """Integration (``self.draw_options``; the fitted shapes filled in ``color``),
+        apex marker and label of each peak at this mass."""
         sel = self.selection
-        if sel.mass is TIC:
+        if mass is TIC:
             return
         peaks = self.data.peaks(sel.measurement_id)
-        peaks = peaks[peaks["mass"] == sel.mass]
+        peaks = peaks[peaks["mass"] == mass]
         if peaks.empty:
             return
         names = self.data.compounds(sel.measurement_id)["main_name"]
@@ -565,7 +598,7 @@ class ChromatogramPanel(BasePanel):
         )
         fitted = integration == Integration.FIT
         items, areas, y_base = integration_items(
-            t, y, peaks, integration, selected=sel.compound_idxs
+            t, y, peaks, integration, selected=sel.compound_idxs, color=color
         )
         self._add_all(items)
         y_label = np.where(np.isfinite(y_base), y_base, y_label)
@@ -636,8 +669,13 @@ class ChromatogramPanel(BasePanel):
         if compound_idx != NO_COMPOUND:
             self.selection.select_compound(self.selection.measurement_id, compound_idx)
 
-    def _set_range(self, t: np.ndarray, y: np.ndarray) -> None:
+    def _set_range(self, curves: list[Curve]) -> None:
+        """The range of the curves: around the selected compound, zoomed on its peaks on
+        them (the whole chromatogram without one)."""
         sel = self.selection
+        t = np.concatenate([c.t for c in curves])
+        order = np.argsort(t, kind="stable")
+        t, y = t[order], np.concatenate([c.y for c in curves])[order]
         if sel.rt is None:
             # the whole chromatogram: from the data, not autoRange (the curves are
             # clipped to the view, their bounds would be those of the previous view)
@@ -659,13 +697,17 @@ class ChromatogramPanel(BasePanel):
             if near.any():
                 top = float(y[near].max())
 
-        # Zoom on the selected compounds' peaks at this mass, if any
+        # Zoom on the selected compounds' peaks on these curves, if any
         if sel.compound_idx is not None and sel.mass is not TIC:
             peaks = self.data.compound_peaks(sel.measurement_id, sel.compound_idxs)
-            peaks = peaks[peaks["mass"] == sel.mass]
-            if not peaks.empty:
-                apex = float(np.interp(peaks["rt_s"], t, y).max())
-                top = bottom + Y_ZOOM * (apex - bottom)
+            apexes = [
+                float(np.interp(on["rt_s"], c.t, c.y).max())
+                for c in curves
+                if c.mass is not TIC
+                and not (on := peaks[peaks["mass"] == c.mass]).empty
+            ]
+            if apexes:
+                top = bottom + Y_ZOOM * (max(apexes) - bottom)
 
         span = max(top - bottom, 1.0)
         self.plot.setXRange(x0, x1, padding=0)

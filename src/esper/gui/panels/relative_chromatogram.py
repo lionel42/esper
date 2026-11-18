@@ -82,7 +82,8 @@ class RelativeChromatogramPanel(BasePanel):
 
     def _draw_peaks(self) -> list[list]:
         """The items of the peaks of each curve, as the source panel draws them: the
-        integration of the main mass; the fitted shapes of the overlays (when not too
+        integration of the main mass (and of the masses drawn instead, when it has no
+        peak of the compound); the fitted shapes of the overlays (when not too
         many)."""
         sel = self.selection
         drawn: list[list] = [[] for _ in (self._main, *self._overlays)]
@@ -103,14 +104,26 @@ class RelativeChromatogramPanel(BasePanel):
                 integration,
                 selected=sel.compound_idxs,
             )
-        if (
+        fills = (
             integration == Integration.FIT_SHAPES
             and len(self._overlays) < MAX_LEGEND_ENTRIES
-        ):
-            for i, curve in enumerate(self._overlays, start=1):
-                if curve.mass is not TIC:
-                    on = peaks[peaks["mass"] == curve.mass]
-                    drawn[i] = fit_fill_items(curve.t, on, curve.color)
+        )
+        for i, curve in enumerate(self._overlays, start=1):
+            if curve.mass is TIC:
+                continue
+            on = peaks[peaks["mass"] == curve.mass]
+            # the main mass has no peak of the compound: integrated as it would be
+            if curve.mass in self.source.instead_of_main:
+                drawn[i], _, _ = integration_items(
+                    curve.t,
+                    curve.y,
+                    on,
+                    integration,
+                    selected=sel.compound_idxs,
+                    color=curve.color,
+                )
+            elif fills:
+                drawn[i] = fit_fill_items(curve.t, on, curve.color)
         for item in (i for items in drawn for i in items):
             self.plot.addItem(item)
         return drawn
