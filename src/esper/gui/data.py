@@ -7,9 +7,12 @@ are queried when a measurement is shown and kept in small caches.
 from __future__ import annotations
 
 import logging
+import sqlite3
+from collections.abc import Callable
 from datetime import datetime
 from functools import cached_property, lru_cache, partial
 from pathlib import Path
+from typing import TypeVar
 
 import numpy as np
 import pandas as pd
@@ -64,6 +67,8 @@ MAX_IONS = 20
 ION_COLUMNS = ["mass", "rt_s", "height", "prominence", "width_s", *FIT_COLUMNS]
 # Between the name of a compound and a column of it (``EsperData.results_by_run``)
 COMPOUND_SEP = "|"
+
+T = TypeVar("T")
 
 
 class _cached_method:
@@ -216,17 +221,27 @@ class EsperData:
 
         ``statements`` are (sql, params) pairs.
         """
+
+        def execute(con: sqlite3.Connection) -> None:
+            for sql, params in statements:
+                con.execute(sql, params)
+
+        self._write_with(execute)
+
+    def _write_with(self, write: Callable[[sqlite3.Connection], T]) -> T:
+        """Write to the database in one transaction with ``write(con)``, with its own
+        connection (the one of the GUI is read-only); returns what it returns."""
         # create: a database from before the identifications could be edited gets the
         # missing tables and columns
         con = db.connect(self.data_dir, create=True)
         try:
-            for sql, params in statements:
-                con.execute(sql, params)
-            con.commit()
+            with con:
+                result = write(con)
         finally:
             con.close()
         self.invalidate()
         self._create_compound_view()
+        return result
 
     def set_identification(
         self,
@@ -269,48 +284,23 @@ class EsperData:
         )
 
     def merge_compounds(self, measurement_id: int, compound_idxs) -> int:
-        """Merge compounds of a measurement into the one with the lowest index, for good.
-
-        Their peaks are given to that main compound and they are deleted (with
-        their candidates and identification). The main compound keeps its
-        identification; its peak summary (n_peaks, prominence_sum, rt) is
-        recomputed. Returns the index of the main compound.
+        """Merge compounds of a measurement into the one with the lowest index, for good
+        (``esper.fitting.merge_compounds``: their peaks, also as extracted, given to
+        that main compound, the others deleted with their candidates and
+        identification; its summary and retention index computed again). Returns the
+        index of the main compound.
         """
-        main, *others = sorted({int(i) for i in compound_idxs})
+        from esper.fitting import merge_compounds
+
         mid = int(measurement_id)
-        peaks = self.compound_peaks(mid, (main, *others))
-        rt = peaks["rt_s"].to_numpy(dtype=float)
-        ri = float(self.expected_ris(mid, [rt.mean()])[0])
-        placeholders = ", ".join("?" * len(others))
-        self._write(
-            (
-                f"UPDATE peak SET compound_idx = ? WHERE measurement_id = ? AND compound_idx IN ({placeholders})",
-                (main, mid, *others),
-            ),
-            (
-                "UPDATE compound SET n_peaks = ?, prominence_sum = ?, rt_mean_s = ?, rt_std_s = ?,"
-                " retention_index = COALESCE(?, retention_index)"
-                " WHERE measurement_id = ? AND compound_idx = ?",
-                (
-                    len(peaks),
-                    float(peaks["prominence"].sum()),
-                    float(rt.mean()),
-                    float(rt.std()),
-                    ri if np.isfinite(ri) else None,
-                    mid,
-                    main,
-                ),
-            ),
-            (
-                f"DELETE FROM compound WHERE measurement_id = ? AND compound_idx IN ({placeholders})",
-                (mid, *others),
-            ),
-            (
-                "UPDATE measurement SET n_compounds = n_compounds - ? WHERE measurement_id = ?",
-                (len(others), mid),
-            ),
+
+        def retention_index(rt: float) -> float | None:
+            ri = float(self.expected_ris(mid, [rt])[0])
+            return ri if np.isfinite(ri) else None
+
+        return self._write_with(
+            lambda con: merge_compounds(con, mid, compound_idxs, retention_index)
         )
-        return main
 
     @property
     def measurements(self) -> pd.DataFrame:

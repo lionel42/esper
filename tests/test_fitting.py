@@ -20,6 +20,7 @@ from esper.fitting import (
     fit_peaks,
     fitted_peak_table,
     match_compounds,
+    merge_compounds,
     new_compounds,
     peak_baseline,
     peak_groups,
@@ -390,6 +391,51 @@ def test_fit_measurement(tmp_path):
         .sort_index()
         .equals(kept.sort_index())
     )
+    con.close()
+
+
+def test_merge_then_fit_again(tmp_path):
+    con = _measurement(tmp_path)
+    fit_measurement(con, 1, tmp_path, workers=1)
+    # C: a peak split by the fit, kept as extracted (extraction_peak 4)
+    assert con.execute(
+        "SELECT count(*) FROM extraction_peak WHERE compound_idx = ?", (C,)
+    ).fetchone() == (1,)
+    n_peaks = con.execute("SELECT count(*) FROM peak").fetchone()[0]
+    assert merge_compounds(con, 1, [C, B], retention_index=lambda rt: None) == B
+
+    def compound_idxs(table: str) -> set:
+        rows = con.execute(f"SELECT DISTINCT compound_idx FROM {table}")
+        return {idx for (idx,) in rows}
+
+    # Nothing left of C, also as extracted
+    for table in ("compound", "peak", "extraction_peak", "extraction_compound"):
+        assert C not in compound_idxs(table)
+    stored = pd.read_sql("SELECT * FROM peak", con, index_col="peak_idx")
+    of_b = stored[stored["compound_idx"] == B]
+    row = con.execute(
+        "SELECT n_peaks, prominence_sum, main_ion_mass FROM compound"
+        " WHERE compound_idx = ?",
+        (B,),
+    ).fetchone()
+    largest = of_b.loc[of_b["prominence"].idxmax(), "mass"]
+    assert row == (len(of_b), pytest.approx(of_b["prominence"].sum()), largest)
+    assert of_b["is_max_of_cmp"].sum() == 1
+    # As extracted: the peaks of B (70, 71) and C (43)
+    (extracted,) = con.execute(
+        "SELECT n_peaks FROM extraction_compound WHERE compound_idx = ?", (B,)
+    ).fetchone()
+    assert extracted == 3
+    n_compounds = con.execute("SELECT count(*) FROM compound").fetchone()[0]
+    assert con.execute("SELECT n_peaks, n_compounds FROM measurement").fetchone() == (
+        n_peaks,
+        n_compounds,
+    )
+    # Fitted again: from the merged extraction, C's peaks in B
+    fit_measurement(con, 1, tmp_path, workers=1)
+    again = pd.read_sql("SELECT * FROM peak", con, index_col="peak_idx")
+    assert C not in set(again["compound_idx"])
+    assert (again["compound_idx"] == B).sum() >= len(of_b) - 1
     con.close()
 
 

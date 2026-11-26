@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from collections.abc import Callable
 from concurrent.futures import Executor
 from dataclasses import dataclass
 from datetime import datetime
@@ -705,6 +706,89 @@ def _extraction_columns(con: sqlite3.Connection) -> list[str]:
         for c in db.table_columns(con, "extraction_peak")
         if c not in ("measurement_id", "peak_idx")
     ]
+
+
+def merge_compounds(
+    con: sqlite3.Connection,
+    measurement_id: int,
+    compound_idxs,
+    retention_index: Callable[[float], float | None] | None = None,
+) -> int:
+    """Merge compounds of a measurement into the one with the lowest index, for good
+    (single transaction). Returns the index of that main compound.
+
+    Their peaks, and those kept of the extraction (``extraction_peak``: a refit gives
+    them to the main compound), go to the main compound; the others are deleted (their
+    candidates and identification with them: cascade). The main compound keeps its
+    identification and gets its summary again (``compound_summaries``, its largest
+    peak ``is_max_of_cmp``): of its peaks now, and of its peaks as extracted if the run
+    is fitted (``extraction_compound``, when it differs). ``retention_index``: of its
+    new mean rt (None: not possible; not given: kept). The counts of the measurement
+    are updated.
+    """
+    main, *others = sorted({int(i) for i in compound_idxs})
+    mid = int(measurement_id)
+    if not others:
+        return main
+    marks = ", ".join("?" * len(others))
+    with con:
+        for table in ("peak", "extraction_peak"):
+            con.execute(
+                f"UPDATE {table} SET compound_idx = ? WHERE measurement_id = ?"
+                f" AND compound_idx IN ({marks})",
+                (main, mid, *others),
+            )
+        con.execute(
+            f"DELETE FROM extraction_compound WHERE measurement_id = ?"
+            f" AND compound_idx IN (?, {marks})",
+            (mid, main, *others),
+        )
+        current = _read_compounds(con, mid, [main])
+        peaks = pd.read_sql(
+            "SELECT peak_idx, compound_idx, mass, rt_s, prominence, is_max_of_cmp"
+            " FROM peak WHERE measurement_id = ? AND compound_idx = ?",
+            con,
+            params=(mid, main),
+            index_col="peak_idx",
+        )
+        _set_max_of_cmp(peaks, [main])
+        con.executemany(
+            "UPDATE peak SET is_max_of_cmp = ? WHERE measurement_id = ? AND peak_idx = ?",
+            [(int(v), mid, int(i)) for i, v in peaks["is_max_of_cmp"].items()],
+        )
+        now = compound_summaries(peaks, current, [main])
+        version = fit_version(con, mid)
+        if version is not None and version >= 2:
+            extracted, _ = extraction(con, mid)
+            extracted = extracted[extracted["compound_idx"] == main].copy()
+            _set_max_of_cmp(extracted, [main])
+            was = compound_summaries(extracted, current, [main])
+            if not was.equals(now):
+                db.insert(
+                    con,
+                    "extraction_compound",
+                    was.assign(measurement_id=mid)
+                    .rename_axis("compound_idx")
+                    .reset_index(),
+                )
+        assignments = ", ".join(f"{c} = ?" for c in COMPOUND_SUMMARY_COLUMNS)
+        values = now.astype(object).where(now.notna(), None).iloc[0].tolist()
+        con.execute(
+            f"UPDATE compound SET {assignments} WHERE measurement_id = ? AND compound_idx = ?",
+            (*values, mid, main),
+        )
+        if retention_index is not None:
+            con.execute(
+                "UPDATE compound SET retention_index = ?"
+                " WHERE measurement_id = ? AND compound_idx = ?",
+                (retention_index(float(now.at[main, "rt_mean_s"])), mid, main),
+            )
+        con.execute(
+            f"DELETE FROM compound WHERE measurement_id = ? AND compound_idx IN ({marks})",
+            (mid, *others),
+        )
+        db.update_counts(con, mid)
+    return main
 
 
 def _read_compounds(
