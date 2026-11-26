@@ -13,15 +13,17 @@ BASE_COLUMNS = ("left_base_s", "right_base_s")
 
 
 def scan_times(scans, times) -> np.ndarray:
-    """The times [s] of scans (NaN: none; ``times``: of all the scans of the run, None:
-    unknown, all NaN), e.g. the prominence bases of peaks given as scans (peaxart,
-    alpinac)."""
+    """The times [s] of scans (``times``: of all the scans of the run, None: unknown),
+    e.g. the prominence bases of peaks given as scans (peaxart, alpinac). NaN for a
+    scan that is NaN or not among them (e.g. a file not of the same scans)."""
     scans = np.asarray(scans, dtype=float)
-    if times is None or len(times) == 0:
-        return np.full(scans.shape, np.nan)
+    out = np.full(scans.shape, np.nan)
+    if times is None:
+        return out
     times = np.asarray(times, dtype=float)
-    index = np.clip(np.nan_to_num(scans), 0, len(times) - 1).astype(int)
-    return np.where(np.isfinite(scans), times[index], np.nan)
+    found = np.isfinite(scans) & (scans >= 0) & (scans < len(times))
+    out[found] = times[scans[found].astype(int)]
+    return out
 
 
 def integration_bounds(peaks) -> tuple[np.ndarray, np.ndarray]:

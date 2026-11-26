@@ -44,9 +44,6 @@ COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
 # the database so that older esper versions know whether they can use it. A schema change
 # that only adds tables or nullable columns keeps it, a breaking change sets it to SCHEMA_VERSION.
 MIN_READER_VERSION = 12
-# (9: measurement.sample_number renamed port)
-# (12: the prominence bases of the peaks in seconds, left_base_s / right_base_s,
-# instead of left_base_scan / right_base_scan; width_scans dropped)
 # (4: the peaks split by the fit have no extraction bounds)
 # (6 keeps it: older versions read the targets of the target lists as before; the
 # versioned ions of the GCwerks targets look to them like several ions per rank)
@@ -55,6 +52,9 @@ MIN_READER_VERSION = 12
 # compounds made by the fit, left without peaks)
 # (11 keeps it: the fit_override table and peak.fit_override_id, nullable; an older
 # esper fitting again does not apply the overrides)
+# (9: measurement.sample_number renamed port)
+# (12: the prominence bases of the peaks in seconds, left_base_s / right_base_s,
+# instead of left_base_scan / right_base_scan; width_scans dropped)
 # MIN_READER_VERSION of the schema versions written before schema_info existed
 LEGACY_MIN_READER_VERSIONS = {3: 2}  # 3 only adds nullable columns
 
@@ -619,75 +619,101 @@ SCAN_COLUMNS = ("left_base_scan", "right_base_scan", "width_scans")
 def _bases_in_seconds(con: sqlite3.Connection, data_dir: Path) -> None:
     """The prominence bases of the peaks of a database before version 12 in seconds:
     ``left_base_s`` / ``right_base_s`` from the scans (the rows of the chromatogram file
-    of each run; NaN without it), and the ``SCAN_COLUMNS`` dropped, in the peak and
-    extraction_peak tables. Reads the time axis of every run: once, one transaction."""
+    of each run; NULL without a readable file, or for a scan outside it), and the
+    ``SCAN_COLUMNS`` dropped, in the peak and extraction_peak tables. Reads the time
+    axis of every run: once, one transaction (with the write lock: another connection
+    upgrading at the same time waits, then finds nothing to convert)."""
     from esper.integration import scan_times
 
-    tables = [
-        table
-        for table in ("peak", "extraction_peak")
-        if "left_base_scan" in table_columns(con, table)
-    ]
-    if not tables:
+    def to_convert() -> list[str]:
+        return [
+            table
+            for table in ("peak", "extraction_peak")
+            if "left_base_scan" in table_columns(con, table)
+        ]
+
+    if not to_convert():
         return
+    con.commit()
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        tables = to_convert()  # with the lock: not converted meanwhile
+        if tables:
+            _convert_bases(con, data_dir, tables, scan_times)
+        con.execute("COMMIT")
+    except BaseException:
+        if con.in_transaction:  # not already rolled back by SQLite (e.g. disk full)
+            con.execute("ROLLBACK")
+        raise
+
+
+def _convert_bases(
+    con: sqlite3.Connection, data_dir: Path, tables: list[str], scan_times
+) -> None:
+    """``_bases_in_seconds`` of ``tables``, in the caller's transaction."""
     with_bases = " UNION ".join(
         f"SELECT measurement_id FROM {table} WHERE left_base_scan IS NOT NULL"
         for table in tables
     )
     runs = con.execute(
-        "SELECT measurement_id, chromatogram_file FROM measurement"
+        "SELECT measurement_id, name, chromatogram_file FROM measurement"
         f" WHERE measurement_id IN ({with_bases})"
     ).fetchall()
-    logger.warning(
-        f"{db_path(data_dir)}: schema {SCHEMA_VERSION}, the prominence bases of the"
-        f" peaks of {len(runs)} runs converted to seconds (once)"
-    )
-    con.commit()
-    con.execute("BEGIN")
-    try:
-        for table in tables:
-            for column in ("left_base_s", "right_base_s"):
-                con.execute(f"ALTER TABLE {table} ADD COLUMN {column} REAL")
-        missing = 0
-        for mid, chromatogram_file in runs:
-            path = None if chromatogram_file is None else Path(data_dir) / chromatogram_file
-            times = None
-            if path is not None and path.is_file():
-                times = pd.read_parquet(path, columns=[]).index.to_numpy(dtype=float)
-            else:
-                missing += 1
-            for table in tables:
-                rows = con.execute(
-                    f"SELECT peak_idx, left_base_scan, right_base_scan FROM {table}"
-                    " WHERE measurement_id = ? AND left_base_scan IS NOT NULL",
-                    (mid,),
-                ).fetchall()
-                if not rows:
-                    continue
-                idx, left, right = (
-                    pd.Series(column, dtype=float) for column in zip(*rows)
-                )
-                left, right = scan_times(left, times), scan_times(right, times)
-                con.executemany(
-                    f"UPDATE {table} SET left_base_s = ?, right_base_s = ?"
-                    " WHERE measurement_id = ? AND peak_idx = ?",
-                    [
-                        (_or_none(a), _or_none(b), mid, int(i))
-                        for i, a, b in zip(idx, left, right)
-                    ],
-                )
-        for table in tables:
-            for column in SCAN_COLUMNS:
-                con.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
-        con.execute("COMMIT")
-    except BaseException:
-        con.execute("ROLLBACK")
-        raise
-    if missing:
+    if runs:
         logger.warning(
-            f"{missing} runs without their chromatogram file: their peaks have no"
-            " prominence bases (no ips integration)"
+            f"{db_path(data_dir)}: schema {SCHEMA_VERSION}, converting the prominence"
+            f" bases of the peaks of {len(runs)} runs to seconds (once)"
         )
+    for table in tables:
+        for column in ("left_base_s", "right_base_s"):
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {column} REAL")
+    without = []
+    for mid, name, chromatogram_file in runs:
+        times = _run_times(data_dir, chromatogram_file)
+        if times is None:
+            without.append(name)
+        for table in tables:
+            rows = con.execute(
+                f"SELECT peak_idx, left_base_scan, right_base_scan FROM {table}"
+                " WHERE measurement_id = ? AND left_base_scan IS NOT NULL",
+                (mid,),
+            ).fetchall()
+            if not rows:
+                continue
+            idx, left, right = (pd.Series(column, dtype=float) for column in zip(*rows))
+            left, right = scan_times(left, times), scan_times(right, times)
+            con.executemany(
+                f"UPDATE {table} SET left_base_s = ?, right_base_s = ?"
+                " WHERE measurement_id = ? AND peak_idx = ?",
+                [
+                    (_or_none(a), _or_none(b), mid, int(i))
+                    for i, a, b in zip(idx, left, right)
+                ],
+            )
+    for table in tables:
+        for column in SCAN_COLUMNS:
+            con.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+    if without:
+        logger.warning(
+            f"{len(without)} runs without a readable chromatogram file, their peaks"
+            f" have no prominence bases (no ips integration): {', '.join(without[:10])}"
+            + (", ..." if len(without) > 10 else "")
+        )
+
+
+def _run_times(data_dir: Path, chromatogram_file: str | None):
+    """The times [s] of the rows of the chromatogram file of a run, None if it has none
+    or it cannot be read (e.g. truncated)."""
+    if chromatogram_file is None:
+        return None
+    path = Path(data_dir) / chromatogram_file
+    if not path.is_file():
+        return None
+    try:
+        return pd.read_parquet(path, columns=[]).index.to_numpy(dtype=float)
+    except Exception as e:  # e.g. pyarrow.ArrowInvalid
+        logger.warning(f"{path}: not read ({e!r})")
+        return None
 
 
 def _or_none(value: float) -> float | None:

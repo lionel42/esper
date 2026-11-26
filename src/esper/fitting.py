@@ -62,7 +62,8 @@ logger = logging.getLogger(__name__)
 # function of FIT_CONFIG (EMG), fit_rt_s / fit_height its apex; 4: the background of each
 # group chosen among constant / linear / exponential, fit_baseline_slope; 5: the pieces
 # matching no compound are compounds of their own, named by target search; a target keeps
-# the piece of its split peak nearest its expected rt)
+# the piece of its split peak nearest its expected rt; with schema 12, the prominence
+# bases in seconds)
 FIT_VERSION = 5
 # Gaussian convention of peaxart's peak shapes, and the half widths of the extraction
 # are clipped to this range [s] (peaxart.ChromatogramFitConfig, esper.deconvolution.FIT_CONFIG)

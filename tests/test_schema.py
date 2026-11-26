@@ -226,6 +226,7 @@ def test_prominence_bases_converted_to_seconds(tmp_path):
     frame = pd.DataFrame({"85": np.where(t >= 50, 1.0, np.nan)}, index=pd.Index(t))
     db.chromatograms_dir(tmp_path).mkdir(parents=True)
     frame.to_parquet(db.chromatograms_dir(tmp_path) / "a.parquet")
+    (db.chromatograms_dir(tmp_path) / "truncated.parquet").write_bytes(b"PAR1 broken")
     with sqlite3.connect(db.db_path(tmp_path)) as con:
         con.executescript(old)
         db.add_columns(con)
@@ -235,13 +236,15 @@ def test_prominence_bases_converted_to_seconds(tmp_path):
             [
                 (1, "a", "chromatograms/a.parquet"),
                 (2, "b", "chromatograms/gone.parquet"),
+                (3, "c", "chromatograms/truncated.parquet"),
             ],
         )
         con.executemany(
             "INSERT INTO peak (measurement_id, peak_idx, left_base_scan,"
             " right_base_scan, width_scans) VALUES (?, ?, ?, ?, 3)",
-            [(1, 0, 120, 160), (1, 1, None, None), (2, 0, 5, 9)],
-        )
+            [(1, 0, 120, 160), (1, 1, None, None), (1, 3, 190, 250), (2, 0, 5, 9),
+             (3, 0, 5, 9)],
+        )  # fmt: skip
         con.execute(
             "INSERT INTO extraction_peak (measurement_id, peak_idx, left_base_scan,"
             " right_base_scan) VALUES (1, 2, 130, 150)"
@@ -255,8 +258,15 @@ def test_prominence_bases_converted_to_seconds(tmp_path):
         "SELECT measurement_id, peak_idx, left_base_s, right_base_s FROM peak"
         " ORDER BY measurement_id, peak_idx"
     ).fetchall()
-    # scans 120 and 160 of the run: 60 s and 80 s; no chromatogram file: none
-    assert rows == [(1, 0, 60.0, 80.0), (1, 1, None, None), (2, 0, None, None)]
+    # scans 120 and 160 of the run: 60 s and 80 s; a scan after the last one (200),
+    # no chromatogram file or one that cannot be read: none
+    assert rows == [
+        (1, 0, 60.0, 80.0),
+        (1, 1, None, None),
+        (1, 3, 95.0, None),
+        (2, 0, None, None),
+        (3, 0, None, None),
+    ]
     assert con.execute(
         "SELECT left_base_s, right_base_s FROM extraction_peak"
     ).fetchone() == (65.0, 75.0)
