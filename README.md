@@ -75,8 +75,8 @@ esper upload /path/to/gcwerks/jungfraujoch-medusa /path/to/esper/data --instrume
 
 ### Peaks
 
-The runs imported without peaks (gcwerks) get them from `esper peaks`, or from `esper upload`
-once the data directory has a method (`src/esper/processing/`):
+The runs imported without peaks (gcwerks) get them from `esper upload` once the data
+directory has a method, or from `esper process` (`src/esper/processing/`):
 
 1. the peaks of each mass are found in each window where it was measured, after removing the
    baseline there, and grouped into compounds of co-eluting peaks
@@ -88,15 +88,25 @@ once the data directory has a method (`src/esper/processing/`):
 3. the peaks are fitted (below).
 
 ```
-esper peaks /path/to/esper/data --method target
+esper process /path/to/esper/data --method target
 ```
+
+`esper upload` reads the runs of the source and processes those it imports. `esper process`
+works on the runs already in the database (the source is not read): those not processed or
+not fitted yet, or all of them with `-f`. Its options:
+
+- `--steps peaks fit`: only some steps (`--steps fit -f`: refit everything);
+- `--compounds NAME [NAME ...]`: the peaks of these targets only (target search), the other
+  compounds of each run kept (as `esper upload --compounds`);
+- `--after DATE`, `--before DATE`: only the runs started between;
+- `--overrides`: also refit the runs that a fit override of the GUI applies to.
 
 The method and the parameters of each step belong to the data directory: see `processing:`
 in [Data directory](#data-directory).
 
 ### Peak fit
 
-After the import (or `esper peaks`), the peaks of each mass are fitted in the chromatograms
+After the import (or `esper process`), the peaks of each mass are fitted in the chromatograms
 with [peaxart](https://github.com/lionel42/peaxart) (`src/esper/fitting.py`), with the fit
 parameters of the data directory.
 
