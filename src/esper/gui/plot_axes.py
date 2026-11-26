@@ -7,11 +7,16 @@ chosen the same way, with an ``AxisSelector``.
 
 To compare compounds, an axis also names its compound (``Axis.compound``): its values
 are then in the columns of that compound in ``EsperData.results_by_run``.
+
+An axis can be a ratio: divided by another one (``Axis.over``, the "÷" of its selector),
+e.g. an ion over another, the compound over its main ion, or (comparing compounds) a
+compound over another.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import numpy as np
@@ -19,7 +24,7 @@ import pandas as pd
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QWidget
 
-from esper.gui.data import COMPOUND_SEP, RATIO_COLUMNS
+from esper.gui.data import COMPOUND_SEP
 from esper.gui.plotting import time_values
 from esper.target_index import unit_mass
 
@@ -51,9 +56,12 @@ class Axis:
     # Comparing compounds: the compound of the axis (None: the compound plotted; the
     # run has none)
     compound: str | None = None
+    # A ratio: divided by this axis (not of the run)
+    over: Axis | None = None
 
     @property
     def column(self) -> str:
+        """The column of the values (of a ratio: of its numerator)."""
         column = self.element.prefix + self.variable.column
         if self.compound is None:
             return column
@@ -61,22 +69,32 @@ class Axis:
 
     @property
     def time(self) -> bool:
-        return self.variable.time
+        return self.variable.time and self.over is None
 
     @property
     def label(self) -> str:
         """'time' (of the run), 'Compound area', 'Ion 1 (119) area'; comparing:
-        'SF6 Ion 1 (89) area'."""
+        'SF6 Ion 1 (89) area'; a ratio: 'Ion 2 (87) area / Ion 1 (85) area'."""
         if self.element.key == "measurement":
-            return self.variable.label
-        label = f"{self.element.label} {self.variable.label}"
-        return label if self.compound is None else f"{self.compound} {label}"
+            label = self.variable.label
+        else:
+            label = f"{self.element.label} {self.variable.label}"
+            if self.compound is not None:
+                label = f"{self.compound} {label}"
+        return label if self.over is None else f"{label} / {self.over.label}"
 
     def values(self, df: pd.DataFrame) -> np.ndarray:
-        """The values of the rows (a time: seconds since epoch, for a date axis)."""
-        if self.time:
-            return time_values(df, self.column)
-        return pd.to_numeric(df[self.column], errors="coerce").to_numpy(dtype=float)
+        """The values of the rows (a time: seconds since epoch, for a date axis; a
+        ratio: NaN where divided by 0)."""
+        if self.variable.time:
+            values = time_values(df, self.column)
+        else:
+            values = pd.to_numeric(df[self.column], errors="coerce").to_numpy(float)
+        if self.over is None:
+            return values
+        over = self.over.values(df)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(over != 0, values / over, np.nan)
 
     def format(self, value: float) -> str:
         """A value of the axis, for the tooltips."""
@@ -145,24 +163,12 @@ ION_VARIABLES = (
     Variable("tailing", "fit_tailing", tip="Tail parameter (EMG: τ/σ)"),
     Variable("baseline", "fit_baseline", tip="Fitted background at the apex"),
     Variable("m/z", "mass", tip="Mass of the peak"),
-    Variable(
-        "prominence detected", "prominence", tip="Prominence (peak detection)"
-    ),
+    Variable("prominence detected", "prominence", tip="Prominence (peak detection)"),
     Variable("height detected", "height", tip="Height (peak detection)"),
     Variable("rt detected [s]", "rt_s", tip="Apex (peak detection)"),
     Variable(
         "FWHM detected [s]", "width_s", tip="Width at half maximum (peak detection)"
     ),
-)
-# Of the other ions: their ratio to the main ion
-RATIO_VARIABLES = tuple(
-    Variable(
-        f"{v.label} / main",
-        f"ratio_{v.column}",
-        tip=f"{v.tip}, over the one of the main ion (ion 1)",
-    )
-    for v in ION_VARIABLES
-    if v.column in RATIO_COLUMNS
 )
 
 
@@ -179,7 +185,7 @@ def ion_element(k: int, mass: int | None = None) -> Element:
     return Element(
         f"ion{k}",
         f"Ion {k}" if mass is None else f"Ion {k} ({mass})",
-        ION_VARIABLES + (RATIO_VARIABLES if k > 1 else ()),
+        ION_VARIABLES,
         prefix=f"ion{k}_",
         tip=f"Ion {k} of the target at the time of the run (by rank of its ions); "
         f"of a compound that is no target, its {_ordinal(k)} mass by prominence",
@@ -206,6 +212,13 @@ def results_elements(df: pd.DataFrame | None) -> tuple[Element, ...]:
 RESULTS_ELEMENTS = results_elements(None)
 RESULTS_X = Axis(MEASUREMENT, MEASUREMENT.variables[0])
 RESULTS_Y = Axis(COMPOUND, COMPOUND.variable("area"))
+# What an axis is divided by when made a ratio, at first
+RATIO_OVER = Axis(ion_element(2), ion_element(2).variable("area"))
+
+
+def _ratio_elements(elements: tuple[Element, ...]) -> tuple[Element, ...]:
+    """The elements an axis can be divided by: those of the compound."""
+    return tuple(e for e in elements if e.key != MEASUREMENT.key)
 
 
 class AxisSelector(QWidget):
@@ -213,9 +226,11 @@ class AxisSelector(QWidget):
     (the same variable kept when the new element has it).
 
     ``optional``: the label is a checkbox, the axis is shown only when checked (``value``:
-    None otherwise). Comparing compounds (``set_compare``): a compound too, before the
-    element (none for the measurement); the elements are then those of that compound
-    (``elements_of``). ``changed``: the new ``value``.
+    None otherwise); ``collapsed``: its boxes hidden while not checked. Comparing
+    compounds (``set_compare``): a compound too, before the element (none for the
+    measurement); the elements are then those of that compound (``elements_of``).
+    ``ratio``: a "÷" after it, to divide the axis by another (a selector of its own,
+    ``over``; not an axis of the run). ``changed``: the new ``value``.
     """
 
     changed = Signal(object)
@@ -228,10 +243,14 @@ class AxisSelector(QWidget):
         optional: bool = False,
         elements_of: Callable[[str], tuple[Element, ...]] | None = None,
         parent=None,
+        ratio: bool = False,
+        collapsed: bool = False,
     ) -> None:
         super().__init__(parent)
         self.elements_of = elements_of
         self.compare = False
+        self.collapsed = collapsed
+        self._quiet = False  # the changes of ``over`` not emitted (emitted once after)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
@@ -261,6 +280,24 @@ class AxisSelector(QWidget):
         layout.addWidget(self.compound_combo)
         layout.addWidget(self.element_combo)
         layout.addWidget(self.variable_combo)
+        self.over: AxisSelector | None = None
+        if ratio:
+            self.over = AxisSelector(
+                "÷",
+                _ratio_elements(elements),
+                RATIO_OVER,
+                optional=True,
+                elements_of=elements_of
+                and (lambda name: _ratio_elements(elements_of(name))),
+                collapsed=True,
+            )
+            self.over.check.setToolTip(
+                "Divide by another variable: a ratio, e.g. of two ions, of the compound"
+                " to an ion, or (comparing) of two compounds"
+            )
+            layout.addSpacing(4)
+            layout.addWidget(self.over)
+            self.over.changed.connect(self._on_over_changed)
         self._emitted: Axis | None = None
         self.set_axis(axis)
         self.compound_combo.activated.connect(self._on_compound_changed)
@@ -281,11 +318,24 @@ class AxisSelector(QWidget):
         if self.check is not None:
             self.check.setChecked(checked)
 
+    @property
+    def parts(self) -> list[AxisSelector]:
+        """This selector, and the one of what it is divided by."""
+        return [self] if self.over is None else [self, self.over]
+
     def _update_enabled(self) -> None:
         shown = self.check is None or self.check.isChecked()
+        of_run = self.element.key == MEASUREMENT.key
+        if self.collapsed:
+            self.element_combo.setVisible(shown)
+            self.variable_combo.setVisible(shown)
+            self.compound_combo.setVisible(shown and self.compare)
         self.element_combo.setEnabled(shown)
         self.variable_combo.setEnabled(shown)
-        self.compound_combo.setEnabled(shown and self.element.key != "measurement")
+        self.compound_combo.setEnabled(shown and not of_run)
+        if self.over is not None:
+            self.over.setVisible(not of_run)
+            self.over.setEnabled(shown)
 
     def _on_checked(self, checked: bool) -> None:
         self._update_enabled()
@@ -306,13 +356,30 @@ class AxisSelector(QWidget):
     def axis(self) -> Axis:
         element = self.element
         variable = element.variable(self.variable_combo.currentText())
-        compound = None if element.key == "measurement" else self.compound
-        return Axis(element, variable or element.variables[0], compound)
+        of_run = element.key == MEASUREMENT.key
+        compound = None if of_run else self.compound
+        over = None if self.over is None or of_run else self.over.value
+        return Axis(element, variable or element.variables[0], compound, over)
+
+    def _on_over_changed(self, _value) -> None:
+        if not self._quiet:
+            self._emit()
+
+    @contextmanager
+    def _over_quiet(self):
+        """The changes of ``over`` not emitted (``changed`` emitted once after)."""
+        self._quiet = True
+        try:
+            yield
+        finally:
+            self._quiet = False
 
     # --- comparing compounds ----------------------------------------------------------
 
     def set_compounds(self, names: list[str]) -> None:
         """The compounds to choose from (the one shown kept)."""
+        if self.over is not None:
+            self.over.set_compounds(names)
         combo = self.compound_combo
         current = combo.currentText()
         combo.blockSignals(True)
@@ -325,7 +392,12 @@ class AxisSelector(QWidget):
         """Compare compounds or not; ``compound``: shown if none is (e.g. the one
         selected)."""
         self.compare = compare
-        self.compound_combo.setVisible(compare)
+        if self.over is not None:
+            with self._over_quiet():
+                self.over.set_compare(compare, compound)
+        self.compound_combo.setVisible(
+            compare and (not self.collapsed or self.value is not None)
+        )
         if compare and not self.compound_combo.currentText() and compound:
             self._show_compound(compound)
         if compare and self.compound is not None:
@@ -367,6 +439,9 @@ class AxisSelector(QWidget):
         shown when there is one of the same key, else the main ion (if an ion was shown)
         or the first one; ``changed`` emitted if the axis changes."""
         current = self.axis
+        if self.over is not None:
+            with self._over_quiet():
+                self.over.set_elements(_ratio_elements(elements))
         self._fill_elements(elements)
         self.set_axis(current)
 
@@ -390,6 +465,11 @@ class AxisSelector(QWidget):
             if self.compare:
                 self._load_elements(axis.compound)
         self._set_axis(axis)
+        if self.over is not None:
+            with self._over_quiet():
+                if axis.over is not None:
+                    self.over.set_axis(axis.over)
+                self.over.set_checked(axis.over is not None)
         self._emit()
 
     def _set_axis(self, axis: Axis) -> None:

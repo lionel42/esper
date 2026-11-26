@@ -86,7 +86,6 @@ def test_ions_of_a_target(data):
     assert (row["ion1_mass"], row["ion1_prominence"]) == (85.0, 10.0)
     assert (row["ion2_mass"], row["ion2_prominence"]) == (87.0, 20.0)
     assert "ion3_mass" not in df  # no peak in any run
-    assert row["ion2_ratio_prominence"] == 2.0
     assert row["n_peaks"] == 4
     # not fitted: no area, the rt of the detection
     assert pd.isna(row["fit_area_sum"]) and row["fit_rt_mean_s"] == 300
@@ -96,7 +95,6 @@ def test_ions_of_another_compound(data):
     row = data.results("Unknown X", valid_only=False).iloc[0]
     # Its masses by prominence
     assert [row[f"ion{k}_mass"] for k in (1, 2, 3)] == [35.0, 87.0, 85.0]
-    assert row["ion3_ratio_height"] == pytest.approx(0.2)
 
 
 def test_axis_values_and_labels(data):
@@ -105,15 +103,21 @@ def test_axis_values_and_labels(data):
     assert time.time and time.label == "time"
     assert time.values(df)[0] == pd.Timestamp("2024-01-01T12:00:00").timestamp()
     assert time.format(time.values(df)[0]) == "2024-01-01 12:00"
-    ratio = Axis(ion_element(2), ion_element(2).variable("prominence detected / main"))
-    assert ratio.label == "Ion 2 prominence detected / main"
-    assert ratio.values(df)[0] == 2.0
+    prominence = ion_element(1).variable("prominence detected")
+    ion2 = Axis(ion_element(2), prominence)
+    ratio = Axis(ion_element(1), prominence, over=ion2)
+    assert ratio.label == "Ion 1 prominence detected / Ion 2 prominence detected"
+    assert ratio.values(df)[0] == 0.5 and not ratio.time
+    # The compound over its main ion (prominences: 10 + 5 + 20 + 50, over 10)
+    compound = Axis(COMPOUND, COMPOUND.variable("prominence detected"))
+    over_main = Axis(COMPOUND, compound.variable, over=Axis(ion_element(1), prominence))
+    assert over_main.values(df)[0] == 8.5
+    # Divided by 0 or NaN: NaN
+    zero = df.assign(ion2_prominence=0.0)
+    assert pd.isna(ratio.values(zero)[0])
 
 
 def test_variables_of_the_elements():
-    # A ratio to the main ion: only of the other ions
-    assert ion_element(1).variable("area / main") is None
-    assert ion_element(3).variable("area / main") is not None
     # Of an ion, not of the compound, and the other way round
     assert COMPOUND.variable("σ [s]") is None
     assert ion_element(1).variable("score") is None
@@ -146,13 +150,13 @@ def test_elements_of_the_compound(data):
 
 
 def test_selector_follows_the_elements(app, data):
-    ratio = Axis(ion_element(3), ion_element(3).variable("area / main"))
-    selector = AxisSelector("Y:", ELEMENTS, ratio)
+    ion3 = Axis(ion_element(3), ion_element(3).variable("height"))
+    selector = AxisSelector("Y:", ELEMENTS, ion3)
     changes = []
     selector.changed.connect(changes.append)
-    # The ion shown is not of the new compound: the main ion, no ratio: its first variable
+    # The ion shown is not of the new compound: the main ion, the same variable
     selector.set_elements(results_elements(data.results("CFC-12", valid_only=False)))
-    assert selector.axis.label == "Ion 1 (85) area"
+    assert selector.axis.label == "Ion 1 (85) height"
     assert selector.element_combo.count() == 4
     # Kept when the new compound has it (with the label of the new one)
     selector.set_axis(Axis(ion_element(2), ion_element(2).variable("height")))
@@ -170,18 +174,16 @@ def test_selector(app):
     changes = []
     selector.changed.connect(changes.append)
     # Another element with the same variable: kept
-    selector.set_axis(
-        Axis(ion_element(2), ion_element(2).variable("area / main"))
-    )
+    selector.set_axis(Axis(ion_element(2), ion_element(2).variable("σ [s]")))
     selector.element_combo.setCurrentIndex(selector.element_combo.findData("ion3"))
-    assert selector.axis.label == "Ion 3 area / main"
+    assert selector.axis.label == "Ion 3 σ [s]"
     # Not of the new element: its first variable
-    selector.element_combo.setCurrentIndex(selector.element_combo.findData("ion1"))
-    assert selector.axis == Axis(ion_element(1), ion_element(1).variables[0])
+    selector.element_combo.setCurrentIndex(selector.element_combo.findData("compound"))
+    assert selector.axis == Axis(COMPOUND, COMPOUND.variables[0])
     assert [a.label for a in changes] == [
-        "Ion 2 area / main",
-        "Ion 3 area / main",
-        "Ion 1 area",
+        "Ion 2 σ [s]",
+        "Ion 3 σ [s]",
+        "Compound area",
     ]
     # Shown again: no change
     selector.set_axis(selector.axis)
@@ -210,14 +212,17 @@ def test_other_y_axes(app, data, manager):
     assert panel.title == "Results 2"
     selection.select_candidate("CFC-12")
     panel.redraw()  # loaded: the ions of CFC-12 in the selectors
-    ratio = Axis(ion_element(2), ion_element(2).variable("prominence detected / main"))
+    prominence = ion_element(1).variable("prominence detected")
+    ratio = Axis(ion_element(2), prominence, over=Axis(ion_element(1), prominence))
     panel.selectors["y2"].set_axis(ratio)
     panel.selectors["y2"].set_checked(True)
     panel.redraw()
     right = panel.right_axes["y2"]
     assert right.axis is not None and list(right.plotted["y"]) == [2.0]
     assert panel.right_axes["y3"].axis is None
-    assert "prominence detected / main" in panel.plot_title()
+    assert (
+        "Ion 2 (87) prominence detected / Ion 1 (85) prominence" in panel.plot_title()
+    )
     # Unchecked: its axis removed
     panel.selectors["y2"].set_checked(False)
     panel.redraw()
@@ -231,7 +236,9 @@ def test_results_by_run(data):
     assert df.loc[0, "CFC-12|ion1_mass"] == 85.0
     assert df.loc[0, "Unknown X|ion1_mass"] == 35.0
     assert df.loc[0, "name"] == "240101.1200.air.1"
-    axis = Axis(ion_element(1), ion_element(1).variable("prominence detected"), "Unknown X")
+    axis = Axis(
+        ion_element(1), ion_element(1).variable("prominence detected"), "Unknown X"
+    )
     assert axis.column == "Unknown X|ion1_prominence"
     assert axis.label == "Unknown X Ion 1 prominence detected"
     assert axis.values(df)[0] == 50.0
@@ -268,3 +275,61 @@ def test_compare_compounds(app, data, manager):
     panel.redraw()
     assert panel.options["y"].compound is None
     assert not manager.compare_compounds("Results")
+
+
+def test_ratio_selector(app):
+    area = ion_element(1).variable("area")
+    selector = AxisSelector("Y:", ELEMENTS, Axis(ion_element(1), area), ratio=True)
+    changes = []
+    selector.changed.connect(changes.append)
+    over = selector.over
+    # Not a ratio at first: only the "÷" shown, its boxes hidden
+    assert selector.axis.over is None and over.check.text() == "÷"
+    assert over.element_combo.isHidden() and not over.check.isHidden()
+    # Of the compound only: no element of the run
+    assert over.element_combo.findData("measurement") < 0
+    over.set_checked(True)
+    assert selector.axis == Axis(ion_element(1), area, over=Axis(ion_element(2), area))
+    assert not over.element_combo.isHidden()
+    over.element_combo.setCurrentIndex(over.element_combo.findData("compound"))
+    assert selector.axis.label == "Ion 1 area / Compound area"
+    # Shown in one change; a ratio given and taken back
+    ratio = Axis(ion_element(3), area, over=Axis(ion_element(1), area))
+    selector.set_axis(ratio)
+    assert selector.axis == ratio and changes[-1] == ratio
+    n = len(changes)
+    selector.set_axis(Axis(COMPOUND, COMPOUND.variables[0]))
+    assert len(changes) == n + 1 and selector.axis.over is None
+    # An axis of the run is no ratio
+    selector.set_axis(ratio)
+    selector.element_combo.setCurrentIndex(
+        selector.element_combo.findData("measurement")
+    )
+    assert selector.axis.over is None and over.isHidden()
+
+
+def test_compare_compounds_ratio(app, data, manager):
+    from esper.gui.panels.results_plot import ResultsPlotPanel
+    from esper.gui.selection import Selection
+
+    selection = Selection(data)
+    selection.select_candidate("CFC-12")
+    panel = ResultsPlotPanel(data, selection)
+    panel.compare_check.setChecked(True)
+    prominence = COMPOUND.variable("prominence detected")
+    # One compound over another: both loaded
+    panel.selectors["y"].set_axis(
+        Axis(
+            COMPOUND,
+            prominence,
+            "CFC-12",
+            over=Axis(COMPOUND, prominence, "Unknown X"),
+        )
+    )
+    panel.redraw()
+    assert panel._compounds() == ("CFC-12", "Unknown X")
+    assert panel.options["y"].label == (
+        "CFC-12 Compound prominence detected / Unknown X Compound prominence detected"
+    )
+    # Prominence sums: 10 + 5 + 20 + 50 over 50 + 10 + 20
+    assert list(panel.plotted["y"]) == [85 / 80]

@@ -143,9 +143,15 @@ class ResultsPlotPanel(RunScatterPanel):
         """The axes of the plot: X, Y, and the optional Y2, Y3."""
         self.selectors = {
             "x": AxisSelector(
-                "X:", RESULTS_ELEMENTS, RESULTS_X, elements_of=self._elements_of
+                "X:",
+                RESULTS_ELEMENTS,
+                RESULTS_X,
+                elements_of=self._elements_of,
+                ratio=True,
             ),
-            "y": AxisSelector("Y:", RESULTS_ELEMENTS, y, elements_of=self._elements_of),
+            "y": AxisSelector(
+                "Y:", RESULTS_ELEMENTS, y, elements_of=self._elements_of, ratio=True
+            ),
             **{
                 name: AxisSelector(
                     f"{name.upper()}:",
@@ -153,6 +159,7 @@ class ResultsPlotPanel(RunScatterPanel):
                     EXTRA_DEFAULTS[name],
                     optional=True,
                     elements_of=self._elements_of,
+                    ratio=True,
                 )
                 for name in EXTRA_YS
             },
@@ -221,7 +228,8 @@ class ResultsPlotPanel(RunScatterPanel):
 
     def _compounds(self) -> tuple[str, ...]:
         """The compounds of the axes shown (comparing compounds)."""
-        axes = (self.options[name] for name in ("x", "y", *EXTRA_YS))
+        axes = [self.options[name] for name in ("x", "y", *EXTRA_YS)]
+        axes += [a.over for a in axes if a and a.over]
         return tuple(sorted({a.compound for a in axes if a and a.compound}))
 
     def swap_axes(self) -> None:
@@ -240,10 +248,11 @@ class ResultsPlotPanel(RunScatterPanel):
             # an axis without its compound yet (e.g. at start): the one selected
             label = self.selection.label
             for selector in self.selectors.values():
-                value = selector.value
-                if label and value and value.element.key != "measurement":
-                    if value.compound is None:
-                        selector.set_compound(label)
+                for part in selector.parts:
+                    value = part.value
+                    if label and value and value.element.key != "measurement":
+                        if value.compound is None:
+                            part.set_compound(label)
             names = self._compounds()
             key = ("compare", names, self.options["valid_only"])
             if key != self._loaded_key:

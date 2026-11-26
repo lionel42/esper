@@ -64,8 +64,6 @@ MAX_IONS = 20
 ION_COLUMNS = ["mass", "rt_s", "height", "prominence", "width_s", *FIT_COLUMNS]
 # Between the name of a compound and a column of it (``EsperData.results_by_run``)
 COMPOUND_SEP = "|"
-# Columns of the ions also given as a ratio to the main ion
-RATIO_COLUMNS = ["height", "prominence", "fit_height", "fit_area"]
 
 
 class _cached_method:
@@ -804,7 +802,7 @@ class EsperData:
         are its ions at the time of the run (``target_masses``, as unit masses; NaN
         where the compound has no peak on one), else the unit masses of its peaks,
         most prominent first. ``ion{k}_fit_area_rel_u``: the relative uncertainty of
-        the fitted area [%]; ``ion{k}_ratio_*``: of ion k to the main ion (k > 1).
+        the fitted area [%].
         """
         keys = ["measurement_id", "compound_idx"]
         peak_columns = set(self._table_columns("peak"))
@@ -872,9 +870,6 @@ class EsperData:
             df[f"ion{k}_fit_area_rel_u"] = (
                 100 * df[f"ion{k}_fit_area_u"] / df[f"ion{k}_fit_area"]
             )
-            if k > 1:
-                for column in RATIO_COLUMNS:
-                    df[f"ion{k}_ratio_{column}"] = df[f"ion{k}_{column}"] / df[f"ion1_{column}"]
         return df
 
     def search(
