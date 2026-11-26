@@ -127,7 +127,7 @@ def test_peaks_found_in_each_window():
     assert found == [(69, 50), (69, 150), (85, 50), (85, 60)]
     # scans of the run, not of the window
     second = peaks[(peaks["mass"] == 69) & (peaks["peak_rt"] > 100)].iloc[0]
-    assert T[int(second["left_bases"])] < 150 < T[int(second["right_bases"])]
+    assert second["left_bases"] < 150 < second["right_bases"]  # times [s]
 
 
 def test_peaks_grouped_into_compounds():

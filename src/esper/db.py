@@ -9,7 +9,7 @@ An esper data directory looks like::
         chromatograms/
             <measurement>.parquet   # unit mass chromatograms (index: rt [s], columns: masses + 'tic')
 
-Units are part of the column names: ``_s`` seconds, ``_scans`` time bins.
+Units are part of the column names: ``_s`` seconds.
 """
 
 from __future__ import annotations
@@ -36,14 +36,17 @@ GITIGNORE = f"""\
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 # Versions that are upgraded by creating the missing tables and columns (3: the area
 # columns of an unreleased version, kept)
-COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
+COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
 # Oldest SCHEMA_VERSION of esper that can still use a database of this version, stored in
 # the database so that older esper versions know whether they can use it. A schema change
 # that only adds tables or nullable columns keeps it, a breaking change sets it to SCHEMA_VERSION.
-MIN_READER_VERSION = 9  # 9: measurement.sample_number renamed port
+MIN_READER_VERSION = 12
+# (9: measurement.sample_number renamed port)
+# (12: the prominence bases of the peaks in seconds, left_base_s / right_base_s,
+# instead of left_base_scan / right_base_scan; width_scans dropped)
 # (4: the peaks split by the fit have no extraction bounds)
 # (6 keeps it: older versions read the targets of the target lists as before; the
 # versioned ions of the GCwerks targets look to them like several ions per rank)
@@ -273,11 +276,10 @@ CREATE TABLE IF NOT EXISTS peak (
     rt_s                REAL,
     height              REAL,
     prominence          REAL,
-    width_scans         REAL,
     width_s             REAL,
     width_height        REAL,
-    left_base_scan      INTEGER,
-    right_base_scan     INTEGER,
+    left_base_s         REAL,                   -- prominence bases
+    right_base_s        REAL,
     start_s             REAL,
     stop_s              REAL,
     flatness            REAL,
@@ -313,11 +315,10 @@ CREATE TABLE IF NOT EXISTS extraction_peak (
     rt_s                REAL,
     height              REAL,
     prominence          REAL,
-    width_scans         REAL,
     width_s             REAL,
     width_height        REAL,
-    left_base_scan      INTEGER,
-    right_base_scan     INTEGER,
+    left_base_s         REAL,                   -- prominence bases
+    right_base_s        REAL,
     start_s             REAL,
     stop_s              REAL,
     flatness            REAL,
@@ -527,7 +528,7 @@ def connect(
     try:
         version = _check_version(con, path)
         if create and not readonly and version <= SCHEMA_VERSION:
-            _upgrade(con, path, version)
+            _upgrade(con, path, version, data_dir)
     except BaseException:
         con.close()
         raise
@@ -574,7 +575,9 @@ def _check_version(con: sqlite3.Connection, path: Path) -> int:
     return version
 
 
-def _upgrade(con: sqlite3.Connection, path: Path, version: int) -> None:
+def _upgrade(
+    con: sqlite3.Connection, path: Path, version: int, data_dir: Path
+) -> None:
     """Bring the schema of the database from an older or the same version to SCHEMA_VERSION."""
     if version not in COMPATIBLE_VERSIONS:
         raise SchemaVersionError(
@@ -584,6 +587,7 @@ def _upgrade(con: sqlite3.Connection, path: Path, version: int) -> None:
     con.execute("DROP VIEW IF EXISTS peak_full")
     _rename_columns(con)
     _rebuild_target_ion(con)
+    _bases_in_seconds(con, data_dir)
     con.executescript(SCHEMA + SCHEMA_INFO)
     add_columns(con)
     con.execute(
@@ -606,6 +610,88 @@ def _rename_columns(con: sqlite3.Connection) -> None:
         columns = table_columns(con, table)
         if old in columns and new not in columns:
             con.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
+
+
+# Columns of the peaks as scans of the run, before version 12
+SCAN_COLUMNS = ("left_base_scan", "right_base_scan", "width_scans")
+
+
+def _bases_in_seconds(con: sqlite3.Connection, data_dir: Path) -> None:
+    """The prominence bases of the peaks of a database before version 12 in seconds:
+    ``left_base_s`` / ``right_base_s`` from the scans (the rows of the chromatogram file
+    of each run; NaN without it), and the ``SCAN_COLUMNS`` dropped, in the peak and
+    extraction_peak tables. Reads the time axis of every run: once, one transaction."""
+    from esper.integration import scan_times
+
+    tables = [
+        table
+        for table in ("peak", "extraction_peak")
+        if "left_base_scan" in table_columns(con, table)
+    ]
+    if not tables:
+        return
+    with_bases = " UNION ".join(
+        f"SELECT measurement_id FROM {table} WHERE left_base_scan IS NOT NULL"
+        for table in tables
+    )
+    runs = con.execute(
+        "SELECT measurement_id, chromatogram_file FROM measurement"
+        f" WHERE measurement_id IN ({with_bases})"
+    ).fetchall()
+    logger.warning(
+        f"{db_path(data_dir)}: schema {SCHEMA_VERSION}, the prominence bases of the"
+        f" peaks of {len(runs)} runs converted to seconds (once)"
+    )
+    con.commit()
+    con.execute("BEGIN")
+    try:
+        for table in tables:
+            for column in ("left_base_s", "right_base_s"):
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {column} REAL")
+        missing = 0
+        for mid, chromatogram_file in runs:
+            path = None if chromatogram_file is None else Path(data_dir) / chromatogram_file
+            times = None
+            if path is not None and path.is_file():
+                times = pd.read_parquet(path, columns=[]).index.to_numpy(dtype=float)
+            else:
+                missing += 1
+            for table in tables:
+                rows = con.execute(
+                    f"SELECT peak_idx, left_base_scan, right_base_scan FROM {table}"
+                    " WHERE measurement_id = ? AND left_base_scan IS NOT NULL",
+                    (mid,),
+                ).fetchall()
+                if not rows:
+                    continue
+                idx, left, right = (
+                    pd.Series(column, dtype=float) for column in zip(*rows)
+                )
+                left, right = scan_times(left, times), scan_times(right, times)
+                con.executemany(
+                    f"UPDATE {table} SET left_base_s = ?, right_base_s = ?"
+                    " WHERE measurement_id = ? AND peak_idx = ?",
+                    [
+                        (_or_none(a), _or_none(b), mid, int(i))
+                        for i, a, b in zip(idx, left, right)
+                    ],
+                )
+        for table in tables:
+            for column in SCAN_COLUMNS:
+                con.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+        con.execute("COMMIT")
+    except BaseException:
+        con.execute("ROLLBACK")
+        raise
+    if missing:
+        logger.warning(
+            f"{missing} runs without their chromatogram file: their peaks have no"
+            " prominence bases (no ips integration)"
+        )
+
+
+def _or_none(value: float) -> float | None:
+    return None if value != value else float(value)
 
 
 def _rebuild_target_ion(con: sqlite3.Connection) -> None:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from esper import db
@@ -161,9 +163,9 @@ def test_upgrade_adds_valid_from_to_target_ion(tmp_path):
     con.close()
     con = db.connect(tmp_path, create=True)
     assert "valid_from" in db.table_columns(con, "target_ion")
-    assert con.execute("SELECT name, valid_from, rank, mass, spectrum_ref FROM target_ion").fetchall() == [
-        ("CFC-12", None, 0, 85, "nist_CFC-12")
-    ]
+    assert con.execute(
+        "SELECT name, valid_from, rank, mass, spectrum_ref FROM target_ion"
+    ).fetchall() == [("CFC-12", None, 0, 85, "nist_CFC-12")]
     con.execute(
         "INSERT INTO target_ion (name, valid_from, rank, mass) VALUES ('CFC-12', '2020-01-01T00:00:00', 0, 101)"
     )
@@ -207,3 +209,58 @@ def test_port_of_a_database_not_upgraded(tmp_path):
     finally:
         data.close()
     assert _version(tmp_path) == 8
+
+
+def test_prominence_bases_converted_to_seconds(tmp_path):
+    """Schema 12: the bases stored as scans of the run (left_base_scan, ...) become
+    times, those of the rows of the chromatogram file (with its NaN: SIM windows)."""
+    old = db.SCHEMA.replace(
+        "    left_base_s         REAL,                   -- prominence bases\n"
+        "    right_base_s        REAL,",
+        "    width_scans         REAL,\n"
+        "    left_base_scan      INTEGER,\n"
+        "    right_base_scan     INTEGER,",
+    )
+    assert old.count("left_base_scan") == 2  # peak, extraction_peak
+    t = np.arange(0, 100, 0.5)
+    frame = pd.DataFrame({"85": np.where(t >= 50, 1.0, np.nan)}, index=pd.Index(t))
+    db.chromatograms_dir(tmp_path).mkdir(parents=True)
+    frame.to_parquet(db.chromatograms_dir(tmp_path) / "a.parquet")
+    with sqlite3.connect(db.db_path(tmp_path)) as con:
+        con.executescript(old)
+        db.add_columns(con)
+        con.executemany(
+            "INSERT INTO measurement (measurement_id, name, source_dir, source_mtime,"
+            " source_size, imported_at, chromatogram_file) VALUES (?, ?, '', 0, 0, '', ?)",
+            [
+                (1, "a", "chromatograms/a.parquet"),
+                (2, "b", "chromatograms/gone.parquet"),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO peak (measurement_id, peak_idx, left_base_scan,"
+            " right_base_scan, width_scans) VALUES (?, ?, ?, ?, 3)",
+            [(1, 0, 120, 160), (1, 1, None, None), (2, 0, 5, 9)],
+        )
+        con.execute(
+            "INSERT INTO extraction_peak (measurement_id, peak_idx, left_base_scan,"
+            " right_base_scan) VALUES (1, 2, 130, 150)"
+        )
+        con.execute("PRAGMA user_version = 11")
+    con = db.connect(tmp_path, create=True)
+    for table in ("peak", "extraction_peak"):
+        columns = db.table_columns(con, table)
+        assert "left_base_s" in columns and not set(db.SCAN_COLUMNS) & set(columns)
+    rows = con.execute(
+        "SELECT measurement_id, peak_idx, left_base_s, right_base_s FROM peak"
+        " ORDER BY measurement_id, peak_idx"
+    ).fetchall()
+    # scans 120 and 160 of the run: 60 s and 80 s; no chromatogram file: none
+    assert rows == [(1, 0, 60.0, 80.0), (1, 1, None, None), (2, 0, None, None)]
+    assert con.execute(
+        "SELECT left_base_s, right_base_s FROM extraction_peak"
+    ).fetchone() == (65.0, 75.0)
+    assert _version(tmp_path) == db.SCHEMA_VERSION
+    con.close()
+    # Opened again: nothing to convert
+    db.connect(tmp_path, create=True).close()

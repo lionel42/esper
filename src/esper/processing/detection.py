@@ -38,10 +38,9 @@ PEAK_COLUMNS = {
     "peak_rt": "rt_s",
     "peak_heights": "height",
     "prominences": "prominence",
-    "widths": "width_scans",
     "width_heights": "width_height",
-    "left_bases": "left_base_scan",
-    "right_bases": "right_base_scan",
+    "left_bases": "left_base_s",
+    "right_bases": "right_base_s",
     "start_ip": "start_s",
     "stopp_ip": "stop_s",
     "flatness": "flatness",
@@ -89,7 +88,8 @@ def find_peaks(
     detection: DetectionConfig,
 ) -> pd.DataFrame:
     """The peaks of all the masses of a run (``peaxart.find_chromatogram_peaks`` columns),
-    found in each window of each mass; their scans are those of the whole run.
+    found in each window of each mass; their prominence bases (``left_bases``,
+    ``right_bases``) as times [s].
 
     ``frame``: the chromatograms (index: rt [s], one column per mass; ``tic`` left out).
     ``baseline``: removed from each window before (None: not removed).
@@ -115,8 +115,8 @@ def find_peaks(
                 min_prominence,
             )
             if len(peaks):
-                for scans in ("left_bases", "right_bases"):  # of the run
-                    peaks[scans] = index[peaks[scans].to_numpy(dtype=int)]
+                for bases in ("left_bases", "right_bases"):  # scans of the window
+                    peaks[bases] = t[index[peaks[bases].to_numpy(dtype=int)]]
                 parts.append(peaks)
     if not parts:
         return pd.DataFrame(columns=FOUND_COLUMNS)
@@ -156,8 +156,8 @@ def detect(
     )
     peaks = peaks[list(PEAK_COLUMNS)].rename(columns=PEAK_COLUMNS)
     peaks["is_max_of_cmp"] = peaks["is_max_of_cmp"].astype(bool).astype(int)
-    # Width at half prominence, s: between its crossings (``width_scans`` counts the values
-    # of its window, not evenly spaced in a scan run)
+    # Width at half prominence, s: between its crossings (peaxart's ``widths`` counts the
+    # values of its window, not evenly spaced in a scan run)
     peaks["width_s"] = peaks["stop_s"] - peaks["start_s"]
     peaks.index = pd.RangeIndex(len(peaks), name="peak_idx")
 

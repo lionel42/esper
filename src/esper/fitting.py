@@ -60,8 +60,10 @@ logger = logging.getLogger(__name__)
 # Increase when the fit changes (2: prominence and height of the fitted signal,
 # extraction kept; 3: peaks added by the seeds, groups split at valleys, the peak
 # function of FIT_CONFIG (EMG), fit_rt_s / fit_height its apex; 4: the background of each
-# group chosen among constant / linear / exponential, fit_baseline_slope)
-FIT_VERSION = 4
+# group chosen among constant / linear / exponential, fit_baseline_slope; 5: the pieces
+# matching no compound are compounds of their own, named by target search; a target keeps
+# the piece of its split peak nearest its expected rt)
+FIT_VERSION = 5
 # Gaussian convention of peaxart's peak shapes, and the half widths of the extraction
 # are clipped to this range [s] (peaxart.ChromatogramFitConfig, esper.deconvolution.FIT_CONFIG)
 CONVENTION = FIT_CONFIG.convention
@@ -350,11 +352,10 @@ class ExpectedTarget(NamedTuple):
 
 # Columns of the extraction that describe the peak before a split (NULL after it)
 EXTRACTION_ONLY_COLUMNS = [
-    "width_scans",
     "width_s",
     "width_height",
-    "left_base_scan",
-    "right_base_scan",
+    "left_base_s",
+    "right_base_s",
     "start_s",
     "stop_s",
     "flatness",

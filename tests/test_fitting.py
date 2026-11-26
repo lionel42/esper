@@ -114,8 +114,8 @@ def extraction_peaks() -> pd.DataFrame:
         columns=["peak_idx", "compound_idx", "mass", "rt_s", "start_s", "stop_s"],
     ).set_index("peak_idx")
     df["height"] = df["prominence"] = 1e5
-    df["left_base_scan"] = ((df["rt_s"] - T0 - 10) / DT).astype(int)
-    df["right_base_scan"] = ((df["rt_s"] - T0 + 10) / DT).astype(int)
+    df["left_base_s"] = df["rt_s"] - 10
+    df["right_base_s"] = df["rt_s"] + 10
     df["width_s"] = df["stop_s"] - df["start_s"]
     df["is_max_of_cmp"] = 0
     return df

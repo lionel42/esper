@@ -27,7 +27,7 @@ from esper.gui.chromatogram_store import (
     unit_masses,
 )
 from esper.gui.settings import Intensity
-from esper.integration import has_ips, integration_bounds, peak_area
+from esper.integration import BASE_COLUMNS, has_ips, integration_bounds, peak_area
 from esper.libraries import Spectrum
 from esper.target_index import TargetIndex, unit_mass
 from esper.targets import interp_extrapolate
@@ -411,6 +411,10 @@ class EsperData:
             c for c in df.columns if c not in ("source", "compound_idx", "fit_shape")
         ]
         df[numeric] = df[numeric].apply(pd.to_numeric)
+        # A database before schema 12 (read-only: not upgraded): bases as scans, unused
+        for column in BASE_COLUMNS:
+            if column not in df:
+                df[column] = np.nan
         return df
 
     def is_fitted(self, measurement_id: int) -> bool:
@@ -465,7 +469,7 @@ class EsperData:
                 continue
             t = series.index.to_numpy(dtype=float)
             y = series.to_numpy(dtype=float)
-            start, stop = integration_bounds(group, t)
+            start, stop = integration_bounds(group)
             for a, b in zip(start, stop):
                 masses.append(mass)
                 areas.append(max(peak_area(t, y, a, b), 0.0))

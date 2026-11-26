@@ -10,6 +10,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from esper.integration import scan_times
+
 if TYPE_CHECKING:
     from esper.mass_cal import RunCalibration
 
@@ -29,9 +31,9 @@ _PEAK_COLUMNS = {
     "peak_rt": "rt_s",
     "peak_heights": "height",
     "prominences": "prominence",
-    "widths": "width_scans",
+    "widths": "width_scans",  # -> width_s, not stored
     "width_heights": "width_height",
-    "left_bases": "left_base_scan",
+    "left_bases": "left_base_scan",  # -> left_base_s, not stored
     "right_bases": "right_base_scan",
     "start_ip": "start_s",
     "stopp_ip": "stop_s",
@@ -171,6 +173,11 @@ def read_alpinac_folder(folder: Path) -> AlpinacResult:
     chromatos = find_chromatograms(folder, name)
     if chromatos is None:
         warnings.append("No unit mass chromatograms")
+    # The prominence bases: scans of the run, the rows of its chromatograms
+    times = None if chromatos is None else pd.read_parquet(chromatos, columns=[]).index
+    for side in ("left", "right"):
+        peaks[f"{side}_base_s"] = scan_times(peaks[f"{side}_base_scan"], times)
+    peaks = peaks.drop(columns=["width_scans", "left_base_scan", "right_base_scan"])
 
     attrs = {
         "rt_start_s": float(ds.attrs.get("rt_start", np.nan)),

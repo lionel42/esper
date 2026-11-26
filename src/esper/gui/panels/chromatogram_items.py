@@ -151,7 +151,7 @@ def ips_items(
     Returns the items, the areas and the baselines below the apex (NaN without ips).
     """
     rt = peaks["rt_s"].to_numpy(dtype=float)
-    start, stop = integration_bounds(peaks, t)
+    start, stop = integration_bounds(peaks)
     valid = np.isfinite(start) & np.isfinite(stop)
     areas = np.full(len(peaks), np.nan)
     y_base = np.full(len(peaks), np.nan)
