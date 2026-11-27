@@ -160,7 +160,8 @@ processing:
   baseline:                 # peaxart.BaselineConfig, before the detection (false: none)
     lam: 1.0e+7
   detection:                # peak detection (defaults shown)
-    min_snr: 10             # prominence >= min_snr x the noise of the window, and
+    min_snr: 10             # prominence >= min_snr x the noise around the peak, and
+    noise_window_s: 20      # (within this, s; null: of its whole window)
     prominence: 20          # >= this floor (counts); 0 min_snr: the floor only
     height: 20              # counts, after the baseline removal
     width: 5                # minimum width (half prominence), scans
@@ -169,8 +170,21 @@ processing:
   target:
     window_s: 20            # window of the targets without one in their source
   suspect:
-    min_score: 0.8          # valid from this spectral score on
+    min_score: 0.9          # valid from this spectral score on
+    max_ri_diff: 10         # and with retention indices: within this of the candidate's
+  ri:
+    min_score: 0.95         # spectral score of a retention index reference in a run
 ```
+
+### Retention indices
+
+With suspect screening (or `retention_index: true`), each run gets the retention index of
+its compounds from the references found in it: compounds of known RI (Kr, Xe, n-alkanes,
+...), listed in the data directory (`esper ri-refs list|import|export`, a CSV file;
+`esper targets` stores esper's seed in a data directory without references). They also
+give the RI of the targets, from their rt in the reference run of the target list. The
+candidates of a compound are then ranked by their spectral score combined with their RI
+difference, and the compound is identified within `max_ri_diff`.
 
 The GUI shows only what the data directory uses: with target search, no library match
 (score, spectrum) and, unless `retention_index: true`, no retention index.
