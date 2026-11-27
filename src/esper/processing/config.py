@@ -20,6 +20,10 @@
         targets_only: true    # only the spectra of the targets with an rt
       ri:                     # the references of the runs (RetentionIndexConfig)
         min_score: 0.95
+      rules:                  # after the identification (esper.processing.rules)
+        noise_merge: true
+        saturation_pieces: 10 # a compound with this many pieces in its range takes them
+        drop_unfitted_single_peaks: true
 
 Every key is optional: what is not given has its default (peaxart's, and esper's
 ``FIT_CONFIG`` for the fit). The method is the data directory's, not the instrument's:
@@ -45,6 +49,7 @@ import peaxart as px
 from esper import db
 from esper.deconvolution import FIT_CONFIG
 from esper.processing import METHODS, TARGET
+from esper.processing.rules import RulesConfig
 from esper.retention_index import RetentionIndexConfig
 
 logger = logging.getLogger(__name__)
@@ -139,6 +144,7 @@ class ProcessingConfig:
     target: TargetSearchConfig = field(default_factory=TargetSearchConfig)
     suspect: SuspectScreeningConfig = field(default_factory=SuspectScreeningConfig)
     ri: RetentionIndexConfig = field(default_factory=RetentionIndexConfig)
+    rules: RulesConfig = field(default_factory=RulesConfig)
 
     @property
     def uses_library(self) -> bool:
@@ -157,7 +163,7 @@ class ProcessingConfig:
 
 # Sections of ``processing:`` and their defaults
 _DEFAULTS = ProcessingConfig()
-SECTIONS = ("baseline", "detection", "fit", "target", "suspect", "ri")
+SECTIONS = ("baseline", "detection", "fit", "target", "suspect", "ri", "rules")
 
 
 def _value(default, value, where: str):

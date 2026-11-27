@@ -181,6 +181,10 @@ processing:
     targets_only: true      # only the spectra of the targets with an rt (and their aliases)
   ri:
     min_score: 0.95         # spectral score of a retention index reference in a run
+  rules:                    # after the identification (esper.processing.rules)
+    noise_merge: true       # unidentified compounds merged into an identified one they improve
+    saturation_pieces: 10   # an identified compound with this many in its range takes them all
+    drop_unfitted_single_peaks: true   # compounds of one peak the fit rejected: deleted
 ```
 
 ### Retention indices

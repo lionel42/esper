@@ -6,6 +6,7 @@ import logging
 import sqlite3
 from concurrent.futures import Executor
 from pathlib import Path
+from typing import NamedTuple
 
 import pandas as pd
 
@@ -19,6 +20,17 @@ from esper.processing.config import (
 from esper.target_index import TargetIndex
 
 logger = logging.getLogger(__name__)
+
+
+class Identified(NamedTuple):
+    """The result of the identification step alone (``Processor.identify_stored``)."""
+
+    #: the retention index references found (None: retention indices not used)
+    found: pd.DataFrame | None
+    #: compounds merged into others (noise merge)
+    merged: int
+    #: unfitted one-peak compounds deleted
+    dropped: int
 
 
 def to_process(
@@ -303,28 +315,30 @@ class Processor:
 
     def _stored_compounds(self, mid: int) -> pd.DataFrame:
         return pd.read_sql(
-            "SELECT compound_idx, rt_mean_s, prominence_sum, compound_name,"
-            " valid_candidate, is_ref_ri, retention_index FROM compound"
+            "SELECT compound_idx, rt_mean_s, start_mean_s, stop_mean_s, prominence_sum,"
+            " compound_name, valid_candidate, is_ref_ri, retention_index FROM compound"
             " WHERE measurement_id = ?",
             self.con,
             params=(mid,),
             index_col="compound_idx",
         )
 
-    def identify_stored(self, measurement_id: int) -> pd.DataFrame | None:
+    def identify_stored(self, measurement_id: int) -> Identified:
         """The identification step alone on a run whose peaks esper found (suspect
         screening): its compounds matched again to the libraries, from the heights of
         their peaks as found (``esper.fitting.extraction``: as the peaks step, before the
         fit; the compounds made by the fit get none), then their retention indices (if
-        used, as ``retention_indices``, from the fitted rts). The peaks, the fit and the identifications
-        edited by hand are kept. Single transaction.
+        used, as ``retention_indices``, from the fitted rts), then the rules
+        (``processing: rules:``): the noise merge (``esper.fitting.merge_compounds``, for
+        good: only the peaks step splits them again; then identified again) and, if
+        fitted, the unfitted one-peak compounds deleted. The peaks, the fit and the
+        identifications edited by hand are kept otherwise.
 
-        Returns the references found (None: retention indices not used).
         Raises ProcessingConfigError with target search (its identification is part of
         the peaks: ``esper process -f``).
         """
-        from esper.fitting import extraction
-        from esper.processing.identification import retention_indices, screen_suspects
+        from esper.fitting import extraction, merge_compounds
+        from esper.processing.rules import drop_unfitted_single_peaks
 
         if self.method == TARGET:
             raise ProcessingConfigError(
@@ -332,11 +346,32 @@ class Processor:
                 " target search identifies with the peaks (esper process -f)"
             )
         mid = int(measurement_id)
-        compounds = self._stored_compounds(mid).assign(
-            compound_name=None, valid_candidate=0, is_ref_ri=0, retention_index=None
-        )
-        # the peaks as found (before the fit), as the identification of the peaks step
-        peaks, _ = extraction(self.con, mid)
+
+        def identified():
+            # the peaks as found (before the fit), as the identification of the peaks step
+            peaks, _ = extraction(self.con, mid)
+            compounds = self._stored_compounds(mid).assign(
+                compound_name=None, valid_candidate=0, is_ref_ri=0, retention_index=None
+            )
+            return (peaks, *self._screen(peaks, compounds))
+
+        peaks, compounds, candidates, found = identified()
+        merges = self._noise_merges(peaks, compounds, candidates)
+        for main, others in merges.items():
+            merge_compounds(self.con, mid, [main, *others])
+        if merges:
+            peaks, compounds, candidates, found = identified()
+        self._update_identification(mid, compounds, candidates, found, replace=True)
+        dropped = 0
+        if self.config.rules.drop_unfitted_single_peaks:
+            dropped = drop_unfitted_single_peaks(self.con, mid)
+        return Identified(found, sum(map(len, merges.values())), dropped)
+
+    def _screen(self, peaks: pd.DataFrame, compounds: pd.DataFrame):
+        """(compounds, candidates, references found or None) of suspect screening and
+        the retention indices (if used)."""
+        from esper.processing.identification import retention_indices, screen_suspects
+
         compounds, candidates = screen_suspects(
             peaks, compounds, self.libraries, self.config.suspect
         )
@@ -350,8 +385,32 @@ class Processor:
                 self.config.ri,
                 self.config.suspect,
             )
-        self._update_identification(mid, compounds, candidates, found, replace=True)
-        return found
+        return compounds, candidates, found
+
+    def _noise_merges(
+        self,
+        peaks: pd.DataFrame,
+        compounds: pd.DataFrame,
+        candidates: pd.DataFrame | None,
+    ) -> dict[int, list[int]]:
+        """The noise merges of a run (``esper.processing.rules.noise_merges``), none
+        without suspect screening or if the rule is off."""
+        from esper.processing.rules import noise_merges
+
+        if (
+            self.method == TARGET
+            or candidates is None
+            or not self.config.rules.noise_merge
+        ):
+            return {}
+        return noise_merges(
+            peaks,
+            compounds,
+            candidates,
+            self.libraries,
+            self.config.rules.saturation_pieces,
+            self.config.suspect.min_score,
+        )
 
     def _update_identification(
         self,
@@ -484,7 +543,15 @@ class Processor:
             return None
         frame, time = run
         peaks, compounds = detect(frame, self.config.baseline, self.config.detection)
+        as_found = list(compounds.columns)
         peaks, compounds, candidates, found = self.identify(peaks, compounds, time)
+        merges = self._noise_merges(peaks, compounds, candidates)
+        if merges:
+            from esper.processing.rules import merge
+
+            peaks, compounds = merge(peaks, compounds[as_found], merges)
+            compounds = compounds.assign(compound_name=None, valid_candidate=0)
+            peaks, compounds, candidates, found = self.identify(peaks, compounds, time)
         _store(self.con, mid, self.method, peaks, compounds, candidates, found)
         if not fit:
             return peaks

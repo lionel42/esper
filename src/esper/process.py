@@ -200,14 +200,31 @@ class RunProcessing:
             logger.warning(f"{label} no chromatograms, not fitted")
             return
         self.summary.fitted.append(name)
-        self.report(f"{label} {fit_summary(table)}")
+        dropped = self._drop_unfitted(mid)
+        deleted = f"; {dropped} unfitted one-peak compounds deleted" if dropped else ""
+        self.report(f"{label} {fit_summary(table)}{deleted}")
+
+    def _drop_unfitted(self, mid: int) -> int:
+        """The rule after the fit of a run whose peaks esper found
+        (``esper.processing.rules.drop_unfitted_single_peaks``, if on)."""
+        from esper.processing import PEAK_SOURCE
+        from esper.processing.rules import drop_unfitted_single_peaks
+
+        if self.processor is None or not self.config.rules.drop_unfitted_single_peaks:
+            return 0
+        (source,) = self.con.execute(
+            "SELECT peak_source FROM measurement WHERE measurement_id = ?", (mid,)
+        ).fetchone()
+        if source != PEAK_SOURCE:
+            return 0
+        return drop_unfitted_single_peaks(self.con, mid)
 
     def identify(self, name: str, mid: int) -> None:
         """The identification step alone (``Processor.identify_stored``)."""
 
         label = self._label(name)
         try:
-            found = self.processor.identify_stored(mid)
+            found, merged, dropped = self.processor.identify_stored(mid)
         except Exception as e:
             logger.exception(f"{label} identification failed")
             self.summary.identify_failed.append((name, repr(e)))
@@ -218,7 +235,10 @@ class RunProcessing:
             (mid,),
         ).fetchone()
         refs = "" if found is None else f"{len(found):2} retention index references, "
-        self.report(f"{label} {refs}{n_valid} compounds identified")
+        self.report(
+            f"{label} {refs}{n_valid:3} compounds identified; {merged:3} merged"
+            f" (noise merge), {dropped:3} unfitted one-peak compounds deleted"
+        )
 
     def retention_indices(self, name: str, mid: int) -> None:
         """The retention index step alone (``Processor.retention_indices``)."""
