@@ -56,9 +56,13 @@ def _store(
     peaks: pd.DataFrame,
     compounds: pd.DataFrame,
     candidates: pd.DataFrame | None,
+    references: pd.DataFrame | None = None,
 ) -> None:
-    """Replace the peaks, compounds and candidates of a measurement (single transaction);
-    the fit and the identifications edited by hand are dropped."""
+    """Replace the peaks, compounds, candidates and retention index references found
+    (``references``, None: none) of a measurement (single transaction); the fit and the
+    identifications edited by hand are dropped."""
+    from esper.retention_index import FOUND_COLUMNS, store_run_references
+
     peaks = peaks.assign(compound_idx=peaks["compound_idx"].astype("Int64"))
     with con:
         for table in (
@@ -74,6 +78,11 @@ def _store(
         db.insert(con, "peak", peaks.reset_index().assign(measurement_id=mid))
         if candidates is not None:
             db.insert(con, "compound_candidate", candidates.assign(measurement_id=mid))
+        store_run_references(
+            con,
+            mid,
+            pd.DataFrame(columns=FOUND_COLUMNS) if references is None else references,
+        )
         con.execute(
             "UPDATE measurement SET peak_source = ?, identification = ?, n_peaks = ?,"
             " n_compounds = ?, fit_version = NULL, fitted_at = NULL"
@@ -175,6 +184,7 @@ class Processor:
         self._targets: TargetIndex | None = None
         self._target_search = None
         self._libraries = None
+        self._references: pd.DataFrame | None = None
 
     @property
     def method(self) -> str:
@@ -225,21 +235,133 @@ class Processor:
             self._libraries = LibraryCollection(default_libraries(), Processing())
         return self._libraries
 
+    @property
+    def references(self) -> pd.DataFrame:
+        """The retention index references of the data directory (enabled)."""
+        if self._references is None:
+            from esper.retention_index import read_references
+
+            self._references = read_references(self.con)
+            if self._references.empty:
+                logger.warning(
+                    "no retention index references (esper targets, esper ri-refs):"
+                    " the compounds have no retention index"
+                )
+        return self._references
+
     def identify(
         self, peaks: pd.DataFrame, compounds: pd.DataFrame, time=None
-    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame | None]:
-        """The peaks, compounds and candidates (None: none) identified by the method."""
-        from esper.processing.identification import screen_suspects, search_targets
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame | None, pd.DataFrame | None]:
+        """The peaks, compounds and candidates (None: none) identified by the method, and
+        the retention index references found (None: retention indices not used)."""
+        from esper.processing.identification import (
+            retention_indices,
+            screen_suspects,
+            search_targets,
+        )
 
+        candidates = None
         if self.method == TARGET:
             peaks, compounds = search_targets(
                 peaks, compounds, self.targets, time, self.config.target
             )
-            return peaks, compounds, None
-        compounds, candidates = screen_suspects(
-            peaks, compounds, self.libraries, self.config.suspect
+        else:
+            compounds, candidates = screen_suspects(
+                peaks, compounds, self.libraries, self.config.suspect
+            )
+        if not self.config.uses_retention_index:
+            return peaks, compounds, candidates, None
+        compounds, candidates, found = retention_indices(
+            compounds,
+            candidates,
+            self.references,
+            self.targets,
+            self.config.ri,
+            self.config.suspect,
         )
-        return peaks, compounds, candidates
+        return peaks, compounds, candidates, found
+
+    def retention_indices(self, measurement_id: int) -> pd.DataFrame:
+        """The retention index step alone on a run whose peaks esper found: its
+        references found again among its compounds as they are (fitted or not), the
+        RI of its compounds, and with suspect screening the RI of the candidates, the
+        best one and the validation (``identification.retention_indices``). The peaks,
+        the fit and the identifications edited by hand are kept. Single transaction.
+
+        Returns the references found (``esper.retention_index.FOUND_COLUMNS``).
+        Raises ProcessingConfigError if the data directory does not use retention
+        indices.
+        """
+        from esper.processing.identification import CANDIDATE_COLUMNS, retention_indices
+        from esper.retention_index import store_run_references
+
+        if not self.config.uses_retention_index:
+            raise ProcessingConfigError(
+                f"{self.data_dir}: no retention indices (processing: retention_index)"
+            )
+        mid = int(measurement_id)
+        compounds = pd.read_sql(
+            "SELECT compound_idx, rt_mean_s, prominence_sum, compound_name,"
+            " valid_candidate, is_ref_ri, retention_index FROM compound"
+            " WHERE measurement_id = ?",
+            self.con,
+            params=(mid,),
+            index_col="compound_idx",
+        )
+        candidates = None
+        if self.method != TARGET:
+            candidates = pd.read_sql(
+                "SELECT * FROM compound_candidate WHERE measurement_id = ?",
+                self.con,
+                params=(mid,),
+            )[CANDIDATE_COLUMNS]
+        compounds, candidates, found = retention_indices(
+            compounds,
+            candidates,
+            self.references,
+            self.targets,
+            self.config.ri,
+            self.config.suspect,
+        )
+        compounds = compounds.astype(object).where(compounds.notna(), None)
+        with self.con:
+            self.con.executemany(
+                "UPDATE compound SET compound_name = ?, valid_candidate = ?,"
+                " is_ref_ri = ?, retention_index = ?"
+                " WHERE measurement_id = ? AND compound_idx = ?",
+                [
+                    (
+                        r.compound_name,
+                        r.valid_candidate,
+                        r.is_ref_ri,
+                        r.retention_index,
+                        mid,
+                        int(i),
+                    )
+                    for i, r in compounds.iterrows()
+                ],
+            )
+            if candidates is not None:
+                values = candidates.astype(object).where(candidates.notna(), None)
+                self.con.executemany(
+                    "UPDATE compound_candidate SET ri = ?, ri_diff = ?,"
+                    " score_combined = ?, is_best = ?"
+                    " WHERE measurement_id = ? AND compound_idx = ? AND rank = ?",
+                    [
+                        (
+                            r.ri,
+                            r.ri_diff,
+                            r.score_combined,
+                            r.is_best,
+                            mid,
+                            r.compound_idx,
+                            r.rank,
+                        )
+                        for r in values.itertuples()
+                    ],
+                )
+            store_run_references(self.con, mid, found)
+        return found
 
     def _chromatograms(self, mid: int) -> tuple[pd.DataFrame, object] | None:
         """(chromatograms, acquisition time) of a measurement, None without them."""
@@ -273,8 +395,8 @@ class Processor:
             return None
         frame, time = run
         peaks, compounds = detect(frame, self.config.baseline, self.config.detection)
-        peaks, compounds, candidates = self.identify(peaks, compounds, time)
-        _store(self.con, mid, self.method, peaks, compounds, candidates)
+        peaks, compounds, candidates, found = self.identify(peaks, compounds, time)
+        _store(self.con, mid, self.method, peaks, compounds, candidates, found)
         if not fit:
             return peaks
         return fit_measurement(

@@ -267,3 +267,95 @@ def screen_suspects(
                 found[0].score >= config.min_score
             )
     return compounds, pd.DataFrame(rows, columns=CANDIDATE_COLUMNS)
+
+
+# --- retention indices ------------------------------------------------------------------
+
+
+def retention_indices(
+    compounds: pd.DataFrame,
+    candidates: pd.DataFrame | None,
+    references: pd.DataFrame,
+    targets: TargetIndex | None = None,
+    ri_config=None,
+    suspect: SuspectScreeningConfig | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame | None, pd.DataFrame]:
+    """The retention indices of a run (``esper.retention_index``): its references found,
+    the RI of its compounds, and with suspect screening (``candidates``) the RI of the
+    candidates and the identification by the combined score (as the legacy steps
+    ``RI_CALIBRANTS``, ``BEST_CANDIDATE_RI``, ``VALIDATION``).
+
+    The best candidate of a compound gives its references (its spectral best, score
+    > ``ri_config.min_score``; target search: its target); a reference is named as such
+    (e.g. Xe-A), identified, ``is_ref_ri``. The RI of a candidate is the one of its
+    target (aliases resolved; NaN if none or without rt); the best candidate is then the
+    one of the best combined score (``esper.libraries.combined_score``, ties: the
+    spectral order), the compound is identified if its spectral score is at least
+    ``suspect.min_score`` and its RI within ``suspect.max_ri_diff``. Without two
+    references the compounds have no RI, and no compound is identified by suspect
+    screening.
+
+    :return: the compounds, the candidates and the references found
+        (``esper.retention_index.FOUND_COLUMNS``).
+    """
+    from esper.libraries import combined_score
+    from esper.retention_index import find_references, rt_to_ri
+
+    suspect = suspect or SuspectScreeningConfig()
+    compounds = compounds.copy()
+    if candidates is not None:
+        first = candidates[candidates["rank"] == 1].set_index("compound_idx")
+        best = pd.DataFrame({"name": first["candidate_name"], "score": first["score"]})
+    else:
+        named = compounds["compound_name"].dropna()
+        best = pd.DataFrame({"name": named, "score": 1.0})
+    found = find_references(compounds, best, references, targets, ri_config)
+    ri_of = rt_to_ri(found)
+    if ri_of is None:
+        logger.warning(
+            f"{len(found)} retention index reference(s) found: the compounds have no"
+            " retention index"
+        )
+        compounds["retention_index"] = np.nan
+    else:
+        compounds["retention_index"] = np.round(
+            ri_of(compounds["rt_mean_s"].to_numpy(dtype=float)), 2
+        )
+    compounds["is_ref_ri"] = 0
+    if candidates is not None:
+        candidates = candidates.copy()
+        target_ri = targets.table["ri"] if targets is not None else pd.Series(dtype=float)
+
+        def ri_of_name(name):
+            target = targets.target_of(name) if targets is not None else None
+            return target_ri.get(target, np.nan) if target is not None else np.nan
+
+        candidates["ri"] = candidates["candidate_name"].map(ri_of_name).astype(float)
+        candidates["ri_diff"] = (
+            candidates["compound_idx"].map(compounds["retention_index"]).astype(float)
+            - candidates["ri"]
+        )
+        candidates["score_combined"] = [
+            combined_score(score, diff)
+            for score, diff in zip(candidates["score"], candidates["ri_diff"], strict=True)
+        ]
+        # the best combined score of each compound (the first in the spectral order)
+        order = candidates.sort_values(
+            ["compound_idx", "score_combined", "rank"], ascending=[True, False, True]
+        )
+        best_rows = order.drop_duplicates("compound_idx")
+        candidates["is_best"] = candidates.index.isin(best_rows.index).astype(int)
+        chosen = best_rows.set_index("compound_idx")
+        compounds.loc[chosen.index, "compound_name"] = chosen["candidate_name"]
+        compounds.loc[chosen.index, "valid_candidate"] = (
+            (chosen["score"] >= suspect.min_score)
+            & (chosen["ri_diff"].abs() < suspect.max_ri_diff)
+        ).astype(int)
+    for ref in found.itertuples():
+        compounds.loc[ref.compound_idx, ["compound_name", "valid_candidate", "is_ref_ri"]] = (
+            ref.name,
+            1,
+            1,
+        )
+    compounds["valid_candidate"] = compounds["valid_candidate"].fillna(0).astype(int)
+    return compounds, candidates, found

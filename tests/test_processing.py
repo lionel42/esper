@@ -742,3 +742,99 @@ def test_upload_compounds_only_when_esper_finds_the_peaks(tmp_path):
 
     with pytest.raises(ProcessingConfigError, match="--compounds"):
         upload(tmp_path, tmp_path / "esper", instrument="tofwerk", compounds=["CF4"])
+
+
+def test_retention_index_step_alone(data_dir, capsys):
+    """esper process --steps ri: the references, RIs and identification of the runs whose
+    peaks esper found, from their compounds and candidates as stored; the peaks, the fit
+    and the identifications edited by hand are kept."""
+    from esper.cli.main import main
+    from esper.process import process
+    from esper.retention_index import store_references
+
+    (data_dir / "esper.yaml").write_text(
+        "instrument: gcwerks\nprocessing:\n  method: suspect\n"
+    )
+    con = db.connect(data_dir, create=True)
+    with con:
+        con.execute(
+            "UPDATE measurement SET peak_source = ?, identification = 'suspect',"
+            " fit_version = 5",
+            (PEAK_SOURCE,),
+        )
+        for name, rt in (("Kr", 100.0), ("Xe-A", 120.0), ("CFC-11", 600.0)):
+            con.execute("INSERT INTO target (name, rt_ref_s) VALUES (?, ?)", (name, rt))
+        db.insert(
+            con,
+            "compound",
+            pd.DataFrame(
+                {
+                    "measurement_id": 1,
+                    "compound_idx": [0, 1, 2],
+                    "rt_mean_s": [90.0, 110.0, 590.0],
+                    "prominence_sum": 1000.0,
+                    "compound_name": ["x", "y", "z"],
+                    "valid_candidate": 0,
+                }
+            ),
+        )
+        db.insert(
+            con,
+            "compound_candidate",
+            pd.DataFrame(
+                {
+                    "measurement_id": 1,
+                    "compound_idx": [0, 1, 2, 2],
+                    "rank": [1, 1, 1, 2],
+                    "candidate_name": ["Kr", "Xe-A", "benzene", "CFC-11"],
+                    "score": [0.99, 0.99, 0.97, 0.96],
+                    "is_best": [1, 1, 1, 0],
+                }
+            ),
+        )
+        con.execute(
+            "INSERT INTO peak (measurement_id, peak_idx, compound_idx, mass, rt_s,"
+            " fit_rt_s) VALUES (1, 0, 2, 101, 590.0, 590.1)"
+        )
+        con.execute(
+            "INSERT INTO compound_identification (measurement_id, compound_idx, name,"
+            " edited_at) VALUES (1, 2, 'by hand', '2026-11-27')"
+        )
+    refs = pd.DataFrame({"name": ["Kr", "Xe-A"], "ri": [25.0, 75.0]})
+    store_references(con, refs)
+    con.close()
+
+    summary = process(data_dir, steps=["ri"])
+    assert summary.indexed == ["250101.0000.air.1"] and not summary.processed
+    con = db.connect(data_dir)
+    rows = con.execute(
+        "SELECT compound_name, valid_candidate, is_ref_ri, retention_index FROM compound"
+        " ORDER BY compound_idx"
+    ).fetchall()
+    # CFC-11 at 590 s: RI 1275, its target the same (600 s in the reference run):
+    # combined 0.96 > benzene without RI 0.97 x 0.9
+    assert rows == [("Kr", 1, 1, 25.0), ("Xe-A", 1, 1, 75.0), ("CFC-11", 1, 0, 1275.0)]
+    best = con.execute(
+        "SELECT candidate_name, ri, ri_diff FROM compound_candidate WHERE is_best = 1"
+        " AND compound_idx = 2"
+    ).fetchall()
+    assert best == [("CFC-11", 1275.0, 0.0)]
+    found = con.execute(
+        "SELECT name, compound_idx FROM measurement_ri_reference ORDER BY rt_s"
+    ).fetchall()
+    assert found == [("Kr", 0), ("Xe-A", 1)]
+    # kept: the fit, the peaks, the identification by hand
+    assert con.execute("SELECT fit_version FROM measurement").fetchone() == (5,)
+    assert con.execute("SELECT fit_rt_s FROM peak").fetchone() == (590.1,)
+    assert con.execute("SELECT name FROM compound_identification").fetchone() == (
+        "by hand",
+    )
+    con.close()
+    # the command line; refused without retention indices
+    assert main(["process", str(data_dir), "--steps", "ri"]) == 0
+    assert "retention indices: 1, failed: 0" in capsys.readouterr().out
+    (data_dir / "esper.yaml").write_text(
+        "instrument: gcwerks\nprocessing:\n  method: suspect\n  retention_index: false\n"
+    )
+    assert main(["process", str(data_dir), "--steps", "ri"]) == 2
+    assert "uses no retention indices" in capsys.readouterr().err

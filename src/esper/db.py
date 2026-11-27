@@ -36,10 +36,10 @@ GITIGNORE = f"""\
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 # Versions that are upgraded by creating the missing tables and columns (3: the area
 # columns of an unreleased version, kept)
-COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+COMPATIBLE_VERSIONS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
 # Oldest SCHEMA_VERSION of esper that can still use a database of this version, stored in
 # the database so that older esper versions know whether they can use it. A schema change
 # that only adds tables or nullable columns keeps it, a breaking change sets it to SCHEMA_VERSION.
@@ -55,6 +55,7 @@ MIN_READER_VERSION = 12
 # (9: measurement.sample_number renamed port)
 # (12: the prominence bases of the peaks in seconds, left_base_s / right_base_s,
 # instead of left_base_scan / right_base_scan; width_scans dropped)
+# (13 keeps it: the tables ri_reference and measurement_ri_reference)
 # MIN_READER_VERSION of the schema versions written before schema_info existed
 LEGACY_MIN_READER_VERSIONS = {3: 2}  # 3 only adds nullable columns
 
@@ -372,6 +373,33 @@ CREATE TABLE IF NOT EXISTS target_rt (
 CREATE TABLE IF NOT EXISTS target_alias (
     alias               TEXT PRIMARY KEY,
     name                TEXT REFERENCES target ON DELETE CASCADE
+);
+
+-- Retention index references of the data directory (esper ri-refs, esper.retention_index):
+-- the compounds that anchor the rt -> RI function of each run, and the RIs of the targets
+-- (from their rt_ref_s)
+CREATE TABLE IF NOT EXISTS ri_reference (
+    name                TEXT PRIMARY KEY,       -- 'Xe-A', 'n-hexane': a target (its rt_ref_s)
+    ri                  REAL NOT NULL,
+    names               TEXT,                   -- other candidate names that are it, '; '
+                                                -- ('butane; C4H10-Butane'); also the
+                                                -- aliases of the target
+    occurrence          INTEGER,                -- several references of the same names
+                                                -- (Xe-A 1, Xe-B 2): the first compound
+                                                -- after the previous reference; NULL: the
+                                                -- largest
+    enabled             INTEGER NOT NULL DEFAULT 1,
+    note                TEXT
+);
+
+-- The references found in each run
+CREATE TABLE IF NOT EXISTS measurement_ri_reference (
+    measurement_id      INTEGER REFERENCES measurement ON DELETE CASCADE,
+    name                TEXT,                   -- ri_reference.name
+    compound_idx        INTEGER,
+    rt_s                REAL,
+    score               REAL,                   -- of the candidate that made it the reference
+    PRIMARY KEY (measurement_id, name)
 );
 
 -- Fit parameters of the peaks of a target on one mass, overriding the fit of the data

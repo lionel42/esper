@@ -15,7 +15,9 @@
       target:                 # target search (TargetSearchConfig)
         window_s: 20
       suspect:                # suspect screening (SuspectScreeningConfig)
-        min_score: 0.8
+        min_score: 0.9
+      ri:                     # the references of the runs (RetentionIndexConfig)
+        min_score: 0.95
 
 Every key is optional: what is not given has its default (peaxart's, and esper's
 ``FIT_CONFIG`` for the fit). The method is the data directory's, not the instrument's:
@@ -41,6 +43,7 @@ import peaxart as px
 from esper import db
 from esper.deconvolution import FIT_CONFIG
 from esper.processing import METHODS, TARGET
+from esper.retention_index import RetentionIndexConfig
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +109,12 @@ class SuspectScreeningConfig:
     # Library candidates kept for each compound
     n_candidates: int = 3
     # Spectral score of the best candidate from which the compound is identified
-    # (valid_candidate); below it, it keeps the name, as not valid
-    min_score: float = 0.8
+    # (valid_candidate); below it, it keeps the name, as not valid (legacy 0.9)
+    min_score: float = 0.9
+    # With retention indices: the best candidate is the one of the best combined score
+    # (esper.libraries.combined_score), and the compound is identified only if its RI
+    # differs from the candidate's by less than this (legacy 10; no RI: not identified)
+    max_ri_diff: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -122,6 +129,7 @@ class ProcessingConfig:
     fit: px.ChromatogramFitConfig = FIT_CONFIG
     target: TargetSearchConfig = field(default_factory=TargetSearchConfig)
     suspect: SuspectScreeningConfig = field(default_factory=SuspectScreeningConfig)
+    ri: RetentionIndexConfig = field(default_factory=RetentionIndexConfig)
 
     @property
     def uses_library(self) -> bool:
@@ -140,7 +148,7 @@ class ProcessingConfig:
 
 # Sections of ``processing:`` and their defaults
 _DEFAULTS = ProcessingConfig()
-SECTIONS = ("baseline", "detection", "fit", "target", "suspect")
+SECTIONS = ("baseline", "detection", "fit", "target", "suspect", "ri")
 
 
 def _value(default, value, where: str):

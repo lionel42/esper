@@ -1000,6 +1000,7 @@ def fit_compounds(
                 (FIT_VERSION, datetime.now().isoformat(timespec="seconds"), mid),
             )
         db.update_counts(con, mid)
+    _update_retention_indices(con, mid)
     return table
 
 
@@ -1065,7 +1066,16 @@ def fit_measurement(
         )
     )
     _store_fit(con, mid, table, changes, made_rows)
+    _update_retention_indices(con, mid)
     return table
+
+
+def _update_retention_indices(con: sqlite3.Connection, mid: int) -> None:
+    """The RIs of the compounds of a fitted run from its references (they moved)."""
+    from esper.retention_index import update_compound_ris
+
+    with con:
+        update_compound_ris(con, mid)
 
 
 def _fitted_table(

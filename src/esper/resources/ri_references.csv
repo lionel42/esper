@@ -1,0 +1,32 @@
+# Retention index references: the seed of the data directories (esper ri-refs).
+# From rt_refs_v2.csv of the legacy pipeline (halosearch, 2026-11-27, with its HFC-365mfc
+# commented out), with its hard-coded aliases as names and its double calibrants as
+# occurrences (halosearch alpinac/mode_extraction/rt_index_finder.py).
+# name: a target (its rt in the reference run gives the RIs of the targets)
+# names: other candidate names that are this reference, separated by ';'
+# occurrence: references of the same names (the two peaks of Xe, the xylenes): the first
+#   compound after the previous reference; empty: the largest compound after it
+# RI: modified Kovats; after octane they are guessed. Mr_Bolt (10, 110) left out.
+name,ri,names,occurrence,enabled,note
+Kr,25,Kr+2only,,1,
+Xe-A,75,Xe; Xe-B,1,1,first peak of Xe
+Xe-B,175,Xe; Xe-A,2,1,second peak of Xe
+ethane,200,ethane28nudged,,1,
+propane,300,C3H8-Propane,,1,
+CFC-12,350,,,1,
+n-butane,400,butane; C4H10-Butane,,1,
+CFC-11,480,,,1,
+n-pentane,500,pentane; C5H12-Pentane,,1,
+CH2Cl2,543,,,1,
+n-hexane,600,hexane,,1,
+HFC-365mfc,644,,,0,commented out in rt_refs_v2.csv
+n-heptane,700,heptane,,1,
+benzene,727,,,1,
+octane,800,,,1,
+toluene,850,,,1,guessed
+nonane,900,,,0,guessed; commented out in rt_refs_v2.csv
+ethylbenzene,1050,ethylbenz,,1,guessed
+decane,1000,,,0,guessed; commented out in rt_refs_v2.csv
+undecane,1100,,,0,guessed; commented out in rt_refs_v2.csv
+mp-xylene,1150,xylene; m-xylene; p-xylene; o-xylene; xylene-A; xylene-B,1,1,guessed; m- and p-xylene coelute
+o-xylene,1180,xylene; m-xylene; p-xylene; mp-xylene; xylene-A; xylene-B,2,1,guessed

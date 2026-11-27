@@ -24,6 +24,7 @@ from esper.cli import (
     install,
     plot_calibration,
     process,
+    ri_refs,
     targets,
     upload,
 )
@@ -35,6 +36,7 @@ COMMANDS: list[Command] = [
     process.COMMAND,
     info.COMMAND,
     targets.COMMAND,
+    ri_refs.COMMAND,
     calibrate.COMMAND,
     plot_calibration.COMMAND,
     chromatograms.COMMAND,

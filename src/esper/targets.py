@@ -8,8 +8,6 @@ function returning a ``Targets`` and register it.
 
 from __future__ import annotations
 
-import contextlib
-import io
 import logging
 import sqlite3
 from collections.abc import Callable
@@ -84,6 +82,10 @@ class Targets:
     )
     aliases: dict[str, str] = field(default_factory=dict)
     rts: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=RT_COLUMNS))
+    #: the retention index references the RIs were computed with (target lists; None:
+    #: none, e.g. GCwerks); stored in a database without references
+    #: (``esper.retention_index``)
+    ri_references: pd.DataFrame | None = None
 
     def check(self) -> None:
         missing = set(TARGET_COLUMNS) - set(self.table.columns)
@@ -135,41 +137,88 @@ EXCEL_ION_COLUMNS = [
 ]
 
 
-def default_ri_references() -> Path:
-    """Retention index references of alpinac."""
-    import alpinac.mode_extraction
+# rt of each target in the reference run (s; 0 or empty: unknown)
+EXCEL_RT_COLUMN = "PeakID 240312.2257_w_conversion + [estimates from old RTs]"
+# column of the Excel -> column of read_substances
+EXCEL_COLUMNS = {
+    "Formula ": "formula",
+    "CAS": "cas",
+    "Chemical name": "chemical_name",
+    "Pubchem CID": "pubchem_cid",
+    "InChI": "inchi",
+    "SMILES": "smiles",
+    "Class": "cmp_class",
+}
+EXCEL_ALIAS_COLUMNS = ("Alias 1", "Alias 2")
 
-    return Path(alpinac.mode_extraction.__file__).parent / "rt_refs_v2.csv"
+
+def default_ri_references() -> Path:
+    """The retention index references of a new data directory
+    (``esper.retention_index.default_references``)."""
+    from esper.retention_index import default_references
+
+    return default_references()
+
+
+def read_substances(path: Path) -> tuple[pd.DataFrame, dict[str, str]]:
+    """The targets of the substances Excel file (sheet ``all``), as the legacy pipeline
+    read them (``load_excel_compounds`` of halosearch).
+
+    A row is a target if it has a name (``EXCEL_NAME_COLUMN``); the first row of a name is
+    kept, the later ones are ignored (with their aliases). ``Alias 1`` / ``Alias 2``: other
+    names of the target (a later row wins for an alias given twice).
+
+    :return: the targets indexed by name (``rt``: in the reference run, s, NaN if not
+        given; ``formula``, ``cas``, ... as text, "" if not given; ``pubchem_cid`` -1 if
+        not given) and the aliases (alias -> name).
+    """
+    raw = pd.read_excel(path, sheet_name=EXCEL_SHEET)
+    rows, aliases = {}, {}
+    for i, row in raw.iterrows():
+        name = row[EXCEL_NAME_COLUMN]
+        line = i + 2
+        if not isinstance(name, str) and (name is None or pd.isna(name) or not name):
+            rt = row[EXCEL_RT_COLUMN]
+            if rt and not pd.isna(rt):
+                logger.debug(f"{path}: line {line} has an rt ({rt}) but no name")
+            continue
+        name = str(name)
+        if name in rows:
+            logger.debug(f"{path}: line {line}, {name} again: ignored")
+            continue
+        rows[name] = {"rt": row[EXCEL_RT_COLUMN]} | {
+            column: row[excel] for excel, column in EXCEL_COLUMNS.items()
+        }
+        for alias in (row[c] for c in EXCEL_ALIAS_COLUMNS):
+            if alias and not pd.isna(alias):
+                aliases[str(alias)] = name
+    df = pd.DataFrame.from_dict(rows, orient="index")
+    df.index.name = "compound"
+    df["rt"] = pd.to_numeric(df["rt"], errors="coerce").astype(float)
+    df["pubchem_cid"] = (
+        pd.to_numeric(df["pubchem_cid"], errors="coerce").fillna(-1).astype(int)
+    )
+    for column in ("cas", "inchi", "smiles", "cmp_class", "chemical_name", "formula"):
+        df[column] = df[column].map(lambda v: "" if pd.isna(v) else str(v))
+    return df, aliases
 
 
 def load_excel(path: Path, ri_references: Path | None = None) -> Targets:
-    """Read the substances Excel file as alpinac does (``load_excel_compounds``).
+    """The targets of the substances Excel file (``read_substances``).
 
     The retention index is computed from the rt of the reference run with the
-    alpinac reference list, but extrapolated beyond the first/last reference
-    instead of clamped. An rt of 0 means unknown.
+    reference list (``ri_references``, default ``default_ri_references``), as the
+    legacy pipeline but extrapolated beyond the first/last reference instead of
+    clamped. An rt of 0 means unknown.
     """
-    from alpinac.mode_extraction.read_from_excel import load_excel_compounds
-
     ri_references = Path(ri_references) if ri_references else default_ri_references()
-    # alpinac prints its warnings (duplicated names, ...): send them to the log
-    printed = io.StringIO()
-    with contextlib.redirect_stdout(printed):
-        df, aliases = load_excel_compounds(Path(path), ri_references)
-    for line in printed.getvalue().splitlines():
-        logger.debug(f"alpinac: {line}")
+    df, aliases = read_substances(Path(path))
+
+    from esper.retention_index import read_reference_csv, target_ris
 
     rt = df["rt"].where(df["rt"] > 0)
-    refs = pd.read_csv(ri_references, comment="#")
-    refs = refs[refs["compound"].isin(df.index)]
-    refs = (
-        refs.assign(rt=df.loc[refs["compound"], "rt"].values)
-        .dropna(subset=["rt"])
-        .sort_values("rt")
-    )
-    ri = pd.Series(
-        interp_extrapolate(rt, refs["rt"], refs["ri"]), index=df.index
-    ).where(rt.notna())
+    references = read_reference_csv(ri_references)
+    ri = target_ris(df["rt"], references)
 
     table = pd.DataFrame(
         {
@@ -223,7 +272,9 @@ def load_excel(path: Path, ri_references: Path | None = None) -> Targets:
     ions["valid_from"] = None
 
     aliases = {alias: name for alias, name in aliases.items() if name in table.index}
-    return Targets(table=table, ions=ions[ION_COLUMNS], aliases=aliases)
+    return Targets(
+        table=table, ions=ions[ION_COLUMNS], aliases=aliases, ri_references=references
+    )
 
 
 # Loaders by file suffix

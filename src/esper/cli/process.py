@@ -38,8 +38,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--steps",
         nargs="+",
         choices=STEPS,
-        help="the steps: peaks (found and identified, then fitted if fit is a step too)"
-        " and fit (default: both; the peaks only with a method)",
+        help="the steps: peaks (found and identified, then fitted if fit is a step too),"
+        " ri (the retention indices alone: references, RI of the compounds and of their"
+        " candidates, identification, of all the runs whose peaks esper found; after the"
+        " fit) and fit (default: peaks and fit; the peaks only with a method)",
     )
     parser.add_argument(
         "-f",
