@@ -245,7 +245,14 @@ def screen_suspects(
         spectrum = Spectrum.from_pairs(
             members["mass"].map(unit_mass), members["height"]
         )
-        found = libraries.best_matches(spectrum, config.n_candidates)
+        # one candidate per name; not those of no mass in common (score 0), as the legacy
+        found = [
+            match
+            for match in libraries.best_matches(
+                spectrum, config.n_candidates, distinct=True
+            )
+            if match.score > 0
+        ]
         for rank, match in enumerate(found, start=1):
             rows.append(
                 {

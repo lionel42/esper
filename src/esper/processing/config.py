@@ -16,6 +16,8 @@
         window_s: 20
       suspect:                # suspect screening (SuspectScreeningConfig)
         min_score: 0.9
+        libraries: [nist_ei, mygu]
+        targets_only: true    # only the spectra of the targets with an rt
       ri:                     # the references of the runs (RetentionIndexConfig)
         min_score: 0.95
 
@@ -115,6 +117,13 @@ class SuspectScreeningConfig:
     # (esper.libraries.combined_score), and the compound is identified only if its RI
     # differs from the candidate's by less than this (legacy 10; no RI: not identified)
     max_ri_diff: float = 10.0
+    # The spectral libraries matched: names of ``esper.libraries.default_libraries`` (by
+    # priority), folders of ``peaksdb`` (legacy: nist_db and myriam_ei)
+    libraries: tuple[str, ...] = ("nist_ei", "mygu")
+    peaksdb: str = "/shared/data/peaksdb"
+    # Only the spectra of the targets with an rt in the reference run, and of their
+    # aliases (legacy; no such targets: all the spectra)
+    targets_only: bool = True
 
 
 @dataclass(frozen=True)

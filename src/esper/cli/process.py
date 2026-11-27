@@ -39,9 +39,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         nargs="+",
         choices=STEPS,
         help="the steps: peaks (found and identified, then fitted if fit is a step too),"
-        " ri (the retention indices alone: references, RI of the compounds and of their"
-        " candidates, identification, of all the runs whose peaks esper found; after the"
-        " fit) and fit (default: peaks and fit; the peaks only with a method)",
+        " fit, and alone, on all the runs whose peaks esper found (after the fit; the"
+        " identifications by hand kept): identify (suspect screening: the compounds"
+        " matched again to the libraries, with their retention indices), ri (the"
+        " retention indices: references, RI of the compounds and of their candidates,"
+        " identification). Default: peaks and fit; the peaks only with a method",
     )
     parser.add_argument(
         "-f",

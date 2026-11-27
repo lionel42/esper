@@ -312,13 +312,13 @@ def test_window_of_a_target_without_one():
 class _Libraries:
     """best_matches of a LibraryCollection: the spectra closest to a fixed one."""
 
-    def best_matches(self, spectrum, n):
+    def best_matches(self, spectrum, n, distinct=False):
         from esper.libraries import Match
 
         if 69 in spectrum.mz.tolist():
             matches = [Match("nist_ei", "CF4", 0.95, 2), Match("mygu", "C2F6", 0.7, 1)]
         else:
-            matches = [Match("nist_ei", "N2O", 0.5, 1)]
+            matches = [Match("nist_ei", "N2O", 0.5, 1), Match("mygu", "CO2", 0.0, 0)]
         return matches[:n]
 
 
@@ -335,6 +335,10 @@ def test_suspect_screening():
     assert first["rank"].tolist() == [1, 2]
     assert first["spectrum_ref"].tolist() == ["nist_CF4", "mygu_C2F6"]
     assert first["is_best"].tolist() == [1, 0]
+    # no mass in common (score 0): not a candidate
+    assert candidates.loc[
+        candidates["compound_idx"] == 1, "candidate_name"
+    ].tolist() == ["N2O"]
 
 
 # --- pipeline ---------------------------------------------------------------------------
@@ -859,3 +863,79 @@ def test_retention_index_step_alone(data_dir, capsys):
     )
     assert main(["process", str(data_dir), "--steps", "ri"]) == 2
     assert "uses no retention indices" in capsys.readouterr().err
+
+
+def test_identification_step_alone(data_dir, tmp_path_factory, capsys):
+    """esper process --steps identify: the compounds of the runs whose peaks esper found
+    matched again to the libraries of the processing config (from their peaks as found),
+    as the peaks step does; the fit and the identifications by hand kept."""
+    from esper.cli.main import main
+    from esper.libraries import Spectrum, write_jdx
+    from esper.process import process
+
+    peaksdb = tmp_path_factory.mktemp("peaksdb")
+    (peaksdb / "nist_db").mkdir()
+    for name, peaks in {
+        "CF4": [(69, 100), (85, 45)],
+        "R85": [(85, 100), (31, 1)],
+        "R69": [(69, 100), (31, 1)],
+    }.items():
+        write_jdx(
+            peaksdb / "nist_db" / f"{name}.jdx",
+            Spectrum.from_pairs(*zip(*peaks)),
+            title=name,
+        )
+    (data_dir / "esper.yaml").write_text(
+        "instrument: gcwerks\nprocessing:\n  method: suspect\n  retention_index: false\n"
+        f"  suspect:\n    libraries: [nist_ei]\n    peaksdb: {peaksdb}\n"
+    )
+    process(data_dir)
+
+    def identified():
+        con = db.connect(data_dir, readonly=True)
+        try:
+            return (
+                con.execute(
+                    "SELECT compound_idx, compound_name, valid_candidate FROM compound"
+                    " ORDER BY compound_idx"
+                ).fetchall(),
+                con.execute(
+                    "SELECT compound_idx, rank, candidate_name, round(score, 6)"
+                    " FROM compound_candidate ORDER BY compound_idx, rank"
+                ).fetchall(),
+            )
+        finally:
+            con.close()
+
+    expected = identified()
+    names = [name for _, name, _ in expected[0]]
+    assert sorted(names) == ["CF4", "R69", "R85"]  # 69 + 85 at 50 s, 85, 69 alone
+    con = db.connect(data_dir)
+    with con:
+        con.execute("UPDATE compound SET compound_name = 'x', valid_candidate = 0")
+        con.execute("DELETE FROM compound_candidate WHERE compound_idx = 0")
+        con.execute(
+            "INSERT INTO compound_identification (measurement_id, compound_idx, name,"
+            " edited_at) VALUES (1, 1, 'by hand', '2026-11-27')"
+        )
+    (fit_version,) = con.execute("SELECT fit_version FROM measurement").fetchone()
+    con.close()
+    summary = process(data_dir, steps=["identify"])
+    assert summary.identified == ["250101.0000.air.1"] and not summary.fitted
+    assert identified() == expected
+    con = db.connect(data_dir, readonly=True)
+    assert con.execute("SELECT fit_version FROM measurement").fetchone() == (
+        fit_version,
+    )
+    assert con.execute("SELECT name FROM compound_identification").fetchall() == [
+        ("by hand",)
+    ]
+    con.close()
+    assert main(["process", str(data_dir), "--steps", "identify"]) == 0
+    assert "identified: 1, failed: 0" in capsys.readouterr().out
+    # target search: refused
+    (data_dir / "esper.yaml").write_text(
+        "instrument: gcwerks\nprocessing:\n  method: target\n"
+    )
+    assert main(["process", str(data_dir), "--steps", "identify"]) == 2
+    assert "of suspect screening" in capsys.readouterr().err

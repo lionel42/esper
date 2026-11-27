@@ -95,7 +95,11 @@ esper process /path/to/esper/data --method target
 works on the runs already in the database (the source is not read): those not processed or
 not fitted yet, or all of them with `-f`. Its options:
 
-- `--steps peaks fit`: only some steps (`--steps fit -f`: refit everything);
+- `--steps peaks fit`: only some steps (`--steps fit -f`: refit everything). Two steps run
+  alone on all the runs whose peaks esper found, in seconds, keeping the peaks, the fit and the
+  identifications made by hand: `identify` (suspect screening: the compounds matched again to
+  the libraries, e.g. after changing them, with their retention indices) and `ri` (the
+  retention indices only);
 - `--compounds NAME [NAME ...]`: the peaks of these targets only (target search), the other
   compounds of each run kept (as `esper upload --compounds`);
 - `--after DATE`, `--before DATE`: only the runs started between;
@@ -172,6 +176,9 @@ processing:
   suspect:
     min_score: 0.9          # valid from this spectral score on
     max_ri_diff: 10         # and with retention indices: within this of the candidate's
+    libraries: [nist_ei, mygu]     # peaksdb folders matched (esper.libraries.default_libraries)
+    peaksdb: /shared/data/peaksdb
+    targets_only: true      # only the spectra of the targets with an rt (and their aliases)
   ri:
     min_score: 0.95         # spectral score of a retention index reference in a run
 ```
@@ -185,6 +192,11 @@ its compounds from the references found in it: compounds of known RI (Kr, Xe, n-
 give the RI of the targets, from their rt in the reference run of the target list. The
 candidates of a compound are then ranked by their spectral score combined with their RI
 difference, and the compound is identified within `max_ri_diff`.
+
+When the references or the targets change (`esper ri-refs import`, `esper targets`), the
+runs whose peaks esper found get their references, RIs and identification again, which
+takes seconds (`--no-update`: later, with `esper process DATA_DIR --steps ri`). Peaks, fit
+and identifications by hand are kept.
 
 The GUI shows only what the data directory uses: with target search, no library match
 (score, spectrum) and, unless `retention_index: true`, no retention index.

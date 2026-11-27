@@ -158,6 +158,13 @@ class TargetIndex:
         """The target that a candidate name (a target name or alias) stands for."""
         return self._by_name.get(name) if name is not None else None
 
+    def names_with_rt(self) -> set[str]:
+        """The targets with an rt in the reference run (``rt_ref_s``) and their aliases:
+        the library spectra the legacy pipeline matched (``targets_only``)."""
+        rt = self.table["rt_ref_s"] if "rt_ref_s" in self.table else pd.Series()
+        with_rt = set(rt.index[pd.to_numeric(rt, errors="coerce") > 0])
+        return {n for n, t in self._by_name.items() if t in with_rt}
+
     def target_names(self, target: str) -> list[str]:
         """The target name and its aliases."""
         return [n for n, t in self._by_name.items() if t == target]

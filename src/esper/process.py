@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 from esper import db
+from esper.processing import TARGET
 from esper.processing.config import (
     ProcessingConfig,
     ProcessingConfigError,
@@ -27,10 +28,13 @@ from esper.sources import get_source, in_dates, name_width, peak_source, run_lab
 logger = logging.getLogger(__name__)
 
 PEAKS = "peaks"  # found and identified (esper.processing)
+# the identification alone (suspect screening), of the runs whose peaks esper found (part
+# of PEAKS; with the retention indices)
+IDENTIFY = "identify"
 # the retention indices alone, of the runs whose peaks esper found (part of PEAKS)
 RI = "ri"
 FIT = "fit"
-STEPS = (PEAKS, RI, FIT)
+STEPS = (PEAKS, IDENTIFY, RI, FIT)
 # the steps by default (with a method)
 DEFAULT_STEPS = (PEAKS, FIT)
 
@@ -42,13 +46,21 @@ class ProcessSummary:
     processing_failed: list[tuple[str, str]] = field(default_factory=list)
     fitted: list[str] = field(default_factory=list)
     fit_failed: list[tuple[str, str]] = field(default_factory=list)
+    # The identification step alone
+    identified: list[str] = field(default_factory=list)
+    identify_failed: list[tuple[str, str]] = field(default_factory=list)
     # The retention index step alone
     indexed: list[str] = field(default_factory=list)
     index_failed: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def any_failed(self) -> bool:
-        return bool(self.processing_failed or self.fit_failed or self.index_failed)
+        return bool(
+            self.processing_failed
+            or self.fit_failed
+            or self.identify_failed
+            or self.index_failed
+        )
 
 
 class RunProcessing:
@@ -111,15 +123,17 @@ class RunProcessing:
 
     def run(self, name: str, mid: int, steps: Iterable[str] = DEFAULT_STEPS) -> None:
         """The steps of a run: its peaks found and identified (and fitted with them;
-        with its retention indices), or only fitted and / or its retention indices
-        (after the fit)."""
+        with its retention indices), or only fitted and / or identified (with its
+        retention indices) or its retention indices (after the fit)."""
         steps = set(steps)
         if PEAKS in steps:
             self.find_peaks(name, mid, fit=FIT in steps)
             return
         if FIT in steps:
             self.fit(name, mid)
-        if RI in steps:
+        if IDENTIFY in steps:
+            self.identify(name, mid)
+        elif RI in steps:
             self.retention_indices(name, mid)
 
     def find_peaks(self, name: str, mid: int, fit: bool = True) -> None:
@@ -188,6 +202,24 @@ class RunProcessing:
         self.summary.fitted.append(name)
         self.report(f"{label} {fit_summary(table)}")
 
+    def identify(self, name: str, mid: int) -> None:
+        """The identification step alone (``Processor.identify_stored``)."""
+
+        label = self._label(name)
+        try:
+            found = self.processor.identify_stored(mid)
+        except Exception as e:
+            logger.exception(f"{label} identification failed")
+            self.summary.identify_failed.append((name, repr(e)))
+            return
+        self.summary.identified.append(name)
+        (n_valid,) = self.con.execute(
+            "SELECT count(*) FROM compound WHERE measurement_id = ? AND valid_candidate = 1",
+            (mid,),
+        ).fetchone()
+        refs = "" if found is None else f"{len(found):2} retention index references, "
+        self.report(f"{label} {refs}{n_valid} compounds identified")
+
     def retention_indices(self, name: str, mid: int) -> None:
         """The retention index step alone (``Processor.retention_indices``)."""
 
@@ -224,8 +256,8 @@ def to_run(
     ``FIT`` is a step. The fit alone: of the runs not fitted, or fitted by an older
     esper (all if ``force``), and those a fit override applies to (``overrides``); not
     with ``compounds`` (only their compounds are processed, peaks and fit). The
-    retention indices alone (``RI``): of all the runs whose peaks esper found with
-    ``method`` (and not found again here).
+    identification alone (``IDENTIFY``) and the retention indices alone (``RI``): of all
+    the runs whose peaks esper found with ``method`` (and not found again here).
     """
     from esper.fitting import to_fit
     from esper.processing import PEAK_SOURCE
@@ -235,13 +267,14 @@ def to_run(
     if PEAKS in steps:
         for mid, _ in to_process(con, method, force):
             todo[mid] = steps & {PEAKS, FIT}
-    if RI in steps and not compounds:
+    alone = steps & {IDENTIFY, RI}
+    if alone and not compounds:
         for (mid,) in con.execute(
             "SELECT measurement_id FROM measurement WHERE peak_source = ?"
             " AND identification = ?",
             (PEAK_SOURCE, method),
         ):
-            todo.setdefault(mid, set()).add(RI)
+            todo.setdefault(mid, set()).update(alone)
     if FIT in steps and not compounds:
         fits = to_fit(con, force)
         if overrides and not force:
@@ -321,8 +354,8 @@ def process(
     """Process the runs of a data directory that need it (see ``to_run``).
 
     ``steps``: ``PEAKS`` (found and identified with the method of the data directory,
-    ``method``: declared if not yet, see :func:`esper.processing.resolve_method`) and
-    ``FIT``; None: both, the peaks only with a method (the runs without peaks: a
+    ``method``: declared if not yet, see :func:`esper.processing.resolve_method`),
+    ``FIT``, and alone ``IDENTIFY`` (suspect screening) or ``RI``; None: both, the peaks only with a method (the runs without peaks: a
     warning). ``force``: the steps of all the runs again. ``compounds``: see
     ``RunProcessing``. ``overrides``: also fit again the runs that a fit override
     applies to. ``after``, ``before``: only the runs started on or after ``after`` and
@@ -345,7 +378,7 @@ def process(
         config = dataclasses.replace(config, method=method)
     has_method = config.method is not None
     if not has_method and (
-        compounds or (steps is not None and ({PEAKS, RI} & set(steps)))
+        compounds or (steps is not None and ({PEAKS, IDENTIFY, RI} & set(steps)))
     ):
         raise no_method(data_dir)
     if steps is None:
@@ -353,6 +386,11 @@ def process(
     steps = set(steps)
     if compounds and PEAKS not in steps:
         raise ProcessingConfigError(f"--compounds: needs the {PEAKS} step")
+    if IDENTIFY in steps and config.method == TARGET:
+        raise ProcessingConfigError(
+            f"--steps {IDENTIFY}: of suspect screening; target search identifies with"
+            f" the peaks (--steps {PEAKS} {FIT} -f)"
+        )
     if RI in steps and not config.uses_retention_index:
         raise ProcessingConfigError(
             f"--steps {RI}: {data_dir} uses no retention indices"

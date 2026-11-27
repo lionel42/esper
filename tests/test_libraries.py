@@ -42,3 +42,47 @@ def test_write_jdx_round_trip(tmp_path):
     np.testing.assert_array_equal(spectrum.mz, expected)
     assert spectrum.intensities.max() == JDX_MAX_Y
     np.testing.assert_allclose(spectrum.intensities[spectrum.mz == 69], 5848)
+
+
+def _library(folder, spectra):
+    folder.mkdir(parents=True)
+    for name, peaks in spectra.items():
+        write_jdx(folder / f"{name}.jdx", Spectrum.from_pairs(*zip(*peaks)), title=name)
+
+
+def test_selected_libraries_matched_by_name(tmp_path):
+    """The libraries of the processing config (select_libraries), only the spectra of
+    some names (targets_only), one candidate per name (distinct)."""
+    import pytest
+
+    from esper.libraries import LibraryCollection, Processing, select_libraries
+
+    _library(
+        tmp_path / "nist_db",
+        {
+            "CF4": [(69, 100), (50, 12)],
+            "C2F6": [(69, 100), (119, 40)],
+            "X": [(69, 99), (31, 5)],
+        },
+    )
+    _library(tmp_path / "myriam_ei", {"CF4": [(69, 100), (50, 10)]})
+    libraries = select_libraries(["nist_ei", "mygu"], tmp_path)
+    assert [(lib.name, lib.path.name) for lib in libraries] == [
+        ("nist_ei", "nist_db"),
+        ("mygu", "myriam_ei"),
+    ]
+    with pytest.raises(ValueError, match="unknown libraries nist"):
+        select_libraries(["nist"], tmp_path)
+    query = Spectrum.from_pairs([69, 50], [100, 11])
+    collection = LibraryCollection(libraries, Processing())
+    names = [m.name for m in collection.best_matches(query, 3)]
+    assert names[:2] == ["CF4", "CF4"]  # the same compound in both libraries
+    names = [m.name for m in collection.best_matches(query, 3, distinct=True)]
+    assert names == ["CF4", "X", "C2F6"]
+    restricted = LibraryCollection(libraries, Processing(), {"CF4", "C2F6"})
+    assert [m.name for m in restricted.best_matches(query, 3, distinct=True)] == [
+        "CF4",
+        "C2F6",
+    ]
+    # a search: all the spectra
+    assert len(restricted.best_matches(query, None, search="x")) == 1

@@ -1,7 +1,9 @@
 """Reference mass spectra libraries (peaksdb) and spectral matching.
 
-A library is a folder of spectra, read like peaksdb's ``db_reader`` does:
-NIST ``.jdx`` files (JCAMP-DX) and alpinac fragment files (``.txt``). Libraries are ordered by
+esper reads the libraries itself (D3 of the refactoring plan: no dependency on peaksdb's
+``db_reader``, which stays for the legacy halosearch until it is retired; same formats
+and results). A library is a folder of spectra: NIST ``.jdx`` files (JCAMP-DX) and
+alpinac fragment files (``.txt``). Libraries are ordered by
 priority: when a spectrum exists in several libraries, the first one is used.
 They are read the first time they are needed and kept in memory.
 
@@ -35,17 +37,33 @@ class Library:
         return self.name.split("_", 1)[0]
 
 
-def default_libraries() -> list[Library]:
-    """mygu and the main NIST download first, the other peaksdb folders disabled."""
+def default_libraries(peaksdb: Path = PEAKSDB) -> list[Library]:
+    """The folders of peaksdb (``peaksdb``: its root): mygu and the main NIST download
+    first, the others disabled."""
+    peaksdb = Path(peaksdb)
     return [
-        Library("mygu", PEAKSDB / "myriam_ei", True),
-        Library("nist_ei", PEAKSDB / "nist_db", True),
-        Library("nist_ch", PEAKSDB / "nist_CH", False),
-        Library("nist_chon", PEAKSDB / "nist_CHON", False),
-        Library("nist_cf", PEAKSDB / "nist_CF", False),
-        Library("nist_chf", PEAKSDB / "nist_CHF", False),
-        Library("nist_auto", PEAKSDB / "nist_autodownloads", False),
+        Library("mygu", peaksdb / "myriam_ei", True),
+        Library("nist_ei", peaksdb / "nist_db", True),
+        Library("nist_ch", peaksdb / "nist_CH", False),
+        Library("nist_chon", peaksdb / "nist_CHON", False),
+        Library("nist_cf", peaksdb / "nist_CF", False),
+        Library("nist_chf", peaksdb / "nist_CHF", False),
+        Library("nist_auto", peaksdb / "nist_autodownloads", False),
     ]
+
+
+def select_libraries(names, peaksdb: Path = PEAKSDB) -> list[Library]:
+    """The libraries of ``default_libraries`` named ``names``, in that order, enabled.
+
+    Raises ValueError for a name that is not one of them.
+    """
+    known = {lib.name: lib for lib in default_libraries(peaksdb)}
+    unknown = [name for name in names if name not in known]
+    if unknown:
+        raise ValueError(
+            f"unknown libraries {', '.join(unknown)} (known: {', '.join(known)})"
+        )
+    return [Library(name, known[name].path, True) for name in names]
 
 
 @dataclass(frozen=True)
@@ -226,18 +244,28 @@ class Match:
 
 
 class LibraryCollection:
-    """The ordered libraries, read lazily and kept in memory."""
+    """The ordered libraries, read lazily and kept in memory.
 
-    def __init__(self, libraries: list[Library], processing: Processing) -> None:
+    ``names``: the spectra matched (``best_matches`` without ``search``) are only those
+    of these names (file stems); None: all.
+    """
+
+    def __init__(
+        self,
+        libraries: list[Library],
+        processing: Processing,
+        names: set[str] | None = None,
+    ) -> None:
         self.libraries = libraries
         self.processing = processing
+        self.names = None if names is None else frozenset(names)
         self._spectra: dict[str, dict[str, Spectrum]] = {}
         # Processed spectra on a unit mass grid, for the enabled / all libraries
         self._matrices: dict[bool, tuple] = {}
 
     def with_processing(self, processing: Processing) -> LibraryCollection:
         """Same libraries (spectra already read are kept) with another processing."""
-        other = LibraryCollection(self.libraries, processing)
+        other = LibraryCollection(self.libraries, processing, self.names)
         other._spectra = self._spectra
         return other
 
@@ -295,11 +323,15 @@ class LibraryCollection:
         return (found[0], name) if found else None
 
     def _reference_matrix(self, all_libraries: bool = False):
-        """Processed spectra of the enabled (or all) libraries on a common unit mass grid."""
+        """Processed spectra of the enabled libraries (of ``names``), or of all the
+        libraries (all their spectra), on a common unit mass grid."""
         if all_libraries not in self._matrices:
             keys, spectra = [], []
+            names = None if all_libraries else self.names
             for lib in self.libraries if all_libraries else self.enabled:
                 for name, spec in self.spectra(lib.name).items():
+                    if names is not None and name not in names:
+                        continue
                     keys.append((lib.name, name))
                     spectra.append(self.processing.apply(spec))
             max_mass = max((int(s.mz.max()) for s in spectra if len(s)), default=0)
@@ -312,13 +344,19 @@ class LibraryCollection:
         return self._matrices[all_libraries]
 
     def best_matches(
-        self, query: Spectrum, n: int | None, search: str = ""
+        self,
+        query: Spectrum,
+        n: int | None,
+        search: str = "",
+        distinct: bool = False,
     ) -> list[Match]:
-        """The best scoring spectra of the enabled libraries for a (raw) spectrum.
+        """The best scoring spectra of the enabled libraries (of ``names``) for a (raw)
+        spectrum.
 
         With ``search``, the spectra of all the libraries (also the disabled ones)
         whose 'library/name' contains it (case insensitive), all of them if ``n``
-        is None.
+        is None. ``distinct``: one spectrum per name, its best (as the legacy: the
+        other candidates are other compounds, not the same one in another library).
         """
         query = self.processing.apply(query)
         keys, matrix, present = self._reference_matrix(all_libraries=bool(search))
@@ -341,7 +379,14 @@ class LibraryCollection:
                 ],
                 dtype=int,
             )
-        best = rows[np.argsort(scores[rows])[::-1]][:n]
+        # stable: equal scores keep the order of the libraries
+        order = rows[np.argsort(-scores[rows], kind="stable")]
+        if distinct:
+            seen = set()
+            order = [
+                i for i in order if not (keys[i][1] in seen or seen.add(keys[i][1]))
+            ]
+        best = order[:n]
         return [
             Match(keys[i][0], keys[i][1], float(scores[i]), int(matched[i]))
             for i in best

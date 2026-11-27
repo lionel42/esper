@@ -214,6 +214,10 @@ def print_processing(summary) -> None:
         )
     if summary.fitted or summary.fit_failed:
         print(f"fitted: {len(summary.fitted)}, failed: {len(summary.fit_failed)}")
+    identified = getattr(summary, "identified", [])
+    identify_failed = getattr(summary, "identify_failed", [])
+    if identified or identify_failed:
+        print(f"identified: {len(identified)}, failed: {len(identify_failed)}")
     indexed = getattr(summary, "indexed", [])
     index_failed = getattr(summary, "index_failed", [])
     if indexed or index_failed:
@@ -259,5 +263,7 @@ def print_processing_failures(summary) -> None:
         print(f"  PEAKS FAILED {name}: {error}", file=sys.stderr)
     for name, error in summary.fit_failed:
         print(f"  FIT FAILED {name}: {error}", file=sys.stderr)
+    for name, error in getattr(summary, "identify_failed", []):
+        print(f"  IDENTIFICATION FAILED {name}: {error}", file=sys.stderr)
     for name, error in getattr(summary, "index_failed", []):
         print(f"  RETENTION INDICES FAILED {name}: {error}", file=sys.stderr)

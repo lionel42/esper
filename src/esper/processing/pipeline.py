@@ -229,10 +229,30 @@ class Processor:
 
     @property
     def libraries(self):
-        if self._libraries is None:
-            from esper.libraries import LibraryCollection, Processing, default_libraries
+        """The spectral libraries of suspect screening (``processing: suspect:``): its
+        ``libraries`` from ``peaksdb``, only the spectra of the targets with an rt (and of
+        their aliases) if ``targets_only``.
 
-            self._libraries = LibraryCollection(default_libraries(), Processing())
+        Raises ProcessingConfigError for an unknown library.
+        """
+        if self._libraries is None:
+            from esper.libraries import LibraryCollection, Processing, select_libraries
+
+            suspect = self.config.suspect
+            try:
+                libraries = select_libraries(suspect.libraries, Path(suspect.peaksdb))
+            except ValueError as e:
+                raise ProcessingConfigError(f"processing: suspect: {e}") from None
+            names = None
+            if suspect.targets_only:
+                names = self.targets.names_with_rt()
+                if not names:
+                    logger.warning(
+                        "targets_only: no targets with an rt, all the library spectra"
+                        " are matched"
+                    )
+                    names = None
+            self._libraries = LibraryCollection(libraries, Processing(), names)
         return self._libraries
 
     @property
@@ -281,26 +301,8 @@ class Processor:
         )
         return peaks, compounds, candidates, found
 
-    def retention_indices(self, measurement_id: int) -> pd.DataFrame:
-        """The retention index step alone on a run whose peaks esper found: its
-        references found again among its compounds as they are (fitted or not), the
-        RI of its compounds, and with suspect screening the RI of the candidates, the
-        best one and the validation (``identification.retention_indices``). The peaks,
-        the fit and the identifications edited by hand are kept. Single transaction.
-
-        Returns the references found (``esper.retention_index.FOUND_COLUMNS``).
-        Raises ProcessingConfigError if the data directory does not use retention
-        indices.
-        """
-        from esper.processing.identification import CANDIDATE_COLUMNS, retention_indices
-        from esper.retention_index import store_run_references
-
-        if not self.config.uses_retention_index:
-            raise ProcessingConfigError(
-                f"{self.data_dir}: no retention indices (processing: retention_index)"
-            )
-        mid = int(measurement_id)
-        compounds = pd.read_sql(
+    def _stored_compounds(self, mid: int) -> pd.DataFrame:
+        return pd.read_sql(
             "SELECT compound_idx, rt_mean_s, prominence_sum, compound_name,"
             " valid_candidate, is_ref_ri, retention_index FROM compound"
             " WHERE measurement_id = ?",
@@ -308,21 +310,62 @@ class Processor:
             params=(mid,),
             index_col="compound_idx",
         )
-        candidates = None
-        if self.method != TARGET:
-            candidates = pd.read_sql(
-                "SELECT * FROM compound_candidate WHERE measurement_id = ?",
-                self.con,
-                params=(mid,),
-            )[CANDIDATE_COLUMNS]
-        compounds, candidates, found = retention_indices(
-            compounds,
-            candidates,
-            self.references,
-            self.targets,
-            self.config.ri,
-            self.config.suspect,
+
+    def identify_stored(self, measurement_id: int) -> pd.DataFrame | None:
+        """The identification step alone on a run whose peaks esper found (suspect
+        screening): its compounds matched again to the libraries, from the heights of
+        their peaks as found (``esper.fitting.extraction``: as the peaks step, before the
+        fit; the compounds made by the fit get none), then their retention indices (if
+        used, as ``retention_indices``, from the fitted rts). The peaks, the fit and the identifications
+        edited by hand are kept. Single transaction.
+
+        Returns the references found (None: retention indices not used).
+        Raises ProcessingConfigError with target search (its identification is part of
+        the peaks: ``esper process -f``).
+        """
+        from esper.fitting import extraction
+        from esper.processing.identification import retention_indices, screen_suspects
+
+        if self.method == TARGET:
+            raise ProcessingConfigError(
+                f"{self.data_dir}: the identification alone is of suspect screening;"
+                " target search identifies with the peaks (esper process -f)"
+            )
+        mid = int(measurement_id)
+        compounds = self._stored_compounds(mid).assign(
+            compound_name=None, valid_candidate=0, is_ref_ri=0, retention_index=None
         )
+        # the peaks as found (before the fit), as the identification of the peaks step
+        peaks, _ = extraction(self.con, mid)
+        compounds, candidates = screen_suspects(
+            peaks, compounds, self.libraries, self.config.suspect
+        )
+        found = None
+        if self.config.uses_retention_index:
+            compounds, candidates, found = retention_indices(
+                compounds,
+                candidates,
+                self.references,
+                self.targets,
+                self.config.ri,
+                self.config.suspect,
+            )
+        self._update_identification(mid, compounds, candidates, found, replace=True)
+        return found
+
+    def _update_identification(
+        self,
+        mid: int,
+        compounds: pd.DataFrame,
+        candidates: pd.DataFrame | None,
+        found: pd.DataFrame | None,
+        replace: bool,
+    ) -> None:
+        """Store the identification of the compounds of a run (single transaction):
+        their name, validation and RI, their candidates (``replace``: all of them again,
+        else their RI, combined score and best) and its references found (None: kept)."""
+        from esper.retention_index import store_run_references
+
         compounds = compounds.astype(object).where(compounds.notna(), None)
         with self.con:
             self.con.executemany(
@@ -341,7 +384,16 @@ class Processor:
                     for i, r in compounds.iterrows()
                 ],
             )
-            if candidates is not None:
+            if candidates is not None and replace:
+                self.con.execute(
+                    "DELETE FROM compound_candidate WHERE measurement_id = ?", (mid,)
+                )
+                db.insert(
+                    self.con,
+                    "compound_candidate",
+                    candidates.assign(measurement_id=mid),
+                )
+            elif candidates is not None:
                 values = candidates.astype(object).where(candidates.notna(), None)
                 self.con.executemany(
                     "UPDATE compound_candidate SET ri = ?, ri_diff = ?,"
@@ -360,7 +412,44 @@ class Processor:
                         for r in values.itertuples()
                     ],
                 )
-            store_run_references(self.con, mid, found)
+            if found is not None:
+                store_run_references(self.con, mid, found)
+
+    def retention_indices(self, measurement_id: int) -> pd.DataFrame:
+        """The retention index step alone on a run whose peaks esper found: its
+        references found again among its compounds as they are (fitted or not), the
+        RI of its compounds, and with suspect screening the RI of the candidates, the
+        best one and the validation (``identification.retention_indices``). The peaks,
+        the fit and the identifications edited by hand are kept. Single transaction.
+
+        Returns the references found (``esper.retention_index.FOUND_COLUMNS``).
+        Raises ProcessingConfigError if the data directory does not use retention
+        indices.
+        """
+        from esper.processing.identification import CANDIDATE_COLUMNS, retention_indices
+
+        if not self.config.uses_retention_index:
+            raise ProcessingConfigError(
+                f"{self.data_dir}: no retention indices (processing: retention_index)"
+            )
+        mid = int(measurement_id)
+        compounds = self._stored_compounds(mid)
+        candidates = None
+        if self.method != TARGET:
+            candidates = pd.read_sql(
+                "SELECT * FROM compound_candidate WHERE measurement_id = ?",
+                self.con,
+                params=(mid,),
+            )[CANDIDATE_COLUMNS]
+        compounds, candidates, found = retention_indices(
+            compounds,
+            candidates,
+            self.references,
+            self.targets,
+            self.config.ri,
+            self.config.suspect,
+        )
+        self._update_identification(mid, compounds, candidates, found, replace=False)
         return found
 
     def _chromatograms(self, mid: int) -> tuple[pd.DataFrame, object] | None:
