@@ -389,6 +389,23 @@ def process(
     return runs.summary
 
 
+def update_retention_indices(
+    data_dir: Path, report: Callable[[str], None] = logger.info
+) -> ProcessSummary | None:
+    """The retention index step (``RI``) of all the runs whose peaks esper found, after
+    the references or the targets (their RIs) of the data directory changed: their
+    references, the RIs of their compounds and candidates and their identification
+    follow (peaks, fit and identifications by hand kept). None if the data directory
+    has no method or uses no retention indices (nothing to update).
+
+    Raises ValueError if its esper.yaml is invalid.
+    """
+    config = read_processing_config(data_dir)
+    if config.method is None or not config.uses_retention_index:
+        return None
+    return process(data_dir, steps={RI}, report=report)
+
+
 def _warn_without_peaks(con: sqlite3.Connection, data_dir: Path) -> None:
     """Warn about the runs whose peaks are not found: the data directory has no method."""
     (n,) = con.execute(

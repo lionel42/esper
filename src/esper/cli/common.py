@@ -220,6 +220,39 @@ def print_processing(summary) -> None:
         print(f"retention indices: {len(indexed)}, failed: {len(index_failed)}")
 
 
+def add_no_update(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--no-update",
+        action="store_true",
+        help="leave the retention indices of the runs as they are (later: esper process"
+        " DATA_DIR --steps ri); by default the runs whose peaks esper found get them"
+        " again from the new references and target RIs",
+    )
+
+
+def update_retention_indices(data_dir: Path) -> int:
+    """The retention index step of the runs of a data directory after its references
+    or targets changed (``esper.process.update_retention_indices``), the counts and
+    failures printed. Returns the exit code: 1 if a run failed, 2 if the esper.yaml
+    is invalid."""
+    from esper.process import update_retention_indices as update
+
+    try:
+        summary = update(data_dir)
+    except ValueError as e:
+        print(f"retention indices of the runs not updated: {e}", file=sys.stderr)
+        return 2
+    if summary is None:
+        return 0
+    n = len(summary.indexed)
+    print(
+        f"retention indices of the runs updated: {n}"
+        + (f", failed: {len(summary.index_failed)}" if summary.index_failed else "")
+    )
+    print_processing_failures(summary)
+    return 1 if summary.any_failed else 0
+
+
 def print_processing_failures(summary) -> None:
     """The runs whose processing failed (``esper.process.ProcessSummary``), stderr."""
     for name, error in summary.processing_failed:

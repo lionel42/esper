@@ -833,6 +833,27 @@ def test_retention_index_step_alone(data_dir, capsys):
     # the command line; refused without retention indices
     assert main(["process", str(data_dir), "--steps", "ri"]) == 0
     assert "retention indices: 1, failed: 0" in capsys.readouterr().out
+    # other references: the runs follow (esper ri-refs import), unless --no-update
+    csv = data_dir.parent / "refs.csv"
+    csv.write_text("name,ri\nKr,25\nXe-A,85\n")
+
+    def ris():
+        con = db.connect(data_dir, readonly=True)
+        try:
+            return [
+                r[0]
+                for r in con.execute(
+                    "SELECT retention_index FROM compound ORDER BY compound_idx"
+                )
+            ]
+        finally:
+            con.close()
+
+    assert main(["ri-refs", "import", str(csv), str(data_dir), "--no-update"]) == 0
+    assert ris() == [25.0, 75.0, 1275.0]
+    assert main(["ri-refs", "import", str(csv), str(data_dir)]) == 0
+    assert "retention indices of the runs updated: 1" in capsys.readouterr().out
+    assert ris() == [25.0, 85.0, 1525.0]
     (data_dir / "esper.yaml").write_text(
         "instrument: gcwerks\nprocessing:\n  method: suspect\n  retention_index: false\n"
     )

@@ -5,7 +5,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from esper.cli.common import Command, add_data_dir
+from esper.cli.common import (
+    Command,
+    add_data_dir,
+    add_no_update,
+    update_retention_indices,
+)
 
 HELP = "Import the target compounds (replaces the current ones)"
 
@@ -19,6 +24,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="retention index references (CSV, see esper ri-refs), stored in the data"
         " directory; default: those of the data directory, else esper's seed",
     )
+    add_no_update(parser)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -59,7 +65,7 @@ def run(args: argparse.Namespace) -> int:
         f"targets: {len(targets.table)} ({n_ri} with retention index, {n_ions} with expected ions,"
         f" {n_spectrum} of them from their reference spectrum), aliases: {len(targets.aliases)}"
     )
-    return 0
+    return 0 if args.no_update else update_retention_indices(args.data_dir)
 
 
 COMMAND = Command(
