@@ -3,7 +3,7 @@
 The peaks of each mass are found in each window where it was measured
 (:mod:`esper.windows`), after its baseline is removed (``peaxart.remove_baseline``, of
 the window), with the legacy detection of alpinac (``peaxart.find_chromatogram_peaks``),
-its prominence threshold relative to the noise of the window
+its prominence threshold relative to the noise around each peak
 (``esper.processing.config.DetectionConfig``).
 The peaks of all masses are then grouped into compounds of co-eluting peaks
 (``peaxart.group_peaks_legacy``), whatever the method that identifies them.
@@ -24,7 +24,7 @@ import peaxart as px
 from peaxart.chromatogram import noise_std
 
 from esper.deconvolution import chromatogram_masses
-from esper.windows import is_continuous, measured_windows
+from esper.windows import cuts_of, is_continuous, measured_windows
 
 if TYPE_CHECKING:
     from esper.processing.config import DetectionConfig
@@ -82,6 +82,20 @@ def _mass(column: str) -> int | float:
     return int(value) if value.is_integer() else value
 
 
+def local_noise(t: np.ndarray, y: np.ndarray, half_window: float | None) -> np.ndarray:
+    """The noise standard deviation at each value of ``y`` (``noise_std``): of the values
+    within ``half_window`` s, evaluated every ``half_window / 4`` and interpolated (None, or
+    a series not longer than the window: of the whole series)."""
+    t = np.asarray(t, dtype=float)
+    if half_window is None or len(t) < 2 or t[-1] - t[0] <= 2 * half_window:
+        return np.full(len(t), noise_std(y))
+    grid = np.arange(t[0], t[-1] + half_window / 4, half_window / 4)
+    lo = np.searchsorted(t, grid - half_window)
+    hi = np.searchsorted(t, grid + half_window, side="right")
+    noise = np.array([noise_std(y[a:b]) for a, b in zip(lo, hi, strict=True)])
+    return np.interp(t, grid, noise)
+
+
 def find_peaks(
     frame: pd.DataFrame,
     baseline: px.BaselineConfig | None,
@@ -93,17 +107,21 @@ def find_peaks(
 
     ``frame``: the chromatograms (index: rt [s], one column per mass; ``tic`` left out).
     ``baseline``: removed from each window before (None: not removed).
-    ``detection``: its prominence threshold relative to the noise of each window.
+    ``detection``: its prominence threshold relative to the noise around each peak
+    (``local_noise``).
     """
     t = frame.index.to_numpy(dtype=float)
     continuous = is_continuous(frame)
     parts = []
     for column in chromatogram_masses(frame):
         y = frame[column].to_numpy(dtype=float)
-        for index in measured_windows(y, continuous, MIN_WINDOW_POINTS):
+        cuts = cuts_of(frame, column)
+        for index in measured_windows(y, continuous, MIN_WINDOW_POINTS, cuts):
             values = y[index]
             # of the measured values: the baseline removal smooths them
-            min_prominence = detection.min_prominence(noise_std(values))
+            min_prominence = detection.min_prominence(
+                local_noise(t[index], values, detection.noise_window_s)
+            )
             if baseline is not None:
                 values = px.remove_baseline(values, baseline)
             peaks = px.find_chromatogram_peaks(

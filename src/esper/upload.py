@@ -21,10 +21,12 @@ from esper.process import FIT, PEAKS, ProcessSummary, RunProcessing, check_metho
 from esper.sources import (
     InstrumentError,
     MeasurementImport,
+    find_runs,
     get_source,
     in_dates,
     name_width,
     parse_measurement_name,
+    peak_source,
     resolve_instrument,
     run_label,
 )
@@ -262,18 +264,19 @@ def upload(
     data_dir = Path(data_dir)
     instrument = resolve_instrument(data_dir, instrument, source)
     instrument_source = get_source(instrument)
-    check_method(instrument, method)
+    check_method(instrument, method, data_dir)
     resolve_method(data_dir, method)
     config = read_processing_config(data_dir)
-    # The fit of the imported peaks (and its dependencies) only for the instruments with
+    # The fit of the imported peaks (and its dependencies) only for the runs imported with
     # peaks; the others are processed if the data directory has a method
-    fit_imported = fit and instrument_source.PEAK_SOURCE is not None
-    process = instrument_source.PEAK_SOURCE is None and config.method is not None
+    imported_peaks = peak_source(instrument_source, config.method)
+    fit_imported = fit and imported_peaks is not None
+    process = imported_peaks is None and config.method is not None
     if fit_imported:
         from esper.fitting import FITTED_PEAK_SOURCES
 
-        fit_imported = instrument_source.PEAK_SOURCE in FITTED_PEAK_SOURCES
-    if instrument_source.PEAK_SOURCE is None and config.method is None:
+        fit_imported = imported_peaks in FITTED_PEAK_SOURCES
+    if imported_peaks is None and config.method is None:
         logger.info(
             f"{data_dir}: no processing method, the peaks of the runs are not found"
             " (esper process --method ...)"
@@ -298,7 +301,7 @@ def upload(
             from esper.processing.pipeline import to_process
 
             pending = {name for _, name in to_process(con, config.method)}
-        runs = instrument_source.find_runs(source)
+        runs = find_runs(instrument_source, source, config.method)
         if newest_first:
             runs = sorted(runs, key=lambda run: run.name, reverse=True)
         logger.info(f"{len(runs)} runs of {instrument} in {source}")

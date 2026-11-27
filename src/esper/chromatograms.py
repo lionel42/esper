@@ -167,6 +167,46 @@ def acquisition_cuts(file: TofFile, sums: np.ndarray, rt: np.ndarray, scans: sli
     return cuts, {"emission": summary["steps"], "ejection": summary["switches"]}
 
 
+def baseline_cuts(raw: pd.DataFrame, info: dict) -> dict[str, list[float]]:
+    """The rts where the baseline of each column of the raw sums was cut (:func:`acquisition_cuts`:
+    a piece starts there), from the summary of the steps in their provenance ``info``
+    (:func:`provenance` of the corrected chromatograms): the emission steps (all columns, ``tic``
+    included) at their rts, the switches of the resonant ejection located again in the raw sums
+    of each ejected mass (:func:`peaxart.step_index`, as :func:`peaxart.step_cuts`).
+
+    :return: {column: sorted rts}, the columns without cut left out (none if the chromatograms were
+        made without the steps, e.g. legacy).
+    """
+    steps = info.get("steps") or {}
+    if not steps or raw.empty:
+        return {}
+    config = StepConfig(**{k: tuple(v) if isinstance(v, list) else v for k, v in steps.get("config", {}).items()})
+    t = raw.index.to_numpy(dtype=float)
+    n = len(t)
+    dt = float(np.median(np.diff(t))) if n > 1 else 0.0
+    lo, hi = (round(config.search[0] / dt), round(config.search[1] / dt) + 1) if dt else (0, 1)
+
+    def index_of(rt: float) -> int:
+        return min(int(np.searchsorted(t, rt - 1e-6)), n - 1)
+
+    cuts: dict[str, set[int]] = {}
+    emission = [index_of(rt) for rt in steps.get("emission", [])]
+    if emission:
+        for column in raw.columns:
+            cuts.setdefault(column, set()).update(emission)
+    prefix = str(raw.columns[0]).rpartition(":")[0]
+    prefix = f"{prefix}:" if prefix else ""
+    for cluster in steps.get("ejection", []):
+        logged = [index_of(rt) for rt in cluster.get("rt", [])]
+        for mass in cluster.get("masses", []):
+            column = f"{prefix}{float(mass):g}"
+            if column not in raw:
+                continue
+            y = raw[column].to_numpy(dtype=float)
+            cuts.setdefault(column, set()).update(px.step_index(y, k + lo, k + hi) for k in logged)
+    return {c: [float(t[k]) for k in sorted(ks) if 0 < k < n] for c, ks in cuts.items() if ks}
+
+
 DEFAULT_STEPS = StepConfig()
 
 
@@ -300,6 +340,7 @@ def chromatograms_to_file(file: TofFile | str | PathLike, output: str | PathLike
 __all__ = [
     "UnitMassChromatograms",
     "acquisition_cuts",
+    "baseline_cuts",
     "chromatograms_to_file",
     "column_prefix",
     "default_masses",

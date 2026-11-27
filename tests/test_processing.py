@@ -27,7 +27,7 @@ from esper.processing.identification import screen_suspects, search_targets
 from esper.processing.pipeline import Processor, to_process
 from esper.sources import CONTINUOUS
 from esper.target_index import TargetIndex
-from esper.windows import measured_windows
+from esper.windows import cuts_of, measured_windows
 
 # --- configuration ----------------------------------------------------------------------
 
@@ -155,6 +155,25 @@ def test_prominence_relative_to_the_noise():
     assert find_peaks(frame, config.baseline, legacy).empty
     # the floor: no noise, no threshold of 0
     assert DetectionConfig().min_prominence(0.0) == 20
+
+
+def test_prominence_relative_to_the_local_noise():
+    """The noise of a TOF grows with the signal: a run quiet, then 20 x noisier (a high
+    background). Relative to the noise of the whole run (its median: of the quiet part),
+    the noise of the loud part gives peaks; relative to the noise around each peak, only
+    the real one (in the quiet part)."""
+    rng = np.random.default_rng(2)
+    t = np.arange(0, 600, 0.2)
+    scale = np.where(t < 400, 1.0, 20.0)
+    y = 100 + scale * rng.normal(0, 2, len(t)) + _gauss(t, 150, 60, sigma=2)
+    frame = pd.DataFrame({"57": y}, index=pd.Index(t, name="rt"))
+    config = processing_config(None)
+    assert config.detection.noise_window_s == 20
+    peaks = find_peaks(frame, config.baseline, config.detection)
+    assert list(peaks["peak_rt"].round(0)) == [150]
+    whole = dataclasses.replace(config.detection, noise_window_s=None)
+    noisy = find_peaks(frame, config.baseline, whole)
+    assert 150 in set(noisy["peak_rt"].round(0)) and (noisy["peak_rt"] > 400).sum() > 3
 
 
 def test_scan_runs_one_window_per_mass():
@@ -540,16 +559,109 @@ def test_processing_failures_counted_apart(data_dir, monkeypatch):
     assert runs.summary.fit_failed == [] and runs.summary.processed == []
 
 
-def test_method_only_for_the_runs_without_peaks(tmp_path):
+def _alpinac_folders(root, names=("250101.0000.air.1", "250101.0130.air.1"), raw=True):
+    """.alpinac folders with their chromatograms only (TOF: no gaps), corrected and raw
+    sums (``raw``; the raw ones x10 after 100 s: a step of the emission, recorded in the
+    provenance of the corrected ones); the second also has a pipeline.nc that cannot be
+    read (it must not be)."""
+    import json
+
+    from esper.chromatograms import PROVENANCE
+
+    corrected = _sim_frame().ffill().bfill()
+    corrected.attrs[PROVENANCE] = json.dumps(
+        {"steps": {"config": {}, "emission": [float(T[500])], "ejection": []}}
+    )
+    sums = corrected.astype("float32")
+    sums.loc[sums.index >= T[500]] *= 10
+    for i, name in enumerate(names):
+        folder = root / f"{name}.alpinac"
+        folder.mkdir(parents=True)
+        corrected.to_parquet(folder / f"{name}.unit_mass_chromatos.parquet")
+        if raw:
+            sums.to_parquet(folder / f"{name}.unit_mass_chromatos.raw.parquet")
+        if i:
+            (folder / "pipeline.nc").write_text("not a netCDF file")
+    return root
+
+
+def test_tofwerk_runs_without_peaks_with_a_method(tmp_path):
+    from esper.upload import upload
+
+    runs = _alpinac_folders(tmp_path / "runs")
+    data_dir = tmp_path / "esper"
+    summary = upload(runs, data_dir, instrument="tofwerk", method="target", workers=1)
+    assert summary.failed == []
+    assert summary.processed == ["250101.0000.air.1", "250101.0130.air.1"]
+    con = db.connect(data_dir)
+    rows = con.execute(
+        "SELECT peak_source, identification, n_peaks > 0, fit_version IS NOT NULL,"
+        " rt_start_s, rt_stop_s, acq_start_source FROM measurement ORDER BY name"
+    ).fetchall()
+    con.close()
+    assert rows == [(PEAK_SOURCE, "target", 1, 1, 0.0, T[-1], "name")] * 2
+    # unchanged chromatograms: not again
+    assert upload(runs, data_dir, workers=1).processed == []
+    # the chromatograms stored: the raw sums, cut at the step of their background
+    stored = pd.read_parquet(data_dir / "chromatograms" / "250101.0000.air.1.parquet")
+    assert stored["69"].max() > 10_000  # x10 after the step
+    assert cuts_of(stored, "69").tolist() == [500]
+    assert [len(w) for w in measured_windows(stored["69"].to_numpy(), cuts=[500])] == [
+        500,
+        500,
+    ]
+
+
+def test_tofwerk_runs_without_raw_sums_are_not_complete(tmp_path):
+    """The chromatograms of the legacy pipeline (corrected only): not imported without
+    their peaks."""
+    from esper.upload import upload
+
+    runs = _alpinac_folders(tmp_path / "runs", names=("250101.0000.air.1",), raw=False)
+    summary = upload(
+        runs, tmp_path / "esper", instrument="tofwerk", method="target", workers=1
+    )
+    assert summary.skipped_incomplete == ["250101.0000.air.1"]
+
+
+def test_tofwerk_runs_without_a_method_need_their_pipeline(tmp_path):
+    from esper.upload import upload
+
+    runs = _alpinac_folders(tmp_path / "runs", names=("250101.0000.air.1",))
+    summary = upload(runs, tmp_path / "esper", instrument="tofwerk", workers=1)
+    assert summary.skipped_incomplete == ["250101.0000.air.1"]
+
+
+def test_no_method_where_runs_have_imported_peaks(tmp_path):
+    """A method would import the runs again without their peaks (and their
+    identifications): refused for a data directory with runs of alpinac."""
     from esper.process import process
     from esper.upload import upload
 
     (tmp_path / "esper.yaml").write_text("instrument: tofwerk\n")
-    with pytest.raises(ProcessingConfigError, match="imported with their peaks"):
+    con = db.connect(tmp_path, create=True)
+    with con:
+        con.execute(
+            "INSERT INTO measurement (name, source_dir, source_mtime, source_size,"
+            " imported_at, instrument, peak_source)"
+            " VALUES ('250101.0000.air.1', 'src', 0, 0, '2025-01-02', 'tofwerk', 'alpinac')"
+        )
+    con.close()
+    with pytest.raises(ProcessingConfigError, match="1 runs imported with the peaks"):
         upload(tmp_path / "runs", tmp_path, method="suspect")
-    with pytest.raises(ProcessingConfigError, match="imported with their peaks"):
+    with pytest.raises(ProcessingConfigError, match="another data directory"):
         process(tmp_path, method="suspect")
     assert read_processing_config(tmp_path).method is None
+
+
+def test_method_of_the_instruments():
+    from esper.process import check_method
+
+    # tofwerk: the runs can be read without their peaks; gcwerks: never with
+    check_method("tofwerk", "suspect")
+    check_method("gcwerks", "target")
+    # without a method: nothing to check
+    check_method("tofwerk", None)
 
 
 def test_method_in_a_processing_on_one_line(tmp_path):

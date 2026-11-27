@@ -1,6 +1,6 @@
 """Compare the steps of the new processing chain with the legacy pipeline on the test case.
 
-    python scripts/compare_legacy.py [deconvolution] [--runs 251104.1724.air.1 ...] [--root DIR]
+    python scripts/compare_legacy.py [deconvolution] [detection --data-dir DIR] [--runs ...] [--root DIR]
 
 ``deconvolution`` (step 4a of the refactoring plan): on the legacy unit mass chromatograms of each
 run, the legacy functions (``halosearch/alpinac/mode_extraction/peaks.py``, loaded from their file:
@@ -8,6 +8,12 @@ no legacy alpinac import) and ``esper.deconvolution.legacy_dataset`` must give t
 compounds, to the bit. Also checked: the peak table against the final legacy ``pipeline.nc`` (the
 compounds there are changed by the cleaning step: only their number is reported), and the rts of the
 chromatograms against the time axis of the h5 file (the legacy code used the latter).
+
+``detection`` (step 4 of the plan): the peaks that ``esper process`` stored in a data directory
+(``--data-dir``: the test case uploaded with a method and the legacy detection parameters, see
+``v2/esper_legacy/esper.yaml``) against the peaks of the legacy ``pipeline.nc`` (same values, the
+prominence bases as times), and its compounds against the legacy grouping (the functions of
+``peaks.py``: the compounds of ``pipeline.nc`` are changed by the cleaning step).
 """
 
 from __future__ import annotations
@@ -105,15 +111,105 @@ def compare_deconvolution(run: str, root: Path, legacy) -> list[str]:
     return problems
 
 
+# esper peak column -> legacy pipeline.nc peak variable (the bases: times of the scans)
+DETECTION_COLUMNS = {
+    "mass": "mass_of_peak",
+    "rt_s": "peak_rt",
+    "height": "peak_heights",
+    "prominence": "prominences",
+    "width_height": "width_heights",
+    "start_s": "start_ip",
+    "stop_s": "stopp_ip",
+    "flatness": "flatness",
+    "tailing_ratio": "tailing_ratio",
+    "left_base_s": "left_bases",
+    "right_base_s": "right_bases",
+}
+
+
+def _peak_groups(compound: np.ndarray, keys: list[tuple]) -> set[frozenset]:
+    """The peaks (their keys) of each compound, as a set of groups."""
+    groups: dict = {}
+    for c, key in zip(compound, keys):
+        groups.setdefault(c, set()).add(key)
+    return {frozenset(g) for g in groups.values()}
+
+
+def compare_detection(run: str, root: Path, data_dir: Path, legacy) -> list[str]:
+    import sqlite3
+
+    from esper import db
+
+    folder = root / f"{run}.alpinac"
+    con = sqlite3.connect(f"file:{db.db_path(data_dir)}?mode=ro", uri=True)
+    try:
+        row = con.execute(
+            "SELECT measurement_id, peak_source, n_peaks FROM measurement WHERE name = ?", (run,)
+        ).fetchone()
+        if row is None:
+            print(f"FAIL {run}: not in {data_dir}")
+            return ["not imported"]
+        mid = row[0]
+        peaks = pd.read_sql("SELECT * FROM peak WHERE measurement_id = ?", con, params=(mid,))
+    finally:
+        con.close()
+    with xr.open_dataset(folder / "pipeline.nc") as final:
+        final = final.load()
+    chromatograms = pd.read_parquet(folder / f"{run}.unit_mass_chromatos.parquet")
+    t = chromatograms.index.to_numpy(dtype=float)
+    ref = pd.DataFrame({column: final[var].values for column, var in DETECTION_COLUMNS.items()})
+    for side in ("left", "right"):
+        ref[f"{side}_base_s"] = t[ref[f"{side}_base_s"].to_numpy(dtype=int)]
+    problems = []
+    if row[1] != "esper":
+        problems.append(f"peak_source {row[1]!r}, not found by esper")
+    order = ["mass", "rt_s"]
+    new = peaks[list(DETECTION_COLUMNS)].sort_values(order, ignore_index=True)
+    ref = ref.sort_values(order, ignore_index=True)
+    line = f"{run}: {len(new)} peaks (legacy {len(ref)})"
+    if len(new) != len(ref):
+        problems.append(f"{len(new)} peaks, legacy {len(ref)}")
+    else:
+        for column in DETECTION_COLUMNS:
+            a, b = new[column].to_numpy(dtype=float), ref[column].to_numpy(dtype=float)
+            if not np.array_equal(a, b, equal_nan=True):
+                diff = np.nanmax(np.abs(a - b))
+                problems.append(f"{column} differs (max {diff:.3g})")
+    # compounds: the same peaks together as the legacy grouping (before the cleaning)
+    grouped = legacy_reference(chromatograms, legacy)
+    ref_keys = list(zip(grouped["mass_of_peak"].values.astype(int), grouped["peak_rt"].values))
+    new_keys = list(zip(peaks["mass"].astype(int), peaks["rt_s"]))
+    ref_groups = _peak_groups(grouped["compound_id"].values, ref_keys)
+    new_groups = _peak_groups(peaks["compound_idx"].to_numpy(), new_keys)
+    line += f", {len(new_groups)} compounds (legacy grouping {len(ref_groups)})"
+    if new_groups != ref_groups:
+        problems.append(f"compounds differ: {len(new_groups ^ ref_groups)} groups not in both")
+    main_new = set(zip(peaks.loc[peaks["is_max_of_cmp"] == 1, "mass"].astype(int),
+                       peaks.loc[peaks["is_max_of_cmp"] == 1, "rt_s"]))
+    is_max = grouped["is_max_of_cmp"].values.astype(bool)
+    main_ref = {k for k, m in zip(ref_keys, is_max) if m}
+    if main_new != main_ref:
+        problems.append(f"main peaks of the compounds differ ({len(main_new ^ main_ref)})")
+    print(("OK   " if not problems else "FAIL ") + line)
+    for p in problems:
+        print(f"     {p}")
+    return problems
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("steps", nargs="*", default=["deconvolution"], help="steps to compare: deconvolution")
+    parser.add_argument("steps", nargs="*", default=["deconvolution"],
+                        help="steps to compare: deconvolution, detection")
     parser.add_argument("--root", type=Path, default=ROOT, help="folder of the test case (h5 + .alpinac folders)")
     parser.add_argument("--runs", nargs="+", help="run names (default: all with legacy chromatograms)")
+    parser.add_argument("--data-dir", type=Path,
+                        help="detection: the esper data directory of the test case (processed)")
     args = parser.parse_args(argv)
-    unknown = set(args.steps) - {"deconvolution"}
+    unknown = set(args.steps) - {"deconvolution", "detection"}
     if unknown:
         parser.error(f"unknown steps {sorted(unknown)}")
+    if "detection" in args.steps and args.data_dir is None:
+        parser.error("detection: give the processed data directory (--data-dir)")
     runs = args.runs or sorted(p.name.removesuffix(".unit_mass_chromatos.parquet")
                                for p in args.root.glob("*.alpinac/*.unit_mass_chromatos.parquet"))
     failed = 0
@@ -122,6 +218,11 @@ def main(argv=None) -> int:
         print(f"== deconvolution (legacy method), {len(runs)} runs")
         for run in runs:
             failed += bool(compare_deconvolution(run, args.root, legacy))
+    if "detection" in args.steps:
+        legacy = _legacy_module()
+        print(f"== detection of esper process ({args.data_dir}), {len(runs)} runs")
+        for run in runs:
+            failed += bool(compare_detection(run, args.root, args.data_dir, legacy))
     return 1 if failed else 0
 
 

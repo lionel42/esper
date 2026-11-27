@@ -35,7 +35,7 @@ import numpy as np
 import pandas as pd
 import peaxart as px
 
-from esper.windows import is_continuous, measured_windows
+from esper.windows import cuts_of, is_continuous, measured_windows
 
 logger = logging.getLogger(__name__)
 
@@ -653,7 +653,9 @@ def chromatogram_window(
     y = frame[column].to_numpy(dtype=float)
     inside = (t >= lo) & (t <= hi)
     # outside the range: as not measured
-    windows = measured_windows(np.where(inside, y, np.nan), is_continuous(frame))
+    windows = measured_windows(
+        np.where(inside, y, np.nan), is_continuous(frame), cuts=cuts_of(frame, column)
+    )
     if not windows:
         return np.array([]), np.array([])
     index = max(windows, key=len)

@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+import numpy as np
 import peaxart as px
 
 from esper import db
@@ -60,8 +61,12 @@ class DetectionConfig:
 
     A peak is kept if its prominence is at least ``max(prominence, min_snr * noise)`` and
     its height at least ``height`` (both after the baseline is removed). ``noise``: the
-    standard deviation of the noise of the window (``peaxart.chromatogram.noise_std``,
-    from its second differences, before the baseline and the smoothing).
+    standard deviation of the noise around the peak, within ``noise_window_s`` of it in its
+    window (``peaxart.chromatogram.noise_std``, from the second differences, before the
+    baseline and the smoothing). Local: the counting noise of a TOF grows with the signal,
+    and one value for a whole run (its median, of the quiet parts) was 4.5 x too low at the
+    peaks (median; 251104.1724.air.1): "10 noise" kept peaks of 2 local noise, the fit
+    rejected most of them.
     The absolute thresholds are floors (e.g. a window without noise: integer counts of a
     flat baseline); peaxart's legacy ones (prominence 120 counts, width 9 scans) lost the
     small peaks of quiet masses (e.g. CHBr3 in SIM, 50 x its noise) and narrow peaks (e.g.
@@ -74,16 +79,19 @@ class DetectionConfig:
     height: float = 20
     #: minimum prominence, signal units: floor of the noise-relative threshold
     prominence: float = 20
-    #: minimum prominence in noise standard deviations of the window (0: absolute only)
+    #: minimum prominence in noise standard deviations around the peak (0: absolute only)
     min_snr: float = 10
+    #: the noise around a peak: within this of it, s (None: of its whole window)
+    noise_window_s: float | None = 20.0
     #: grouping of the peaks into compounds (``peaxart.group_peaks_legacy``)
     rt_threshold: float = _LEGACY.rt_threshold
     rt_threshold_start_ip: float = _LEGACY.rt_threshold_start_ip
     rt_threshold_stopp_ip: float = _LEGACY.rt_threshold_stopp_ip
 
-    def min_prominence(self, noise: float) -> float:
-        """The prominence a peak needs in a window of this ``noise``."""
-        return max(self.prominence, self.min_snr * noise)
+    def min_prominence(self, noise):
+        """The prominence a peak needs where the noise is ``noise`` (a value or an array)."""
+        out = np.maximum(self.prominence, self.min_snr * np.asarray(noise, dtype=float))
+        return float(out) if out.ndim == 0 else out
 
 
 @dataclass(frozen=True)
@@ -178,10 +186,15 @@ def _section(default, values, where: str):
         raise ProcessingConfigError(
             f"{where}: unknown {', '.join(unknown)} (known: {', '.join(sorted(fields))})"
         )
+    # null: None where the field allows it (e.g. ``noise_window_s``)
+    optional = {f.name for f in dataclasses.fields(default) if "None" in str(f.type)}
     return dataclasses.replace(
         default,
         **{
-            k: _value(getattr(default, k), v, f"{where}.{k}") for k, v in values.items()
+            k: None
+            if v is None and k in optional
+            else _value(getattr(default, k), v, f"{where}.{k}")
+            for k, v in values.items()
         },
     )
 

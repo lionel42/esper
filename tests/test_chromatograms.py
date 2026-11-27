@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import peaxart as px
 import pytest
 import twutils
@@ -135,6 +136,16 @@ def test_steps_of_the_acquisition(tmp_path):
     assert whole.loc[after, "100"].sum() > 5 * c.loc[after, "100"].sum()
     info = provenance(c)
     assert info["steps"]["ejection"][0]["masses"] == [100.0] and info["steps"]["config"]["emission"]
+    # the cuts found again from the provenance and the raw sums: the same corrected chromatograms
+    from esper.chromatograms import baseline_cuts
+
+    cuts = baseline_cuts(raw, info)
+    masses = ["68", "69", "70", "100"]
+    t = raw.index.to_numpy()
+    again = px.remove_baseline(raw[masses].to_numpy(dtype=float), px.UnitMassConfig().baseline,
+                               cuts=[np.searchsorted(t, np.array(cuts.get(m, [])) - 1e-6).tolist() for m in masses])
+    np.testing.assert_allclose(again, c[masses].to_numpy(), rtol=1e-5, atol=1e-3)
+    assert len(cuts["100"]) == 3 and len(cuts["69"]) == 1
 
 
 def test_upload_copies(result, tmp_path):
@@ -171,3 +182,23 @@ def test_upload_copies(result, tmp_path):
     store(legacy)
     assert not part_path(copy, "raw").exists() and not part_path(copy, "baseline").exists()
     assert store(None) is None
+
+
+def test_baseline_cuts_from_the_provenance():
+    """The cuts of the baseline found again in the raw sums: the emission steps (all columns,
+    at their rt), the resonant ejection (its masses, at the step of their level near each
+    logged switch)."""
+    from esper.chromatograms import baseline_cuts
+
+    t = np.arange(0, 100, 0.25)
+    m28 = np.full(len(t), 5e4)
+    m28[(t >= 39.5) & (t < 70.0)] = 5e2  # ejected from 39.5 s (logged at 40 s) to 70 s
+    m69 = np.full(len(t), 80.0)
+    m28[t >= 20.0] *= 10  # emission x10 at 20 s
+    m69[t >= 20.0] *= 10
+    raw = pd.DataFrame({"28": m28, "69": m69, "tic": m28 + m69}, index=pd.Index(t, name="rt"))
+    info = {"steps": {"config": {"search": [-2.0, 1.0]}, "emission": [20.0],
+                      "ejection": [{"channels": ["QUADA_REXAMPL1"], "rt": [40.0, 70.0], "masses": [28.0]}]}}
+    assert baseline_cuts(raw, info) == {"28": [20.0, 39.5, 70.0], "69": [20.0], "tic": [20.0]}
+    # made without the steps (legacy): none
+    assert baseline_cuts(raw, {}) == {}

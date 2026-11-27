@@ -4,18 +4,21 @@ A data directory holds the runs of one instrument, declared in its ``esper.yaml`
 (``instrument: tofwerk``). Each instrument is a module of this package that finds the runs
 of a source path and reads them, with the peaks of its peak source if any:
 
-=========== ===================================================== ============
+=========== ===================================================== =====================
 instrument  runs                                                  peak_source
-=========== ===================================================== ============
-tofwerk     ``<run>.alpinac`` folders (made from the TOFWERK h5)  alpinac
+=========== ===================================================== =====================
+tofwerk     ``<run>.alpinac`` folders (made from the TOFWERK h5)  alpinac (optional)
 gcwerks     ``<yy>/chromatograms/channel0/<run>`` of a GCwerks    None
             directory (chromatograms only)
-=========== ===================================================== ============
+=========== ===================================================== =====================
 
 A source module has:
 
 - ``INSTRUMENT``: its name; ``PEAK_SOURCE``: where the peaks of its runs come from
   (``measurement.peak_source``), None if it has none;
+- optionally ``OPTIONAL_PEAKS = True``: its runs can also be read without their peaks,
+  which a data directory with a processing method does (esper finds them; see
+  :func:`peak_source`). Its ``find_runs`` then takes ``peaks``;
 - ``find_runs(path) -> list[Run]``: the runs of a path, sorted;
 - ``read(run) -> MeasurementImport``: everything to store of a run;
 - ``refresh(con, run)``: update what can change without importing the run again (called
@@ -87,6 +90,8 @@ class Run:
     file: Path | None
     """The file whose size and mtime tell whether the run changed; None: the run is not
     complete (not imported)."""
+    peaks: bool = True
+    """Whether the run is read with the peaks of its source (``PEAK_SOURCE``)."""
 
 
 @dataclass
@@ -150,6 +155,24 @@ def run_label(name: str, width: int = 0) -> str:
     """``name:`` padded to ``width`` + 1 (``width``: of the longest run name printed), so
     that what is printed after the names of the runs is aligned."""
     return f"{name}:".ljust(width + 1)
+
+
+def peak_source(source, method: str | None) -> str | None:
+    """Where the peaks of the runs of an instrument (its ``source`` module) come from in a
+    data directory with the processing ``method``: its own (``PEAK_SOURCE``), unless they
+    are optional (``OPTIONAL_PEAKS``) and the data directory has a method: then None, esper
+    finds them (:mod:`esper.processing`)."""
+    if method is not None and getattr(source, "OPTIONAL_PEAKS", False):
+        return None
+    return source.PEAK_SOURCE
+
+
+def find_runs(source, path: Path, method: str | None) -> list[Run]:
+    """The runs of ``path`` of an instrument (its ``source`` module), read with or without
+    their peaks as :func:`peak_source` says for the processing ``method``."""
+    if getattr(source, "OPTIONAL_PEAKS", False):
+        return source.find_runs(path, peaks=peak_source(source, method) is not None)
+    return source.find_runs(path)
 
 
 def get_source(instrument: str):

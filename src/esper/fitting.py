@@ -53,7 +53,7 @@ from esper import db
 from esper.deconvolution import FIT_CONFIG, fit_chromatograms, fit_pool  # noqa: F401 (fit_pool: used from here)
 from esper.processing import TARGET
 from esper.target_index import unit_mass
-from esper.windows import is_continuous, measured_windows
+from esper.windows import cuts_of, is_continuous, measured_windows
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +206,7 @@ def mass_windows(
         if column not in frame:
             continue
         y = frame[column].to_numpy(dtype=float)
-        windows = measured_windows(y, continuous, min_points)
+        windows = measured_windows(y, continuous, min_points, cuts_of(frame, column))
         if not windows:
             continue
         starts = np.array([t[w[0]] for w in windows])

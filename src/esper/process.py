@@ -22,7 +22,7 @@ from esper.processing.config import (
     read_processing_config,
     resolve_method,
 )
-from esper.sources import get_source, in_dates, name_width, run_label
+from esper.sources import get_source, in_dates, name_width, peak_source, run_label
 
 logger = logging.getLogger(__name__)
 
@@ -218,17 +218,51 @@ def to_run(
     ]
 
 
-def check_method(instrument: str | None, method: str | None) -> None:
+def check_method(
+    instrument: str | None, method: str | None, data_dir: Path | None = None
+) -> None:
     """Raises ProcessingConfigError if a ``method`` is given for an instrument whose runs
-    are imported with their peaks (esper does not find them)."""
-    if method is None or instrument is None:
+    are always imported with their peaks (esper does not find them); or if the data
+    directory would import without their peaks (``method``, else the declared one) the
+    runs of an instrument whose peaks are optional, but already has runs imported with
+    them: importing them again would drop those peaks and their identifications."""
+    if instrument is None:
         return
-    peak_source = get_source(instrument).PEAK_SOURCE
-    if peak_source is not None:
+    source = get_source(instrument)
+    if method is not None:
+        imported = peak_source(source, method)
+        if imported is not None:
+            raise ProcessingConfigError(
+                f"--method: the runs of {instrument} are imported with their peaks"
+                f" ({imported}), esper does not find them"
+            )
+    if data_dir is None or source.PEAK_SOURCE is None:
+        return
+    method = method or read_processing_config(data_dir).method
+    if method is None or peak_source(source, method) is not None:
+        return
+    n = _runs_with_peaks(data_dir, source.PEAK_SOURCE)
+    if n:
         raise ProcessingConfigError(
-            f"--method: the runs of {instrument} are imported with their peaks"
-            f" ({peak_source}), esper does not find them"
+            f"{data_dir} has {n} runs imported with the peaks of {source.PEAK_SOURCE}:"
+            f" with a method its runs are imported without them (esper finds the peaks),"
+            f" which would drop those peaks and their identifications. Process the runs"
+            f" in another data directory"
         )
+
+
+def _runs_with_peaks(data_dir: Path, peak_source: str) -> int:
+    """The runs of the database of a data directory imported with the peaks of
+    ``peak_source`` (0 without database)."""
+    if not db.db_path(data_dir).is_file():
+        return 0
+    con = db.connect(data_dir, readonly=True)
+    try:
+        return con.execute(
+            "SELECT COUNT(*) FROM measurement WHERE peak_source = ?", (peak_source,)
+        ).fetchone()[0]
+    finally:
+        con.close()
 
 
 def process(
@@ -264,7 +298,7 @@ def process(
     from esper.processing.pipeline import no_method
     from esper.sources import declared_instrument
 
-    check_method(declared_instrument(data_dir), method)
+    check_method(declared_instrument(data_dir), method, data_dir)
     config = read_processing_config(data_dir)
     if method is not None:  # as asked, declared once the arguments are checked
         config = dataclasses.replace(config, method=method)
